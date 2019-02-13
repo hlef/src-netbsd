@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -243,6 +243,15 @@ typedef enum
     ASL_MSG_ARG_NOT_USED,
     ASL_MSG_CONSTANT_REQUIRED,
     ASL_MSG_CROSS_TABLE_SCOPE,
+    ASL_MSG_EXCEPTION_NOT_RECEIVED,
+    ASL_MSG_NULL_RESOURCE_TEMPLATE,
+    ASL_MSG_FOUND_HERE,
+    ASL_MSG_ILLEGAL_RECURSION,
+    ASL_MSG_EXTERN_COLLISION,
+    ASL_MSG_EXTERN_FOUND_HERE,
+    ASL_MSG_OEM_TABLE_ID,
+    ASL_MSG_OEM_ID,
+    ASL_MSG_UNLOAD,
 
     /* These messages are used by the Data Table compiler only */
 

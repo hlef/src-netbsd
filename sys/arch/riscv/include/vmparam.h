@@ -1,4 +1,4 @@
-/*	$NetBSD: vmparam.h,v 1.1 2014/09/19 17:36:26 matt Exp $	*/
+/*	$NetBSD: vmparam.h,v 1.4 2018/05/31 22:26:36 mrg Exp $	*/
 
 /*-
  * Copyright (c) 2014 The NetBSD Foundation, Inc.
@@ -59,7 +59,7 @@
  * page-aligned.
  */
 #define	USRSTACK	(VM_MAXUSER_ADDRESS-PAGE_SIZE) /* Start of user stack */
-#define	USRSTACK32	((uint32_t)VM_MAXUSER32_ADDRESS-PAGE_SIZE)
+#define	USRSTACK32	((uint32_t)VM_MAXUSER_ADDRESS32-PAGE_SIZE)
 
 /*
  * Virtual memory related constants, all in bytes
@@ -129,7 +129,7 @@
 #define VM_MAX_KERNEL_ADDRESS	((vaddr_t)-0x40000000)	/* 0xFFFFFFFFC0000000 */
 #endif
 #define VM_MAX_ADDRESS		VM_MAXUSER_ADDRESS
-#define VM_MAXUSER32_ADDRESS	((vaddr_t)(1UL << 31))/* 0x0000000080000000 */
+#define VM_MAXUSER_ADDRESS32	((vaddr_t)(1UL << 31))/* 0x0000000080000000 */
 
 /*
  * The address to which unspecified mapping requests default
@@ -137,12 +137,12 @@
 #define __USE_TOPDOWN_VM
 
 #define VM_DEFAULT_ADDRESS_TOPDOWN(da, sz) \
-    trunc_page(USRSTACK - MAXSSIZ - (sz))
+    trunc_page(USRSTACK - MAXSSIZ - (sz) - user_stack_guard_size)
 #define VM_DEFAULT_ADDRESS_BOTTOMUP(da, sz) \
     round_page((vaddr_t)(da) + (vsize_t)maxdmap)
 
 #define VM_DEFAULT_ADDRESS32_TOPDOWN(da, sz) \
-    trunc_page(USRSTACK32 - MAXSSIZ32 - (sz))
+    trunc_page(USRSTACK32 - MAXSSIZ32 - (sz) - user_stack_guard_size)
 #define VM_DEFAULT_ADDRESS32_BOTTOMUP(da, sz) \
     round_page((vaddr_t)(da) + (vsize_t)MAXDSIZ32)
 

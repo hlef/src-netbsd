@@ -1,4 +1,4 @@
-/*	$NetBSD: uirda.c,v 1.40 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: uirda.c,v 1.43 2018/01/21 13:57:12 skrll Exp $	*/
 
 /*
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -30,7 +30,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uirda.c,v 1.40 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uirda.c,v 1.43 2018/01/21 13:57:12 skrll Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -391,7 +395,7 @@ uirda_open(void *h, int flag, int mode,
 		goto bad2;
 	}
 	error = usbd_create_xfer(sc->sc_rd_pipe,
-	    IRDA_MAX_FRAME_SIZE + sc->sc_hdszi, USBD_SHORT_XFER_OK, 0,
+	    IRDA_MAX_FRAME_SIZE + sc->sc_hdszi, 0, 0,
 	    &sc->sc_rd_xfer);
 	if (error)
 		goto bad3;
@@ -636,10 +640,19 @@ filt_uirdawdetach(struct knote *kn)
 	splx(s);
 }
 
-static const struct filterops uirdaread_filtops =
-	{ 1, NULL, filt_uirdardetach, filt_uirdaread };
-static const struct filterops uirdawrite_filtops =
-	{ 1, NULL, filt_uirdawdetach, filt_seltrue };
+static const struct filterops uirdaread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_uirdardetach,
+	.f_event = filt_uirdaread,
+};
+
+static const struct filterops uirdawrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_uirdawdetach,
+	.f_event = filt_seltrue,
+};
 
 int
 uirda_kqfilter(void *h, struct knote *kn)

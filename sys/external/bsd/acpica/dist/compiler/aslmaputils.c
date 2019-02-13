@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -80,6 +80,12 @@ MpGetHidFromParseTree (
 
 
     Op = HidNode->Op;
+    if (!Op)
+    {
+        /* Object is not resolved, probably an External */
+
+        return ("Unresolved Symbol - referenced but not defined in this table");
+    }
 
     switch (Op->Asl.ParseOpcode)
     {
@@ -98,7 +104,7 @@ MpGetHidFromParseTree (
 
             /* Convert EISAID to a string */
 
-            HidString = UtStringCacheCalloc (ACPI_EISAID_STRING_SIZE);
+            HidString = UtLocalCacheCalloc (ACPI_EISAID_STRING_SIZE);
             AcpiExEisaIdToString (HidString, Arg->Asl.Value.Integer);
             return (HidString);
 
@@ -163,7 +169,7 @@ MpGetHidValue (
 
         /* Convert EISAID to a string */
 
-        HidString = UtStringCacheCalloc (ACPI_EISAID_STRING_SIZE);
+        HidString = UtLocalCacheCalloc (ACPI_EISAID_STRING_SIZE);
         AcpiExEisaIdToString (HidString, HidNode->Object->Integer.Value);
         return (HidString);
 

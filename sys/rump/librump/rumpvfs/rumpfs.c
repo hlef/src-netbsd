@@ -1,4 +1,4 @@
-/*	$NetBSD: rumpfs.c,v 1.141 2016/07/07 06:55:44 msaitoh Exp $	*/
+/*	$NetBSD: rumpfs.c,v 1.153 2018/06/04 02:29:53 chs Exp $	*/
 
 /*
  * Copyright (c) 2009, 2010, 2011 Antti Kantee.  All Rights Reserved.
@@ -26,7 +26,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rumpfs.c,v 1.141 2016/07/07 06:55:44 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: rumpfs.c,v 1.153 2018/06/04 02:29:53 chs Exp $");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
@@ -46,6 +46,7 @@ __KERNEL_RCSID(0, "$NetBSD: rumpfs.c,v 1.141 2016/07/07 06:55:44 msaitoh Exp $")
 #include <sys/stat.h>
 #include <sys/syscallargs.h>
 #include <sys/vnode.h>
+#include <sys/fstrans.h>
 #include <sys/unistd.h>
 
 #include <miscfs/fifofs/fifo.h>
@@ -163,6 +164,7 @@ struct rumpfs_dent {
 struct genfs_ops rumpfs_genfsops = {
 	.gop_size = genfs_size,
 	.gop_write = genfs_gop_write,
+	.gop_putrange = genfs_gop_putrange,
 
 	/* optional */
 	.gop_alloc = NULL,
@@ -491,8 +493,12 @@ etfsremove(const char *key)
 			mp = NULL;
 		}
 		mutex_exit(&reclock);
-		if (mp && vcache_get(mp, &rn, sizeof(rn), &vp) == 0)
+		if (mp && vcache_get(mp, &rn, sizeof(rn), &vp) == 0) {
+			rv = vfs_suspend(mp, 0);
+			KASSERT(rv == 0);
 			vgone(vp);
+			vfs_resume(mp);
+		}
 	}
 
 	if (et->et_rn->rn_hostpath != NULL)
@@ -607,6 +613,32 @@ freedir(struct rumpfs_node *rnd, struct componentname *cnp)
 		kmem_free(rd->rd_name, rd->rd_namelen+1);
 		kmem_free(rd, sizeof(*rd));
 	}
+}
+
+#define	RUMPFS_ACCESS	1
+#define	RUMPFS_MODIFY	2
+#define	RUMPFS_CHANGE	4
+
+static int
+rumpfs_update(int flags, struct vnode *vp, const struct timespec *acc,
+    const struct timespec *mod, const struct timespec *chg)
+{
+	struct rumpfs_node *rn = vp->v_data;
+
+	if (flags == 0)
+		return 0;
+
+	if (vp->v_mount->mnt_flag & MNT_RDONLY)
+		return EROFS;
+
+	if (flags & RUMPFS_ACCESS)
+		rn->rn_va.va_atime = *acc;
+	if (flags & RUMPFS_MODIFY)
+		rn->rn_va.va_mtime = *mod;
+	if (flags & RUMPFS_CHANGE)
+		rn->rn_va.va_ctime = *chg;
+
+	return 0;
 }
 
 /*
@@ -853,6 +885,7 @@ rump_vop_setattr(void *v)
 	struct vattr *vap = ap->a_vap;
 	struct rumpfs_node *rn = vp->v_data;
 	struct vattr *attr = &rn->rn_va;
+	struct timespec now;
 	kauth_cred_t cred = ap->a_cred;
 	int error;
 
@@ -873,14 +906,25 @@ rump_vop_setattr(void *v)
 			return error;
 	}
 
-	SETIFVAL(va_atime.tv_sec, time_t);
-	SETIFVAL(va_ctime.tv_sec, time_t);
-	SETIFVAL(va_mtime.tv_sec, time_t);
+	int flags = 0;
+	getnanotime(&now);
+	if (vap->va_atime.tv_sec != VNOVAL)
+		if (!(vp->v_mount->mnt_flag & MNT_NOATIME))
+			flags |= RUMPFS_ACCESS;
+	if (vap->va_mtime.tv_sec != VNOVAL) {
+		flags |= RUMPFS_CHANGE | RUMPFS_MODIFY;
+		if (vp->v_mount->mnt_flag & MNT_RELATIME)
+			flags |= RUMPFS_ACCESS;
+	} else if (vap->va_size == 0) {
+		flags |= RUMPFS_MODIFY;
+		vap->va_mtime = now;
+	}
 	SETIFVAL(va_birthtime.tv_sec, time_t);
-	SETIFVAL(va_atime.tv_nsec, long);
-	SETIFVAL(va_ctime.tv_nsec, long);
-	SETIFVAL(va_mtime.tv_nsec, long);
 	SETIFVAL(va_birthtime.tv_nsec, long);
+	flags |= RUMPFS_CHANGE;
+	error = rumpfs_update(flags, vp, &vap->va_atime, &vap->va_mtime, &now);
+	if (error)
+		return error;
 
 	if (CHANGED(va_flags, u_long)) {
 		/* XXX Can we handle system flags here...? */
@@ -983,7 +1027,7 @@ rump_vop_mkdir(void *v)
 static int
 rump_vop_rmdir(void *v)
 {
-        struct vop_rmdir_args /* {
+        struct vop_rmdir_v2_args /* {
                 struct vnode *a_dvp;
                 struct vnode *a_vp;
                 struct componentname *a_cnp;
@@ -1012,18 +1056,17 @@ rump_vop_rmdir(void *v)
 	freedir(rnd, cnp);
 	rn->rn_flags |= RUMPNODE_CANRECLAIM;
 	rn->rn_parent = NULL;
+	rn->rn_va.va_nlink = 0;
 
 out:
-	vput(dvp);
 	vput(vp);
-
 	return rv;
 }
 
 static int
 rump_vop_remove(void *v)
 {
-        struct vop_remove_args /* {
+        struct vop_remove_v2_args /* {
                 struct vnode *a_dvp;
                 struct vnode *a_vp;
                 struct componentname *a_cnp;
@@ -1040,10 +1083,9 @@ rump_vop_remove(void *v)
 
 	freedir(rnd, cnp);
 	rn->rn_flags |= RUMPNODE_CANRECLAIM;
+	rn->rn_va.va_nlink = 0;
 
-	vput(dvp);
 	vput(vp);
-
 	return rv;
 }
 
@@ -1342,6 +1384,7 @@ rump_vop_read(void *v)
 	const int advice = IO_ADV_DECODE(ap->a_ioflag);
 	off_t chunk;
 	int error = 0;
+	struct timespec ts;
 
 	if (vp->v_type == VDIR)
 		return EISDIR;
@@ -1349,6 +1392,9 @@ rump_vop_read(void *v)
 	/* et op? */
 	if (rn->rn_flags & RUMPNODE_ET_PHONE_HOST)
 		return etread(rn, uio);
+
+	getnanotime(&ts);
+	(void)rumpfs_update(RUMPFS_ACCESS, vp, &ts, &ts, &ts);
 
 	/* otherwise, it's off to ubc with us */
 	while (uio->uio_resid > 0) {
@@ -1412,6 +1458,10 @@ rump_vop_write(void *v)
 	off_t chunk;
 	int error = 0;
 	bool allocd = false;
+	struct timespec ts;
+
+	getnanotime(&ts);
+	(void)rumpfs_update(RUMPFS_MODIFY, vp, &ts, &ts, &ts);
 
 	if (ap->a_ioflag & IO_APPEND)
 		uio->uio_offset = vp->v_size;
@@ -1590,7 +1640,7 @@ rump_vop_success(void *v)
 static int
 rump_vop_inactive(void *v)
 {
-	struct vop_inactive_args /* {
+	struct vop_inactive_v2_args /* {
 		struct vnode *a_vp;
 		bool *a_recycle;
 	} */ *ap = v;
@@ -1609,20 +1659,20 @@ rump_vop_inactive(void *v)
 	}
 	*ap->a_recycle = (rn->rn_flags & RUMPNODE_CANRECLAIM) ? true : false;
 
-	VOP_UNLOCK(vp);
 	return 0;
 }
 
 static int
 rump_vop_reclaim(void *v)
 {
-	struct vop_reclaim_args /* {
+	struct vop_reclaim_v2_args /* {
 		struct vnode *a_vp;
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct rumpfs_node *rn = vp->v_data;
 
-	vcache_remove(vp->v_mount, &rn, sizeof(rn));
+	VOP_UNLOCK(vp);
+
 	mutex_enter(&reclock);
 	rn->rn_vp = NULL;
 	mutex_exit(&reclock);
@@ -1777,7 +1827,7 @@ struct vfsops rumpfs_vfsops = {
 	.vfs_mountroot =	rumpfs_mountroot,
 	.vfs_snapshot =		(void *)eopnotsupp,
 	.vfs_extattrctl =	(void *)eopnotsupp,
-	.vfs_suspendctl =	(void *)eopnotsupp,
+	.vfs_suspendctl =	genfs_suspendctl,
 	.vfs_renamelock_enter =	genfs_renamelock_enter,
 	.vfs_renamelock_exit =	genfs_renamelock_exit,
 	.vfs_opv_descs =	rump_opv_descs,
@@ -1819,9 +1869,21 @@ rumpfs_mountfs(struct mount *mp)
 int
 rumpfs_mount(struct mount *mp, const char *mntpath, void *arg, size_t *alen)
 {
-	int error;
+	int error, flags;
 
+	if (mp->mnt_flag & MNT_GETARGS) {
+		return 0;
+	}
 	if (mp->mnt_flag & MNT_UPDATE) {
+		if ((mp->mnt_iflag & IMNT_WANTRDONLY)) {
+			/* Changing from read/write to read-only. */
+			flags = WRITECLOSE;
+			if ((mp->mnt_flag & MNT_FORCE))
+				flags |= FORCECLOSE;
+			error = vflush(mp, NULL, flags);
+			if (error)
+				return error;
+		}
 		return 0;
 	}
 
@@ -1963,7 +2025,7 @@ rumpfs_mountroot()
 		panic("set_statvfs_info failed for rootfs: %d", error);
 
 	mp->mnt_flag &= ~MNT_RDONLY;
-	vfs_unbusy(mp, false, NULL);
+	vfs_unbusy(mp);
 
 	return 0;
 }

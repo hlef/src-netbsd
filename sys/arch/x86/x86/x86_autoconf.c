@@ -1,4 +1,4 @@
-/*	$NetBSD: x86_autoconf.c,v 1.74 2015/05/10 22:21:38 mlelstv Exp $	*/
+/*	$NetBSD: x86_autoconf.c,v 1.77 2018/06/07 13:35:31 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 1990 The Regents of the University of California.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: x86_autoconf.c,v 1.74 2015/05/10 22:21:38 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: x86_autoconf.c,v 1.77 2018/06/07 13:35:31 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -54,6 +54,8 @@ __KERNEL_RCSID(0, "$NetBSD: x86_autoconf.c,v 1.74 2015/05/10 22:21:38 mlelstv Ex
 #include <machine/bootinfo.h>
 #include <machine/pio.h>
 
+#include <dev/i2c/i2cvar.h>
+
 #include "acpica.h"
 #include "wsdisplay.h"
 
@@ -71,11 +73,12 @@ int x86_ndisks;
 #endif
 
 static void
-dmatch(const char *func, device_t dv)
+dmatch(const char *func, device_t dv, const char *method)
 {
 
-	printf("WARNING: %s: double match for boot device (%s, %s)\n",
-	    func, device_xname(booted_device), device_xname(dv));
+	printf("WARNING: %s: double match for boot device (%s:%s %s:%s)\n",
+	    func, booted_method, device_xname(booted_device),
+	    method, device_xname(dv));
 }
 
 static int
@@ -358,6 +361,7 @@ findroot(void)
 			if (strncmp(cd->cf_name, biv->devname, len) == 0 &&
 			    biv->devname[len] - '0' == device_unit(dv)) {
 				booted_device = dv;
+				booted_method = "bootinfo/rootdevice";
 				booted_partition = biv->devname[len + 1] - 'a';
 				booted_nblks = 0;
 				break;
@@ -405,10 +409,11 @@ findroot(void)
 			continue;
  bootwedge_found:
 			if (booted_device) {
-				dmatch(__func__, dv);
+				dmatch(__func__, dv, "bootinfo/bootwedge");
 				continue;
 			}
 			booted_device = dv;
+			booted_method = "bootinfo/bootwedge";
 			booted_partition = bid != NULL ? bid->partition : 0;
 			booted_nblks = biw->nblks;
 			booted_startblk = biw->startblk;
@@ -463,10 +468,11 @@ findroot(void)
 			continue;
  bootdisk_found:
 			if (booted_device) {
-				dmatch(__func__, dv);
+				dmatch(__func__, dv, "bootinfo/bootdisk");
 				continue;
 			}
 			booted_device = dv;
+			booted_method = "bootinfo/bootdisk";
 			booted_partition = bid->partition;
 			booted_nblks = 0;
 		}
@@ -507,6 +513,7 @@ findroot(void)
 				if (device_class(dv) == DV_DISK &&
 				    device_is_a(dv, "cd")) {
 					booted_device = dv;
+					booted_method = "bootinfo/biosgeom";
 					booted_partition = 0;
 					booted_nblks = 0;
 					break;
@@ -542,6 +549,38 @@ device_register(device_t dev, void *aux)
 {
 	device_t isaboot, pciboot;
 
+	/*
+	 * The Intel Integrated Memory Controller has a built-in i2c
+	 * controller that's rather limited in capability; it is intended
+	 * only for reading memory module EERPOMs and sensors.
+	 */
+	if (device_is_a(dev, "iic") &&
+	    device_is_a(dev->dv_parent, "imcsmb")) {
+		static const char *imcsmb_device_whitelist[] = {
+			"spdmem",
+			"sdtemp",
+			NULL,
+		};
+		prop_array_t whitelist = prop_array_create();
+		prop_dictionary_t props = device_properties(dev);
+		int i;
+
+		for (i = 0; imcsmb_device_whitelist[i] != NULL; i++) {
+			prop_string_t pstr = prop_string_create_cstring_nocopy(
+			    imcsmb_device_whitelist[i]);
+			(void) prop_array_add(whitelist, pstr);
+			prop_object_release(pstr);
+		}
+		(void) prop_dictionary_set(props,
+					   I2C_PROP_INDIRECT_DEVICE_WHITELIST,
+					   whitelist);
+		(void) prop_dictionary_set_cstring_nocopy(props,
+					   I2C_PROP_INDIRECT_PROBE_STRATEGY,
+					   I2C_PROBE_STRATEGY_NONE);
+	}
+
+	device_acpi_register(dev, aux);
+
 	isaboot = device_isa_register(dev, aux);
 	pciboot = device_pci_register(dev, aux);
 
@@ -550,7 +589,9 @@ device_register(device_t dev, void *aux)
 
 	if (booted_device != NULL) {
 		/* XXX should be a panic() */
-		dmatch(__func__, dev);
-	} else
+		dmatch(__func__, dev, "device/register");
+	} else {
 		booted_device = (isaboot != NULL) ? isaboot : pciboot;
+		booted_method = "device/register";
+	}
 }

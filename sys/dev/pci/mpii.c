@@ -1,4 +1,4 @@
-/* $NetBSD: mpii.c,v 1.8 2016/05/02 19:18:29 christos Exp $ */
+/* $NetBSD: mpii.c,v 1.12 2018/10/14 17:37:40 jdolecek Exp $ */
 /*	OpenBSD: mpii.c,v 1.51 2012/04/11 13:29:14 naddy Exp 	*/
 /*
  * Copyright (c) 2010 Mike Belopuhov <mkb@crypt.org.ru>
@@ -20,7 +20,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: mpii.c,v 1.8 2016/05/02 19:18:29 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: mpii.c,v 1.12 2018/10/14 17:37:40 jdolecek Exp $");
 
 #include "bio.h"
 
@@ -3434,26 +3434,34 @@ mpii_event_raid(struct mpii_softc *sc, struct mpii_msg_event_reply *enp)
 			case MPII_EVT_IR_CFG_ELEMENT_RC_VOLUME_CREATED:
 				if (mpii_find_dev(sc,
 				    le16toh(ce->vol_dev_handle))) {
-					printf("%s: device %#x is already "
-					    "configured\n", DEVNAME(sc),
+					aprint_error_dev(sc->sc_dev,
+					    "device %#x is already "
+					    "configured\n",
 					    le16toh(ce->vol_dev_handle));
 					break;
 				}
 				dev = malloc(sizeof(*dev), M_DEVBUF,
 				    M_NOWAIT | M_ZERO);
 				if (!dev) {
-					printf("%s: failed to allocate a "
-				    	    "device structure\n", DEVNAME(sc));
+					aprint_error_dev(sc->sc_dev,
+					    "can't allocate device structure\n");
 					break;
 				}
 				SET(dev->flags, MPII_DF_VOLUME);
 				dev->slot = sc->sc_vd_id_low;
 				dev->dev_handle = le16toh(ce->vol_dev_handle);
 				if (mpii_insert_dev(sc, dev)) {
+					aprint_error_dev(sc->sc_dev,
+					    "can't insert device structure\n");
 					free(dev, M_DEVBUF);
 					break;
 				}
-				mpii_cache_enable(sc, dev);
+				if (mpii_cache_enable(sc, dev)) {
+					aprint_error_dev(sc->sc_dev,
+					    "can't enable device cache\n");
+					free(dev, M_DEVBUF);
+					break;
+				}
 				sc->sc_vd_count++;
 				break;
 			case MPII_EVT_IR_CFG_ELEMENT_RC_REMOVED:
@@ -3515,15 +3523,15 @@ mpii_event_sas(struct mpii_softc *sc, struct mpii_msg_event_reply *enp)
 		switch (pe->phy_status & MPII_EVENT_SAS_TOPO_PS_RC_MASK) {
 		case MPII_EVENT_SAS_TOPO_PS_RC_ADDED:
 			if (mpii_find_dev(sc, le16toh(pe->dev_handle))) {
-				printf("%s: device %#x is already "
-				    "configured\n", DEVNAME(sc),
+				aprint_error_dev(sc->sc_dev,
+				    "device %#x is already configured\n",
 				    le16toh(pe->dev_handle));
 				break;
 			}
 			dev = malloc(sizeof(*dev), M_DEVBUF, M_NOWAIT | M_ZERO);
 			if (!dev) {
-				printf("%s: failed to allocate a "
-				    "device structure\n", DEVNAME(sc));
+				aprint_error_dev(sc->sc_dev, "can't allocate "
+				    "device structure\n");
 				break;
 			}
 			dev->slot = sc->sc_pd_id_start + tcl->start_phy_num + i;
@@ -3534,6 +3542,8 @@ mpii_event_sas(struct mpii_softc *sc, struct mpii_msg_event_reply *enp)
 			dev->enclosure = le16toh(tcl->enclosure_handle);
 			dev->expander = le16toh(tcl->expander_handle);
 			if (mpii_insert_dev(sc, dev)) {
+				aprint_error_dev(sc->sc_dev, "can't insert "
+				    "device structure\n");
 				free(dev, M_DEVBUF);
 				break;
 			}
@@ -3550,9 +3560,9 @@ mpii_event_sas(struct mpii_softc *sc, struct mpii_msg_event_reply *enp)
 				    DVACT_DEACTIVATE);
 				if (scsi_task(mpii_event_defer, sc,
 				    dev, 0) != 0)
-					printf("%s: unable to run device "
-					    "detachment routine\n",
-					    DEVNAME(sc));
+					aprint_error_dev(sc->sc_dev, 
+					    "unable to run device "
+					    "detachment routine\n");
 			}
 #else
 			mpii_event_defer(sc, dev);
@@ -4033,7 +4043,7 @@ mpii_dmamem_alloc(struct mpii_softc *sc, size_t size)
 
 	mdm = malloc(sizeof(*mdm), M_DEVBUF, M_NOWAIT | M_ZERO);
 	if (mdm == NULL)
-	return (NULL);
+		return (NULL);
 
 	mdm->mdm_size = size;
 
@@ -4098,10 +4108,12 @@ mpii_alloc_dev(struct mpii_softc *sc)
 static int
 mpii_insert_dev(struct mpii_softc *sc, struct mpii_device *dev)
 {
+
+	if (!dev || dev->slot < 0)
+		return (1);
+
 	int slot = dev->slot; 	/* initial hint */
 
-	if (!dev || slot < 0)
-		return (1);
 	while (slot < sc->sc_max_devices && sc->sc_devs[slot] != NULL)
 		slot++;
 	if (slot >= sc->sc_max_devices)
@@ -4893,7 +4905,7 @@ mpii_ioctl_cache(struct scsi_link *link, u_long cmd, struct dk_cache *dc)
 		return (EINVAL);
 
 	pagelen = hdr.page_length * 4;
-	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_CANFAIL | M_ZERO);
+	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_ZERO);
 	if (vpg == NULL)
 		return (ENOMEM);
 
@@ -4979,7 +4991,7 @@ mpii_cache_enable(struct mpii_softc *sc, struct mpii_device *dev)
 		return (EINVAL);
 
 	pagelen = hdr.page_length * 4;
-	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_CANFAIL | M_ZERO);
+	vpg = malloc(pagelen, M_TEMP, M_NOWAIT | M_ZERO);
 	if (vpg == NULL)
 		return (ENOMEM);
 
@@ -5119,7 +5131,7 @@ mpii_ioctl_vol(struct mpii_softc *sc, struct bioc_vol *bv)
 	}
 
 	pagelen = hdr.page_length * 4;
-	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_CANFAIL | M_ZERO);
+	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_ZERO);
 	if (vpg == NULL) {
 		printf("%s: unable to allocate space for raid "
 		    "volume page 0\n", DEVNAME(sc));
@@ -5224,7 +5236,7 @@ mpii_ioctl_disk(struct mpii_softc *sc, struct bioc_disk *bd)
 	}
 
 	pagelen = hdr.page_length * 4;
-	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_CANFAIL | M_ZERO);
+	vpg = malloc(pagelen, M_TEMP, M_WAITOK | M_ZERO);
 	if (vpg == NULL) {
 		printf("%s: unable to allocate space for raid "
 		    "volume page 0\n", DEVNAME(sc));
@@ -5281,7 +5293,7 @@ mpii_bio_hs(struct mpii_softc *sc, struct bioc_disk *bd, int nvdsk,
 	}
 
 	pagelen = le16toh(ehdr.ext_page_length) * 4;
-	cpg = malloc(pagelen, M_TEMP, M_WAITOK | M_CANFAIL | M_ZERO);
+	cpg = malloc(pagelen, M_TEMP, M_WAITOK | M_ZERO);
 	if (cpg == NULL) {
 		printf("%s: unable to allocate space for raid config page 0\n",
 		    DEVNAME(sc));
@@ -5336,7 +5348,7 @@ mpii_bio_disk(struct mpii_softc *sc, struct bioc_disk *bd, u_int8_t dn)
 	DNPRINTF(MPII_D_IOCTL, "%s: mpii_bio_disk %d\n", DEVNAME(sc),
 	    bd->bd_diskid);
 
-	ppg = malloc(sizeof(*ppg), M_TEMP, M_WAITOK | M_CANFAIL | M_ZERO);
+	ppg = malloc(sizeof(*ppg), M_TEMP, M_WAITOK | M_ZERO);
 	if (ppg == NULL) {
 		printf("%s: unable to allocate space for raid physical disk "
 		    "page 0\n", DEVNAME(sc));

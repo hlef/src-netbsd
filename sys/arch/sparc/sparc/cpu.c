@@ -1,4 +1,4 @@
-/*	$NetBSD: cpu.c,v 1.248 2014/07/25 17:21:32 nakayama Exp $ */
+/*	$NetBSD: cpu.c,v 1.254 2018/09/03 16:29:27 riastradh Exp $ */
 
 /*
  * Copyright (c) 1996
@@ -52,7 +52,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.248 2014/07/25 17:21:32 nakayama Exp $");
+__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.254 2018/09/03 16:29:27 riastradh Exp $");
 
 #include "opt_multiprocessor.h"
 #include "opt_lockdebug.h"
@@ -68,6 +68,8 @@ __KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.248 2014/07/25 17:21:32 nakayama Exp $");
 #include <sys/xcall.h>
 #include <sys/ipi.h>
 #include <sys/cpu.h>
+#include <sys/sysctl.h>
+#include <sys/kmem.h>
 
 #include <uvm/uvm.h>
 
@@ -89,6 +91,7 @@ __KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.248 2014/07/25 17:21:32 nakayama Exp $");
 #include <sparc/sparc/asm.h>
 #include <sparc/sparc/cpuvar.h>
 #include <sparc/sparc/memreg.h>
+#include <sparc/sparc/cache_print.h>
 #if defined(SUN4D)
 #include <sparc/sparc/cpuunitvar.h>
 #endif
@@ -131,11 +134,12 @@ CFATTACH_DECL_NEW(cpu_cpuunit, sizeof(struct cpu_softc),
     cpu_cpuunit_match, cpu_cpuunit_attach, NULL, NULL);
 #endif /* SUN4D */
 
-static void cpu_init_evcnt(struct cpu_info *cpi);
+static void cpu_setup_sysctl(struct cpu_softc *);
+static void cpu_init_evcnt(struct cpu_info *);
 static void cpu_attach(struct cpu_softc *, int, int);
 
 static const char *fsrtoname(int, int, int);
-void cache_print(struct cpu_softc *);
+static void cache_print(struct cpu_softc *);
 void cpu_setup(void);
 void fpu_init(struct cpu_info *);
 
@@ -183,7 +187,7 @@ int go_smp_cpus = 0;	/* non-primary CPUs wait for this to go */
  * This must be locked around all message transactions to ensure only
  * one CPU is generating them.
  */
-static kmutex_t xpmsg_mutex;
+kmutex_t xpmsg_mutex;
 
 #endif /* MULTIPROCESSOR */
 
@@ -359,7 +363,7 @@ cpu_init_evcnt(struct cpu_info *cpi)
 	 * The "savefp null" counter should go away when the NULL
 	 * struct fpstate * bug is fixed.
 	 */
-	evcnt_attach_dynamic(&cpi->ci_savefpstate, EVCNT_TYPE_MISC,
+	evcnt_attach_dynamic(&cpi->ci_savefpstate, EVCNT_TYPE_INTR,
 			     NULL, cpu_name(cpi), "savefp ipi");
 	evcnt_attach_dynamic(&cpi->ci_savefpstate_null, EVCNT_TYPE_MISC,
 			     NULL, cpu_name(cpi), "savefp null ipi");
@@ -367,6 +371,10 @@ cpu_init_evcnt(struct cpu_info *cpi)
 			     NULL, cpu_name(cpi), "IPI mutex_trylock fail");
 	evcnt_attach_dynamic(&cpi->ci_xpmsg_mutex_fail_call, EVCNT_TYPE_MISC,
 			     NULL, cpu_name(cpi), "IPI mutex_trylock fail/call");
+	evcnt_attach_dynamic(&cpi->ci_xpmsg_mutex_not_held, EVCNT_TYPE_MISC,
+			     NULL, cpu_name(cpi), "IPI with mutex not held");
+	evcnt_attach_dynamic(&cpi->ci_xpmsg_bogus, EVCNT_TYPE_MISC,
+			     NULL, cpu_name(cpi), "bogus IPI");
 
 	/*
 	 * These are the per-cpu per-IPL hard & soft interrupt counters.
@@ -377,6 +385,58 @@ cpu_init_evcnt(struct cpu_info *cpi)
 		evcnt_attach_dynamic(&cpi->ci_sintrcnt[i], EVCNT_TYPE_INTR,
 				     NULL, cpu_name(cpi), soft_intr_names[i]);
 	}
+}
+
+/* setup the hw.cpuN.* nodes for this cpu */
+static void
+cpu_setup_sysctl(struct cpu_softc *sc)
+{
+	struct cpu_info	*ci = sc->sc_cpuinfo;
+	const struct sysctlnode *cpunode = NULL;
+
+	sysctl_createv(NULL, 0, NULL, &cpunode,
+		       CTLFLAG_PERMANENT,
+		       CTLTYPE_NODE, device_xname(sc->sc_dev), NULL,
+		       NULL, 0, NULL, 0,
+		       CTL_HW,
+		       CTL_CREATE, CTL_EOL);
+
+	if (cpunode == NULL)
+		return;
+
+#define SETUPS(name, member)					\
+	sysctl_createv(NULL, 0, &cpunode, NULL,			\
+		       CTLFLAG_PERMANENT,			\
+		       CTLTYPE_STRING, name, NULL,		\
+		       NULL, 0, member, 0,			\
+		       CTL_CREATE, CTL_EOL);
+
+	SETUPS("name", __UNCONST(ci->cpu_longname))
+	SETUPS("fpuname", __UNCONST(ci->fpu_name))
+#undef SETUPS
+
+#define SETUPI(name, member)					\
+	sysctl_createv(NULL, 0, &cpunode, NULL,			\
+		       CTLFLAG_PERMANENT,			\
+		       CTLTYPE_INT, name, NULL,			\
+		       NULL, 0, member, 0,			\
+		       CTL_CREATE, CTL_EOL);
+
+	SETUPI("mid", &ci->mid)
+	SETUPI("clock_frequency", &ci->hz)
+	SETUPI("psr_implementation", &ci->cpu_impl)
+	SETUPI("psr_version", &ci->cpu_vers)
+	SETUPI("mmu_implementation", &ci->mmu_impl)
+	SETUPI("mmu_version", &ci->mmu_vers)
+	SETUPI("mmu_nctx", &ci->mmu_ncontext)
+#undef SETUPI
+
+        sysctl_createv(NULL, 0, &cpunode, NULL, 
+                       CTLFLAG_PERMANENT,
+                       CTLTYPE_STRUCT, "cacheinfo", NULL,
+                       NULL, 0, &ci->cacheinfo, sizeof(ci->cacheinfo),
+		       CTL_CREATE, CTL_EOL);
+
 }
 
 /*
@@ -428,6 +488,7 @@ cpu_attach(struct cpu_softc *sc, int node, int mid)
 	if (cpu_attach_count > 1) {
 		cpu_attach_non_boot(sc, cpi, node);
 		cpu_init_evcnt(cpi);
+		cpu_setup_sysctl(sc);
 		return;
 	}
 #endif /* MULTIPROCESSOR */
@@ -441,6 +502,7 @@ cpu_attach(struct cpu_softc *sc, int node, int mid)
 	cpu_setmodel("%s (%s)", machine_model, buf);
 	printf(": %s\n", buf);
 	cache_print(sc);
+	cpu_setup_sysctl(sc);
 
 	cpi->master = 1;
 	cpi->eintstack = eintstack;
@@ -653,6 +715,8 @@ xcall(xcall_func_t func, xcall_trap_t trap, int arg0, int arg1, int arg2,
 	char *bufp = errbuf;
 	size_t bufsz = sizeof errbuf, wrsz;
 
+	if (is_noop) return;
+
 	mybit = (1 << cpuinfo.ci_cpuid);
 	callself = func && (cpuset & mybit) != 0;
 	cpuset &= ~mybit;
@@ -714,7 +778,10 @@ xcall(xcall_func_t func, xcall_trap_t trap, int arg0, int arg1, int arg2,
 		if ((cpuset & (1 << n)) == 0)
 			continue;
 
-		cpi->msg.tag = XPMSG_FUNC;
+		/*
+		 * Write msg.tag last - if another CPU is polling above it may
+		 * end up seeing an incomplete message. Not likely but still.
+		 */ 
 		cpi->msg.complete = 0;
 		p = &cpi->msg.u.xpmsg_func;
 		p->func = func;
@@ -722,6 +789,9 @@ xcall(xcall_func_t func, xcall_trap_t trap, int arg0, int arg1, int arg2,
 		p->arg0 = arg0;
 		p->arg1 = arg1;
 		p->arg2 = arg2;
+		__insn_barrier();
+		cpi->msg.tag = XPMSG_FUNC;
+		__insn_barrier();
 		/* Fast cross calls use interrupt level 14 */
 		raise_ipi(cpi,13+fasttrap);/*xcall_cookie->pil*/
 	}
@@ -737,7 +807,7 @@ xcall(xcall_func_t func, xcall_trap_t trap, int arg0, int arg1, int arg2,
 	 * have completed (bailing if it takes "too long", being loud about
 	 * this in the process).
 	 */
-	done = is_noop;
+	done = 0;
 	i = 1000000;	/* time-out, not too long, but still an _AGE_ */
 	while (!done) {
 		if (--i < 0) {
@@ -774,7 +844,7 @@ xcall(xcall_func_t func, xcall_trap_t trap, int arg0, int arg1, int arg2,
 
 	if (i >= 0 || debug_xcall == 0) {
 		if (i < 0)
-			printf_nolog("%s\n", errbuf);
+			aprint_error("%s\n", errbuf);
 		mutex_spin_exit(&xpmsg_mutex);
 		return;
 	}
@@ -977,58 +1047,13 @@ fpu_init(struct cpu_info *sc)
 	}
 }
 
-void
+static void
 cache_print(struct cpu_softc *sc)
 {
 	struct cacheinfo *ci = &sc->sc_cpuinfo->cacheinfo;
 
-	if (sc->sc_cpuinfo->flags & CPUFLG_SUN4CACHEBUG)
-		printf("%s: cache chip bug; trap page uncached\n",
-		    device_xname(sc->sc_dev));
-
-	printf("%s: ", device_xname(sc->sc_dev));
-
-	if (ci->c_totalsize == 0) {
-		printf("no cache\n");
-		return;
-	}
-
-	if (ci->c_split) {
-		const char *sep = "";
-
-		printf("%s", (ci->c_physical ? "physical " : ""));
-		if (ci->ic_totalsize > 0) {
-			printf("%s%dK instruction (%d b/l)", sep,
-			    ci->ic_totalsize/1024, ci->ic_linesize);
-			sep = ", ";
-		}
-		if (ci->dc_totalsize > 0) {
-			printf("%s%dK data (%d b/l)", sep,
-			    ci->dc_totalsize/1024, ci->dc_linesize);
-		}
-	} else if (ci->c_physical) {
-		/* combined, physical */
-		printf("physical %dK combined cache (%d bytes/line)",
-		    ci->c_totalsize/1024, ci->c_linesize);
-	} else {
-		/* combined, virtual */
-		printf("%dK byte write-%s, %d bytes/line, %cw flush",
-		    ci->c_totalsize/1024,
-		    (ci->c_vactype == VAC_WRITETHROUGH) ? "through" : "back",
-		    ci->c_linesize,
-		    ci->c_hwflush ? 'h' : 's');
-	}
-
-	if (ci->ec_totalsize > 0) {
-		printf(", %dK external (%d b/l)",
-		    ci->ec_totalsize/1024, ci->ec_linesize);
-	}
-	printf(": ");
-	if (ci->c_enabled)
-		printf("cache enabled");
-	printf("\n");
+	cache_printf_backend(ci, device_xname(sc->sc_dev));
 }
-
 
 /*------------*/
 
@@ -1162,7 +1187,7 @@ getcacheinfo_sun4(struct cpu_info *sc, int node)
 		ci->c_l2linesize = 4;
 		ci->c_split = 0;
 		ci->c_nlines = ci->c_totalsize >> ci->c_l2linesize;
-		sc->flags |= CPUFLG_SUN4CACHEBUG;
+		sc->cacheinfo.c_flags |= CACHE_TRAPPAGEBUG;
 		break;
 	case CPUTYP_4_400:
 		ci->c_vactype = VAC_WRITEBACK;
@@ -1296,7 +1321,7 @@ getcacheinfo_sun4c(struct cpu_info *sc, int node)
 	 * mysterious buserr-type variable....)
 	 */
 	if (prom_getpropint(node, "buserr-type", 0) == 1)
-		sc->flags |= CPUFLG_SUN4CACHEBUG;
+		sc->cacheinfo.c_flags |= CACHE_TRAPPAGEBUG;
 }
 #endif /* SUN4C */
 
@@ -1304,7 +1329,7 @@ void
 sun4_hotfix(struct cpu_info *sc)
 {
 
-	if ((sc->flags & CPUFLG_SUN4CACHEBUG) != 0)
+	if ((sc->cacheinfo.c_flags & CACHE_TRAPPAGEBUG) != 0)
 		kvm_uncache((char *)trapbase, 1);
 
 	/* Use the hardware-assisted page flush routine, if present */
@@ -1393,9 +1418,9 @@ getcacheinfo_obp(struct cpu_info *sc, int node)
 			prom_getpropint(node, "dcache-associativity", 1);
 		ci->dc_totalsize = l * ci->dc_nlines * ci->dc_associativity;
 
-		ci->c_l2linesize = min(ci->ic_l2linesize, ci->dc_l2linesize);
-		ci->c_linesize = min(ci->ic_linesize, ci->dc_linesize);
-		ci->c_totalsize = max(ci->ic_totalsize, ci->dc_totalsize);
+		ci->c_l2linesize = uimin(ci->ic_l2linesize, ci->dc_l2linesize);
+		ci->c_linesize = uimin(ci->ic_linesize, ci->dc_linesize);
+		ci->c_totalsize = uimax(ci->ic_totalsize, ci->dc_totalsize);
 		ci->c_nlines = ci->c_totalsize >> ci->c_l2linesize;
 	} else {
 		/* unified I/D cache */
@@ -1771,7 +1796,7 @@ static	int mxcc = -1;
 	/* Test if we're directly on the MBus */
 	if ((pcr & VIKING_PCR_MB) == 0) {
 		sc->mxcc = 1;
-		sc->flags |= CPUFLG_CACHE_MANDATORY;
+		sc->cacheinfo.c_flags |= CACHE_MANDATORY;
 		sc->zero_page = pmap_zero_page_viking_mxcc;
 		sc->copy_page = pmap_copy_page_viking_mxcc;
 #if !defined(MSIIEP)
@@ -1785,7 +1810,7 @@ static	int mxcc = -1;
 		if ((pcr & VIKING_PCR_TC) == 0)
 			printf("[viking: PCR_TC is off]");
 		else
-			sc->flags |= CPUFLG_CACHEPAGETABLES;
+			sc->cacheinfo.c_flags |= CACHE_PAGETABLES;
 	} else {
 #ifdef MULTIPROCESSOR
 		if (sparc_ncpus > 1 && sc->cacheinfo.ec_totalsize == 0)
@@ -1817,7 +1842,7 @@ viking_mmu_enable(void)
 			printf("[viking: turn on PCR_TC]");
 		}
 		pcr |= VIKING_PCR_TC;
-		cpuinfo.flags |= CPUFLG_CACHEPAGETABLES;
+		CACHEINFO.c_flags |= CACHE_PAGETABLES;
 	} else
 		pcr &= ~VIKING_PCR_TC;
 	sta(SRMMU_PCR, ASI_SRMMU, pcr);
@@ -1904,9 +1929,9 @@ getcacheinfo_sun4d(struct cpu_info *sc, int node)
 	ci->dc_totalsize = ci->dc_linesize * ci->dc_nlines *
 	    ci->dc_associativity;
 
-	ci->c_l2linesize = min(ci->ic_l2linesize, ci->dc_l2linesize);
-	ci->c_linesize = min(ci->ic_linesize, ci->dc_linesize);
-	ci->c_totalsize = max(ci->ic_totalsize, ci->dc_totalsize);
+	ci->c_l2linesize = uimin(ci->ic_l2linesize, ci->dc_l2linesize);
+	ci->c_linesize = uimin(ci->ic_linesize, ci->dc_linesize);
+	ci->c_totalsize = uimax(ci->ic_totalsize, ci->dc_totalsize);
 	ci->c_nlines = ci->c_totalsize >> ci->c_l2linesize;
 
 	if (node_has_property(node, "ecache-nlines")) {
@@ -1986,6 +2011,12 @@ struct cpu_conf {
 	{ CPU_SUN4M, 1, 3, 1, ANY, "CY7C611", &module_cypress },
 	{ CPU_SUN4M, 1, 0xe, 1, 7, "RT620/625", &module_hypersparc },
 	{ CPU_SUN4M, 1, 0xf, 1, 7, "RT620/625", &module_hypersparc },
+	{ CPU_SUN4M, 4, 0, 0, 1, "SuperSPARC v3", &module_viking },
+	{ CPU_SUN4M, 4, 0, 0, 2, "SuperSPARC v4", &module_viking },
+	{ CPU_SUN4M, 4, 0, 0, 3, "SuperSPARC v5", &module_viking },
+	{ CPU_SUN4M, 4, 0, 0, 8, "SuperSPARC II v1", &module_viking },
+	{ CPU_SUN4M, 4, 0, 0, 10, "SuperSPARC II v2", &module_viking },
+	{ CPU_SUN4M, 4, 0, 0, 12, "SuperSPARC II v3", &module_viking },
 	{ CPU_SUN4M, 4, 0, 0, ANY, "TMS390Z50 v0 or TMS390Z55", &module_viking },
 	{ CPU_SUN4M, 4, 1, 0, ANY, "TMS390Z50 v1", &module_viking },
 	{ CPU_SUN4M, 4, 1, 4, ANY, "TMS390S10", &module_ms1 },
@@ -2054,6 +2085,17 @@ getcpuinfo(struct cpu_info *sc, int node)
 		/* Get MMU version/implementation from ROM always */
 		mmu_impl = prom_getpropint(node, "implementation", -1);
 		mmu_vers = prom_getpropint(node, "version", -1);
+	}
+
+	if (node != 0) {
+		char *cpu_name;
+		char namebuf[64];
+
+		cpu_name = prom_getpropstringA(node, "name", namebuf,
+					       sizeof namebuf);
+		if (cpu_name && cpu_name[0])
+			sc->cpu_longname = kmem_strdupsize(cpu_name, NULL,
+							   KM_NOSLEEP);
 	}
 
 	for (mp = cpu_conf; ; mp++) {

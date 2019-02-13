@@ -1,4 +1,4 @@
-/*	$NetBSD: linux_ptrace.c,v 1.19 2015/10/13 08:24:35 pgoyette Exp $	*/
+/*	$NetBSD: linux_ptrace.c,v 1.21 2018/01/26 09:29:15 christos Exp $	*/
 
 /*-
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
 
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: linux_ptrace.c,v 1.19 2015/10/13 08:24:35 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: linux_ptrace.c,v 1.21 2018/01/26 09:29:15 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/mount.h>
@@ -157,8 +157,7 @@ linux_sys_ptrace_arch(struct lwp *l, const struct linux_sys_ptrace_args *uap,
 	 * 3. It is not being traced by _you_, or
 	 * 4. It is not currently stopped.
 	 */
-	if (ISSET(t->p_slflag, PSL_FSTRACE) || t->p_pptr != p ||
-	    t->p_stat != SSTOP || !t->p_waited) {
+	if (t->p_pptr != p || t->p_stat != SSTOP || !t->p_waited) {
 		mutex_exit(t->p_lock);
 		mutex_exit(proc_lock);
 		error = EBUSY;
@@ -207,7 +206,7 @@ linux_sys_ptrace_arch(struct lwp *l, const struct linux_sys_ptrace_args *uap,
 	case LINUX_PTRACE_GET_THREAD_AREA:
 		mutex_exit(t->p_lock);
 		pcb = lwp_getpcb(l);
-		val = (void *)pcb->pcb_un.un_32.pcb32_user_pid_ro;
+		val = (void *)pcb->pcb_user_pid_ro;
 		error = copyout(&val, (void *)SCARG(uap, data), sizeof(val));
 		break;
 #endif

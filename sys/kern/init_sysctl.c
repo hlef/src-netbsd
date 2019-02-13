@@ -1,4 +1,4 @@
-/*	$NetBSD: init_sysctl.c,v 1.211 2016/05/31 05:44:19 pgoyette Exp $ */
+/*	$NetBSD: init_sysctl.c,v 1.218 2018/10/05 22:12:38 christos Exp $ */
 
 /*-
  * Copyright (c) 2003, 2007, 2008, 2009 The NetBSD Foundation, Inc.
@@ -30,11 +30,12 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: init_sysctl.c,v 1.211 2016/05/31 05:44:19 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: init_sysctl.c,v 1.218 2018/10/05 22:12:38 christos Exp $");
 
 #include "opt_sysv.h"
 #include "opt_compat_netbsd.h"
 #include "opt_modular.h"
+#include "opt_gprof.h"
 #include "pty.h"
 
 #include <sys/types.h>
@@ -47,7 +48,7 @@ __KERNEL_RCSID(0, "$NetBSD: init_sysctl.c,v 1.211 2016/05/31 05:44:19 pgoyette E
 #include <sys/unistd.h>
 #include <sys/disklabel.h>
 #include <sys/cprng.h>
-#include <sys/vnode.h>
+#include <sys/vnode_impl.h>	/* For vfs_drainvnodes(). */
 #include <sys/mount.h>
 #include <sys/namei.h>
 #include <dev/cons.h>
@@ -83,6 +84,8 @@ mode_t security_setidcore_mode = (S_IRUSR|S_IWUSR);
 int kern_has_sysvmsg = 0;
 int kern_has_sysvshm = 0;
 int kern_has_sysvsem = 0;
+
+int kern_expose_address = 0;
 
 static const u_int sysctl_lwpprflagmap[] = {
 	LPR_DETACHED, L_DETACHED,
@@ -126,6 +129,7 @@ static int sysctl_kern_root_partition(SYSCTLFN_PROTO);
 static int sysctl_kern_drivers(SYSCTLFN_PROTO);
 static int sysctl_security_setidcore(SYSCTLFN_PROTO);
 static int sysctl_security_setidcorename(SYSCTLFN_PROTO);
+static int sysctl_security_expose_address(SYSCTLFN_PROTO);
 static int sysctl_kern_cpid(SYSCTLFN_PROTO);
 static int sysctl_hw_usermem(SYSCTLFN_PROTO);
 static int sysctl_hw_cnmagic(SYSCTLFN_PROTO);
@@ -598,6 +602,12 @@ SYSCTL_SETUP(sysctl_kern_setup, "sysctl kern subtree setup")
 			SYSCTL_DESCR("Kernel message verbosity"),
 			sysctl_kern_messages, 0, NULL, 0,
 			CTL_KERN, CTL_CREATE, CTL_EOL);
+	sysctl_createv(clog, 0, NULL, NULL,
+			CTLFLAG_PERMANENT|CTLFLAG_READWRITE,
+			CTLTYPE_INT, "expose_address",
+			SYSCTL_DESCR("Expose kernel addresses to userland"),
+			sysctl_security_expose_address, 0, &kern_expose_address,
+			0, CTL_KERN, CTL_CREATE, CTL_EOL);
 }
 
 SYSCTL_SETUP(sysctl_hw_misc_setup, "sysctl hw subtree misc setup")
@@ -631,7 +641,7 @@ struct ctldebug /* debug0, */ /* debug1, */ debug2, debug3, debug4;
 struct ctldebug debug5, debug6, debug7, debug8, debug9;
 struct ctldebug debug10, debug11, debug12, debug13, debug14;
 struct ctldebug debug15, debug16, debug17, debug18, debug19;
-static struct ctldebug *debugvars[CTL_DEBUG_MAXID] = {
+static struct ctldebug *debugvars[] = {
 	&debug0, &debug1, &debug2, &debug3, &debug4,
 	&debug5, &debug6, &debug7, &debug8, &debug9,
 	&debug10, &debug11, &debug12, &debug13, &debug14,
@@ -665,7 +675,7 @@ SYSCTL_SETUP(sysctl_debug_setup, "sysctl debug subtree setup")
 
 	 */
 
-	for (i = 0; i < CTL_DEBUG_MAXID; i++) {
+	for (i = 0; i < __arraycount(debugvars); i++) {
 		cdp = debugvars[i];
 		if (cdp->debugname == NULL || cdp->debugvar == NULL)
 			continue;
@@ -756,7 +766,7 @@ sysctl_kern_maxvnodes(SYSCTLFN_ARGS)
 
 	old_vnodes = desiredvnodes;
 	desiredvnodes = new_vnodes;
-	error = vfs_drainvnodes(new_vnodes);
+	error = vfs_drainvnodes();
 	if (error) {
 		desiredvnodes = old_vnodes;
 		return (error);
@@ -797,7 +807,7 @@ sysctl_kern_messages(SYSCTLFN_ARGS)
 	case AB_NORMAL:
 	default:
 		messageverbose = 2;
-}
+	}
 
 	node = *rnode;
 	node.sysctl_data = &messageverbose;
@@ -1000,8 +1010,6 @@ sysctl_kern_cptime(SYSCTLFN_ARGS)
 	}
 
 	cp_time = kmem_alloc(node.sysctl_size, KM_SLEEP);
-	if (cp_time == NULL)
-		return (ENOMEM);
 	node.sysctl_data = cp_time;
 	memset(cp_time, 0, node.sysctl_size);
 
@@ -1114,7 +1122,7 @@ sysctl_kern_lwp(SYSCTLFN_ARGS)
 					 * struct kinfo_proc2.
 					 */
 					error = dcopyout(l, &klwp, dp,
-					    min(sizeof(klwp), elem_size));
+					    uimin(sizeof(klwp), elem_size));
 					if (error) {
 						rw_exit(&p->p_reflock);
 						goto cleanup;
@@ -1172,7 +1180,7 @@ sysctl_kern_lwp(SYSCTLFN_ARGS)
 				 * the size of a struct kinfo_proc2.
 				 */
 				error = dcopyout(l, &klwp, dp,
-				    min(sizeof(klwp), elem_size));
+				    uimin(sizeof(klwp), elem_size));
 				if (error) {
 					rw_exit(&p->p_reflock);
 					goto cleanup;
@@ -1341,6 +1349,37 @@ sysctl_security_setidcore(SYSCTLFN_ARGS)
 }
 
 static int
+sysctl_security_expose_address(SYSCTLFN_ARGS)
+{
+	int expose_address, error;
+	struct sysctlnode node;
+
+	node = *rnode;
+	node.sysctl_data = &expose_address;
+	expose_address = *(int *)rnode->sysctl_data;
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error || newp == NULL)
+		return error;
+
+	if (kauth_authorize_system(l->l_cred, KAUTH_SYSTEM_KERNADDR,
+	    0, NULL, NULL, NULL))
+		return (EPERM);
+
+	*(int *)rnode->sysctl_data = expose_address;
+
+	return 0;
+}
+
+bool
+get_expose_address(struct proc *p)
+{
+	/* allow only if sysctl variable is set or privileged */
+	return kern_expose_address || kauth_authorize_process(kauth_cred_get(),
+	    KAUTH_PROCESS_CANSEE, p,
+	    KAUTH_ARG(KAUTH_REQ_PROCESS_CANSEE_KPTR), NULL, NULL) == 0;
+}
+
+static int
 sysctl_security_setidcorename(SYSCTLFN_ARGS)
 {
 	int error;
@@ -1409,8 +1448,6 @@ sysctl_kern_cpid(SYSCTLFN_ARGS)
 	}
 
 	cp_id = kmem_alloc(node.sysctl_size, KM_SLEEP);
-	if (cp_id == NULL)
-		return (ENOMEM);
 	node.sysctl_data = cp_id;
 	memset(cp_id, 0, node.sysctl_size);
 

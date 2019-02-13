@@ -1,4 +1,4 @@
-/*	$NetBSD: ppp_tty.c,v 1.61 2016/06/20 06:46:37 knakahara Exp $	*/
+/*	$NetBSD: ppp_tty.c,v 1.64 2018/02/07 06:19:43 mrg Exp $	*/
 /*	Id: ppp_tty.c,v 1.3 1996/07/01 01:04:11 paulus Exp 	*/
 
 /*
@@ -93,11 +93,10 @@
 /* from NetBSD: if_ppp.c,v 1.15.2.2 1994/07/28 05:17:58 cgd Exp */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ppp_tty.c,v 1.61 2016/06/20 06:46:37 knakahara Exp $");
-
-#include "ppp.h"
+__KERNEL_RCSID(0, "$NetBSD: ppp_tty.c,v 1.64 2018/02/07 06:19:43 mrg Exp $");
 
 #ifdef _KERNEL_OPT
+#include "ppp.h"
 #include "opt_ppp.h"
 #endif
 #define VJC
@@ -531,8 +530,8 @@ ppprcvframe(struct ppp_softc *sc, struct mbuf *m)
 				printf(
 				    "%s: garbage received: 0x%x (need 0xFF)\n",
 				    sc->sc_if.if_xname, hdr[0]);
-				goto bail;
-			}
+			goto bail;
+		}
 		M_PREPEND(m,2,M_DONTWAIT);
 		if (m==NULL) {
 			splx(s);
@@ -563,7 +562,7 @@ ppprcvframe(struct ppp_softc *sc, struct mbuf *m)
 		if (sc->sc_flags & SC_DEBUG)
 			printf("%s: bad protocol %x\n", sc->sc_if.if_xname,
 				(hdr[2] << 8) + hdr[3]);
-			goto bail;
+		goto bail;
 	}
 
 	/* packet beyond configured mru? */
@@ -834,8 +833,7 @@ pppasyncstart(struct ppp_softc *sc)
 	    }
 
 	    /* Finished with this mbuf; free it and move on. */
-	    MFREE(m, m2);
-	    m = m2;
+	    m = m2 = m_free(m);
 	    if (m == NULL) {
 		/* Finished a packet */
 		break;

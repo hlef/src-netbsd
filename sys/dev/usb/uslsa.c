@@ -1,4 +1,4 @@
-/* $NetBSD: uslsa.c,v 1.21 2016/07/07 06:55:42 msaitoh Exp $ */
+/* $NetBSD: uslsa.c,v 1.25 2017/12/22 14:41:55 jakllsch Exp $ */
 
 /* from ugensa.c */
 
@@ -58,7 +58,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uslsa.c,v 1.21 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uslsa.c,v 1.25 2017/12/22 14:41:55 jakllsch Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -139,7 +143,8 @@ static const struct usb_devno uslsa_devs[] = {
         { USB_VENDOR_SILABS,            USB_PRODUCT_SILABS_CP210X_2 },
         { USB_VENDOR_SILABS,            USB_PRODUCT_SILABS_SUNNTO },
         { USB_VENDOR_SILABS2,           USB_PRODUCT_SILABS2_DCU11CLONE },
-        { USB_VENDOR_USI,               USB_PRODUCT_USI_MC60 }
+        { USB_VENDOR_USI,               USB_PRODUCT_USI_MC60 },
+	{ USB_VENDOR_WMR,		USB_PRODUCT_WMR_RIGBLASTER },
 };
 
 static int uslsa_match(device_t, cfdata_t, void *);
@@ -237,6 +242,9 @@ uslsa_attach(device_t parent, device_t self, void *aux)
 	sc->sc_subdev = config_found_sm_loc(self, "ucombus", NULL, &ucaa,
 	                                    ucomprint, ucomsubmatch);
 
+	if (!pmf_device_register(self, NULL, NULL))
+		aprint_error_dev(self, "couldn't establish power handler\n");
+	
 	return;
 }
 

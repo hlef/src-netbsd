@@ -1,4 +1,4 @@
-/*	$NetBSD: hd64570.c,v 1.50 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: hd64570.c,v 1.54 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 1999 Christian E. Hopps
@@ -65,7 +65,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: hd64570.c,v 1.50 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: hd64570.c,v 1.54 2018/06/26 06:48:00 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -455,8 +455,10 @@ sca_port_attach(struct sca_softc *sc, u_int port)
 #endif
 	IFQ_SET_READY(&ifp->if_snd);
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	if_alloc_sadl(ifp);
 	bpf_attach(ifp, DLT_HDLC, HDLC_HDRLEN);
+	bpf_mtap_softint_init(ifp);
 
 	if (sc->sc_parent == NULL)
 		printf("%s: port %d\n", ifp->if_xname, port);
@@ -1116,7 +1118,7 @@ X
 	/*
 	 * Pass packet to bpf if there is a listener.
 	 */
-	bpf_mtap(ifp, mb_head);
+	bpf_mtap(ifp, mb_head, BPF_D_OUT);
 
 	m_freem(mb_head);
 
@@ -1303,7 +1305,7 @@ sca_dmac_intr(sca_port_t *scp, u_int8_t isr)
 				/*
 				 * check for more packets
 				 */
-				sca_start(&scp->sp_if);
+				if_schedule_deferred_start(&scp->sp_if);
 			}
 		}
 	}
@@ -1574,7 +1576,7 @@ sca_frame_process(sca_port_t *scp)
 		return;
 	}
 
-	bpf_mtap(&scp->sp_if, m);
+	bpf_mtap_softint(&scp->sp_if, m);
 
 	scp->sp_if.if_ipackets++;
 

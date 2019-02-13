@@ -1,4 +1,4 @@
-/*	$NetBSD: btmagic.c,v 1.16 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: btmagic.c,v 1.18 2018/09/03 16:29:30 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2010 The NetBSD Foundation, Inc.
@@ -85,7 +85,7 @@
  *****************************************************************************/
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: btmagic.c,v 1.16 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: btmagic.c,v 1.18 2018/09/03 16:29:30 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/conf.h>
@@ -108,7 +108,7 @@ __KERNEL_RCSID(0, "$NetBSD: btmagic.c,v 1.16 2016/07/07 06:55:41 msaitoh Exp $")
 #include <dev/bluetooth/bthid.h>
 #include <dev/bluetooth/bthidev.h>
 
-#include <dev/usb/hid.h>
+#include <dev/hid/hid.h>
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdevs.h>
 
@@ -657,7 +657,7 @@ btmagic_sysctl_taptimeout(SYSCTLFN_ARGS)
 	if (error || newp == NULL)
 		return error;
 
-	if (t < max(1000 / hz, 1) || t > 999)
+	if (t < uimax(1000 / hz, 1) || t > 999)
 		return EINVAL;
 
 	sc->sc_taptimeout = t;

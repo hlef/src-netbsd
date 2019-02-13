@@ -1,6 +1,6 @@
-/*	$NetBSD: cpu.c,v 1.120 2016/07/07 06:55:40 msaitoh Exp $	*/
+/*	$NetBSD: cpu.c,v 1.161 2018/09/03 16:29:29 riastradh Exp $	*/
 
-/*-
+/*
  * Copyright (c) 2000-2012 NetBSD Foundation, Inc.
  * All rights reserved.
  *
@@ -62,12 +62,13 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.120 2016/07/07 06:55:40 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.161 2018/09/03 16:29:29 riastradh Exp $");
 
 #include "opt_ddb.h"
 #include "opt_mpbios.h"		/* for MPDEBUG */
 #include "opt_mtrr.h"
 #include "opt_multiprocessor.h"
+#include "opt_svs.h"
 
 #include "lapic.h"
 #include "ioapic.h"
@@ -76,7 +77,6 @@ __KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.120 2016/07/07 06:55:40 msaitoh Exp $");
 #include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/device.h>
-#include <sys/kmem.h>
 #include <sys/cpu.h>
 #include <sys/cpufreq.h>
 #include <sys/idle.h>
@@ -104,10 +104,6 @@ __KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.120 2016/07/07 06:55:40 msaitoh Exp $");
 #include <machine/cpu_counter.h>
 
 #include <x86/fpu.h>
-
-#ifdef i386
-#include <machine/tlog.h>
-#endif
 
 #if NLAPIC > 0
 #include <machine/apicvar.h>
@@ -153,31 +149,23 @@ CFATTACH_DECL2_NEW(cpu, sizeof(struct cpu_softc),
  * CPU, on uniprocessors).  The CPU info list is initialized to
  * point at it.
  */
-#ifdef TRAPLOG
-struct tlog tlog_primary;
-#endif
 struct cpu_info cpu_info_primary __aligned(CACHE_LINE_SIZE) = {
 	.ci_dev = 0,
 	.ci_self = &cpu_info_primary,
 	.ci_idepth = -1,
 	.ci_curlwp = &lwp0,
 	.ci_curldt = -1,
-#ifdef TRAPLOG
-	.ci_tlog_base = &tlog_primary,
-#endif /* !TRAPLOG */
 };
 
 struct cpu_info *cpu_info_list = &cpu_info_primary;
 
-static void	cpu_set_tss_gates(struct cpu_info *);
-
 #ifdef i386
-static void	tss_init(struct i386tss *, void *, void *);
+void		cpu_set_tss_gates(struct cpu_info *);
 #endif
 
 static void	cpu_init_idle_lwp(struct cpu_info *);
 
-uint32_t cpu_feature[7]; /* X86 CPUID feature bits */
+uint32_t cpu_feature[7] __read_mostly; /* X86 CPUID feature bits */
 			/* [0] basic features cpuid.1:%edx
 			 * [1] basic features cpuid.1:%ecx (CPUID2_xxx bits)
 			 * [2] extended features cpuid:80000001:%edx
@@ -186,8 +174,6 @@ uint32_t cpu_feature[7]; /* X86 CPUID feature bits */
 			 * [5] structured extended features cpuid.7:%ebx
 			 * [6] structured extended features cpuid.7:%ecx
 			 */
-
-extern char x86_64_doubleflt_stack[];
 
 #ifdef MULTIPROCESSOR
 bool x86_mp_online;
@@ -204,7 +190,7 @@ static void    	cpu_boot_secondary(struct cpu_info *ci);
 static void    	cpu_start_secondary(struct cpu_info *ci);
 #endif
 #if NLAPIC > 0
-static void	cpu_copy_trampoline(void);
+static void	cpu_copy_trampoline(paddr_t);
 #endif
 
 /*
@@ -219,7 +205,6 @@ cpu_init_first(void)
 {
 
 	cpu_info_primary.ci_cpuid = lapic_cpu_number();
-	cpu_copy_trampoline();
 
 	cmos_data_mapping = uvm_km_alloc(kernel_map, PAGE_SIZE, 0, UVM_KMF_VAONLY);
 	if (cmos_data_mapping == 0)
@@ -235,6 +220,36 @@ cpu_match(device_t parent, cfdata_t match, void *aux)
 
 	return 1;
 }
+
+#ifdef __HAVE_PCPU_AREA
+void
+cpu_pcpuarea_init(struct cpu_info *ci)
+{
+	struct vm_page *pg;
+	size_t i, npages;
+	vaddr_t base, va;
+	paddr_t pa;
+
+	CTASSERT(sizeof(struct pcpu_entry) % PAGE_SIZE == 0);
+
+	npages = sizeof(struct pcpu_entry) / PAGE_SIZE;
+	base = (vaddr_t)&pcpuarea->ent[cpu_index(ci)];
+
+	for (i = 0; i < npages; i++) {
+		pg = uvm_pagealloc(NULL, 0, NULL, UVM_PGA_ZERO);
+		if (pg == NULL) {
+			panic("failed to allocate pcpu PA");
+		}
+
+		va = base + i * PAGE_SIZE;
+		pa = VM_PAGE_TO_PHYS(pg);
+
+		pmap_kenter_pa(va, pa, VM_PROT_READ|VM_PROT_WRITE, 0);
+	}
+
+	pmap_update(pmap_kernel());
+}
+#endif
 
 static void
 cpu_vm_init(struct cpu_info *ci)
@@ -258,7 +273,7 @@ cpu_vm_init(struct cpu_info *ci)
 		default:
 			tcolors /= cai->cai_associativity;
 		}
-		ncolors = max(ncolors, tcolors);
+		ncolors = uimax(ncolors, tcolors);
 		/*
 		 * If the desired number of colors is not a power of
 		 * two, it won't be good.  Find the greatest power of
@@ -286,6 +301,9 @@ cpu_vm_init(struct cpu_info *ci)
 	uvm_page_recolor(ncolors);
 
 	pmap_tlb_cpu_init(ci);
+#ifndef __HAVE_DIRECT_MAP
+	pmap_vpage_cpu_init(ci);
+#endif
 }
 
 static void
@@ -324,13 +342,11 @@ cpu_attach(device_t parent, device_t self, void *aux)
 			return;
 		}
 		aprint_naive(": Application Processor\n");
-		ptr = (uintptr_t)kmem_zalloc(sizeof(*ci) + CACHE_LINE_SIZE - 1,
-		    KM_SLEEP);
+		ptr = (uintptr_t)uvm_km_alloc(kernel_map,
+		    sizeof(*ci) + CACHE_LINE_SIZE - 1, 0,
+		    UVM_KMF_WIRED|UVM_KMF_ZERO);
 		ci = (struct cpu_info *)roundup2(ptr, CACHE_LINE_SIZE);
 		ci->ci_curldt = -1;
-#ifdef TRAPLOG
-		ci->ci_tlog_base = kmem_zalloc(sizeof(struct tlog), KM_SLEEP);
-#endif
 	} else {
 		aprint_naive(": %s Processor\n",
 		    caa->cpu_role == CPU_ROLE_SP ? "Single" : "Boot");
@@ -343,8 +359,8 @@ cpu_attach(device_t parent, device_t self, void *aux)
 			aprint_verbose_dev(self, "running CPU at apic %d"
 			    " instead of at expected %d", lapic_cpu_number(),
 			    cpunum);
-			reg = i82489_readreg(LAPIC_ID);
-			i82489_writereg(LAPIC_ID, (reg & ~LAPIC_ID_MASK) |
+			reg = lapic_readreg(LAPIC_ID);
+			lapic_writereg(LAPIC_ID, (reg & ~LAPIC_ID_MASK) |
 			    (cpunum << LAPIC_ID_SHIFT));
 		}
 		if (cpunum != lapic_cpu_number()) {
@@ -373,10 +389,17 @@ cpu_attach(device_t parent, device_t self, void *aux)
 			    "mi_cpu_attach failed with %d\n", error);
 			return;
 		}
+#ifdef __HAVE_PCPU_AREA
+		cpu_pcpuarea_init(ci);
+#endif
 		cpu_init_tss(ci);
 	} else {
 		KASSERT(ci->ci_data.cpu_idlelwp != NULL);
 	}
+
+#ifdef SVS
+	cpu_svs_init(ci);
+#endif
 
 	pmap_reference(pmap_kernel());
 	ci->ci_pmap = pmap_kernel();
@@ -392,7 +415,9 @@ cpu_attach(device_t parent, device_t self, void *aux)
 		cpu_intr_init(ci);
 		cpu_get_tsc_freq(ci);
 		cpu_init(ci);
+#ifdef i386
 		cpu_set_tss_gates(ci);
+#endif
 		pmap_cpu_init_late(ci);
 #if NLAPIC > 0
 		if (caa->cpu_role != CPU_ROLE_SP) {
@@ -431,7 +456,9 @@ cpu_attach(device_t parent, device_t self, void *aux)
 		 */
 		cpu_intr_init(ci);
 		gdt_alloc_cpu(ci);
+#ifdef i386
 		cpu_set_tss_gates(ci);
+#endif
 		pmap_cpu_init_late(ci);
 		cpu_start_secondary(ci);
 		if (ci->ci_flags & CPUF_PRESENT) {
@@ -498,7 +525,6 @@ cpu_rescan(device_t self, const char *ifattr, const int *locators)
 	cfaa.ci = ci;
 
 	if (ifattr_match(ifattr, "cpufeaturebus")) {
-
 		if (ci->ci_frequency == NULL) {
 			cfaa.name = "frequency";
 			ci->ci_frequency = config_found_ia(self,
@@ -553,6 +579,7 @@ cpu_childdetached(device_t self, device_t child)
 void
 cpu_init(struct cpu_info *ci)
 {
+	extern int x86_fpu_save;
 	uint32_t cr4 = 0;
 
 	lcr0(rcr0() | CR0_WP);
@@ -562,6 +589,9 @@ cpu_init(struct cpu_info *ci)
 	 * hardware supports it.
 	 */
 	if (cpu_feature[0] & CPUID_PGE)
+#ifdef SVS
+		if (!svs_enabled)
+#endif
 		cr4 |= CR4_PGE;	/* enable global TLB caching */
 
 	/*
@@ -585,9 +615,30 @@ cpu_init(struct cpu_info *ci)
 	if (cpu_feature[5] & CPUID_SEF_SMEP)
 		cr4 |= CR4_SMEP;
 
+	/* If SMAP is supported, enable it */
+	if (cpu_feature[5] & CPUID_SEF_SMAP)
+		cr4 |= CR4_SMAP;
+
 	if (cr4) {
 		cr4 |= rcr4();
 		lcr4(cr4);
+	}
+
+	/*
+	 * Changing CR4 register may change cpuid values. For example, setting
+	 * CR4_OSXSAVE sets CPUID2_OSXSAVE. The CPUID2_OSXSAVE is in
+	 * ci_feat_val[1], so update it.
+	 * XXX Other than ci_feat_val[1] might be changed.
+	 */
+	if (cpuid_level >= 1) {
+		u_int descs[4];
+
+		x86_cpuid(1, descs);
+		ci->ci_feat_val[1] = descs[2];
+	}
+
+	if (x86_fpu_save >= FPU_SAVE_FXSAVE) {
+		fpuinit_mxcsr_mask();
 	}
 
 	/* If xsave is enabled, enable all fpu features */
@@ -623,7 +674,7 @@ cpu_init(struct cpu_info *ci)
 #endif /* MTRR */
 
 	if (ci != &cpu_info_primary) {
-		/* Synchronize TSC again, and check for drift. */
+		/* Synchronize TSC */
 		wbinvd();
 		atomic_or_32(&ci->ci_flags, CPUF_RUNNING);
 		tsc_sync_ap(ci);
@@ -703,11 +754,13 @@ cpu_init_idle_lwps(void)
 void
 cpu_start_secondary(struct cpu_info *ci)
 {
-	extern paddr_t mp_pdirpa;
+	paddr_t mp_pdirpa;
 	u_long psl;
 	int i;
 
 	mp_pdirpa = pmap_init_tmp_pgtbl(mp_trampoline_paddr);
+	cpu_copy_trampoline(mp_pdirpa);
+
 	atomic_or_32(&ci->ci_flags, CPUF_AP);
 	ci->ci_curlwp = ci->ci_data.cpu_idlelwp;
 	if (CPU_STARTUP(ci, mp_trampoline_paddr) != 0) {
@@ -721,15 +774,6 @@ cpu_start_secondary(struct cpu_info *ci)
 	KASSERT(cpu_starting == NULL);
 	cpu_starting = ci;
 	for (i = 100000; (!(ci->ci_flags & CPUF_PRESENT)) && i > 0; i--) {
-#ifdef MPDEBUG
-		extern int cpu_trace[3];
-		static int otrace[3];
-		if (memcmp(otrace, cpu_trace, sizeof(otrace)) != 0) {
-			aprint_debug_dev(ci->ci_dev, "trace %02x %02x %02x\n",
-			    cpu_trace[0], cpu_trace[1], cpu_trace[2]);
-			memcpy(otrace, cpu_trace, sizeof(otrace));
-		}
-#endif
 		i8254_delay(10);
 	}
 
@@ -742,8 +786,9 @@ cpu_start_secondary(struct cpu_info *ci)
 	} else {
 		/*
 		 * Synchronize time stamp counters. Invalidate cache and do
-		 * twice to try and minimize possible cache effects. Disable
-		 * interrupts to try and rule out any external interference.
+		 * twice (in tsc_sync_bp) to minimize possible cache effects.
+		 * Disable interrupts to try and rule out any external
+		 * interference.
 		 */
 		psl = x86_read_psl();
 		x86_disable_intr();
@@ -803,26 +848,33 @@ cpu_hatch(void *v)
 
 	cpu_init_msrs(ci, true);
 	cpu_probe(ci);
+	cpu_speculation_init(ci);
 
 	ci->ci_data.cpu_cc_freq = cpu_info_primary.ci_data.cpu_cc_freq;
-	/* cpu_get_tsc_freq(ci); */ 
+	/* cpu_get_tsc_freq(ci); */
 
 	KDASSERT((ci->ci_flags & CPUF_PRESENT) == 0);
 
 	/*
-	 * Synchronize time stamp counters.  Invalidate cache and do twice
-	 * to try and minimize possible cache effects.  Note that interrupts
-	 * are off at this point.
+	 * Synchronize the TSC for the first time. Note that interrupts are
+	 * off at this point.
 	 */
 	wbinvd();
 	atomic_or_32(&ci->ci_flags, CPUF_PRESENT);
 	tsc_sync_ap(ci);
 
 	/*
-	 * Wait to be brought online.  Use 'monitor/mwait' if available,
-	 * in order to make the TSC drift as much as possible. so that
-	 * we can detect it later.  If not available, try 'pause'. 
-	 * We'd like to use 'hlt', but we have interrupts off.
+	 * Wait to be brought online.
+	 *
+	 * Use MONITOR/MWAIT if available. These instructions put the CPU in
+	 * a low consumption mode (C-state), and if the TSC is not invariant,
+	 * this causes the TSC to drift. We want this to happen, so that we
+	 * can later detect (in tsc_tc_init) any abnormal drift with invariant
+	 * TSCs. That's just for safety; by definition such drifts should
+	 * never occur with invariant TSCs.
+	 *
+	 * If not available, try PAUSE. We'd like to use HLT, but we have
+	 * interrupts off.
 	 */
 	while ((ci->ci_flags & CPUF_GO) == 0) {
 		if ((cpu_feature[1] & CPUID2_MONITOR) != 0) {
@@ -832,7 +884,13 @@ cpu_hatch(void *v)
 			}
 			x86_mwait(0, 0);
 		} else {
-			for (i = 10000; i != 0; i--) {
+	/*
+	 * XXX The loop repetition count could be a lot higher, but
+	 * XXX currently qemu emulator takes a _very_long_time_ to
+	 * XXX execute the pause instruction.  So for now, use a low
+	 * XXX value to allow the cpu to hatch before timing out.
+	 */
+			for (i = 50; i != 0; i--) {
 				x86_pause();
 			}
 		}
@@ -872,15 +930,16 @@ cpu_hatch(void *v)
 	lldt(GSYSSEL(GLDT_SEL, SEL_KPL));
 	ltr(ci->ci_tss_sel);
 
+	/*
+	 * cpu_init will re-synchronize the TSC, and will detect any abnormal
+	 * drift that would have been caused by the use of MONITOR/MWAIT
+	 * above.
+	 */
 	cpu_init(ci);
 	cpu_get_tsc_freq(ci);
 
 	s = splhigh();
-#ifdef i386
-	lapic_tpr = 0;
-#else
-	lcr8(0);
-#endif
+	lapic_write_tpri(0);
 	x86_enable_intr();
 	splx(s);
 	x86_errata();
@@ -921,104 +980,44 @@ cpu_debug_dump(void)
 
 #if NLAPIC > 0
 static void
-cpu_copy_trampoline(void)
+cpu_copy_trampoline(paddr_t pdir_pa)
 {
-	/*
-	 * Copy boot code.
-	 */
+	extern uint32_t nox_flag;
 	extern u_char cpu_spinup_trampoline[];
 	extern u_char cpu_spinup_trampoline_end[];
-	
 	vaddr_t mp_trampoline_vaddr;
+	struct {
+		uint32_t large;
+		uint32_t nox;
+		uint32_t pdir;
+	} smp_data;
+	CTASSERT(sizeof(smp_data) == 3 * 4);
 
+	smp_data.large = (pmap_largepages != 0);
+	smp_data.nox = nox_flag;
+	smp_data.pdir = (uint32_t)(pdir_pa & 0xFFFFFFFF);
+
+	/* Enter the physical address */
 	mp_trampoline_vaddr = uvm_km_alloc(kernel_map, PAGE_SIZE, 0,
 	    UVM_KMF_VAONLY);
-
 	pmap_kenter_pa(mp_trampoline_vaddr, mp_trampoline_paddr,
 	    VM_PROT_READ | VM_PROT_WRITE, 0);
 	pmap_update(pmap_kernel());
+
+	/* Copy boot code */
 	memcpy((void *)mp_trampoline_vaddr,
 	    cpu_spinup_trampoline,
 	    cpu_spinup_trampoline_end - cpu_spinup_trampoline);
+
+	/* Copy smp_data at the end */
+	memcpy((void *)(mp_trampoline_vaddr + PAGE_SIZE - sizeof(smp_data)),
+	    &smp_data, sizeof(smp_data));
 
 	pmap_kremove(mp_trampoline_vaddr, PAGE_SIZE);
 	pmap_update(pmap_kernel());
 	uvm_km_free(kernel_map, mp_trampoline_vaddr, PAGE_SIZE, UVM_KMF_VAONLY);
 }
 #endif
-
-#ifdef i386
-static void
-tss_init(struct i386tss *tss, void *stack, void *func)
-{
-	KASSERT(curcpu()->ci_pmap == pmap_kernel());
-
-	memset(tss, 0, sizeof *tss);
-	tss->tss_esp0 = tss->tss_esp = (int)((char *)stack + USPACE - 16);
-	tss->tss_ss0 = GSEL(GDATA_SEL, SEL_KPL);
-	tss->__tss_cs = GSEL(GCODE_SEL, SEL_KPL);
-	tss->tss_fs = GSEL(GCPU_SEL, SEL_KPL);
-	tss->tss_gs = tss->__tss_es = tss->__tss_ds =
-	    tss->__tss_ss = GSEL(GDATA_SEL, SEL_KPL);
-	/* %cr3 contains the value associated to pmap_kernel */
-	tss->tss_cr3 = rcr3();
-	tss->tss_esp = (int)((char *)stack + USPACE - 16);
-	tss->tss_ldt = GSEL(GLDT_SEL, SEL_KPL);
-	tss->__tss_eflags = PSL_MBO | PSL_NT;	/* XXX not needed? */
-	tss->__tss_eip = (int)func;
-}
-
-/* XXX */
-#define IDTVEC(name)	__CONCAT(X, name)
-typedef void (vector)(void);
-extern vector IDTVEC(tss_trap08);
-#if defined(DDB) && defined(MULTIPROCESSOR)
-extern vector Xintrddbipi;
-extern int ddb_vec;
-#endif
-
-static void
-cpu_set_tss_gates(struct cpu_info *ci)
-{
-	struct segment_descriptor sd;
-
-	ci->ci_doubleflt_stack = (char *)uvm_km_alloc(kernel_map, USPACE, 0,
-	    UVM_KMF_WIRED);
-	tss_init(&ci->ci_doubleflt_tss, ci->ci_doubleflt_stack,
-	    IDTVEC(tss_trap08));
-	setsegment(&sd, &ci->ci_doubleflt_tss, sizeof(struct i386tss) - 1,
-	    SDT_SYS386TSS, SEL_KPL, 0, 0);
-	ci->ci_gdt[GTRAPTSS_SEL].sd = sd;
-	setgate(&idt[8], NULL, 0, SDT_SYSTASKGT, SEL_KPL,
-	    GSEL(GTRAPTSS_SEL, SEL_KPL));
-
-#if defined(DDB) && defined(MULTIPROCESSOR)
-	/*
-	 * Set up separate handler for the DDB IPI, so that it doesn't
-	 * stomp on a possibly corrupted stack.
-	 *
-	 * XXX overwriting the gate set in db_machine_init.
-	 * Should rearrange the code so that it's set only once.
-	 */
-	ci->ci_ddbipi_stack = (char *)uvm_km_alloc(kernel_map, USPACE, 0,
-	    UVM_KMF_WIRED);
-	tss_init(&ci->ci_ddbipi_tss, ci->ci_ddbipi_stack, Xintrddbipi);
-
-	setsegment(&sd, &ci->ci_ddbipi_tss, sizeof(struct i386tss) - 1,
-	    SDT_SYS386TSS, SEL_KPL, 0, 0);
-	ci->ci_gdt[GIPITSS_SEL].sd = sd;
-
-	setgate(&idt[ddb_vec], NULL, 0, SDT_SYSTASKGT, SEL_KPL,
-	    GSEL(GIPITSS_SEL, SEL_KPL));
-#endif
-}
-#else
-static void
-cpu_set_tss_gates(struct cpu_info *ci)
-{
-
-}
-#endif	/* i386 */
 
 #ifdef MULTIPROCESSOR
 int
@@ -1107,7 +1106,7 @@ mp_cpu_start_cleanup(struct cpu_info *ci)
 
 #ifdef __x86_64__
 typedef void (vector)(void);
-extern vector Xsyscall, Xsyscall32;
+extern vector Xsyscall, Xsyscall32, Xsyscall_svs;
 #endif
 
 void
@@ -1119,7 +1118,12 @@ cpu_init_msrs(struct cpu_info *ci, bool full)
 	    ((uint64_t)LSEL(LSYSRETBASE_SEL, SEL_UPL) << 48));
 	wrmsr(MSR_LSTAR, (uint64_t)Xsyscall);
 	wrmsr(MSR_CSTAR, (uint64_t)Xsyscall32);
-	wrmsr(MSR_SFMASK, PSL_NT|PSL_T|PSL_I|PSL_C);
+	wrmsr(MSR_SFMASK, PSL_NT|PSL_T|PSL_I|PSL_C|PSL_D|PSL_AC);
+
+#ifdef SVS
+	if (svs_enabled)
+		wrmsr(MSR_LSTAR, (uint64_t)Xsyscall_svs);
+#endif
 
 	if (full) {
 		wrmsr(MSR_FSBASE, 0);
@@ -1281,6 +1285,12 @@ x86_cpu_idle_halt(void)
 void
 cpu_load_pmap(struct pmap *pmap, struct pmap *oldpmap)
 {
+#ifdef SVS
+	if (svs_enabled) {
+		svs_pdir_switch(pmap);
+	}
+#endif
+
 #ifdef PAE
 	struct cpu_info *ci = curcpu();
 	bool interrupts_enabled;
@@ -1299,13 +1309,13 @@ cpu_load_pmap(struct pmap *pmap, struct pmap *oldpmap)
 	for (i = 0 ; i < PDP_SIZE; i++) {
 		l3_pd[i] = pmap->pm_pdirpa[i] | PG_V;
 	}
-	
+
 	if (interrupts_enabled)
 		x86_enable_intr();
 	tlbflush();
-#else /* PAE */
+#else
 	lcr3(pmap_pdirpa(pmap, 0));
-#endif /* PAE */
+#endif
 }
 
 /*

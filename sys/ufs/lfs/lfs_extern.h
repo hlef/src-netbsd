@@ -1,4 +1,4 @@
-/*	$NetBSD: lfs_extern.h,v 1.111 2016/06/20 03:29:52 dholland Exp $	*/
+/*	$NetBSD: lfs_extern.h,v 1.114 2018/08/22 01:05:24 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001, 2002, 2003 The NetBSD Foundation, Inc.
@@ -83,7 +83,6 @@ MALLOC_DECLARE(M_SEGMENT);
 #define LFS_DO_RFW	 7
 #define LFS_DEBUGLOG	 8
 #define LFS_IGNORE_LAZY_SYNC	9
-#define LFS_MAXID	 10
 
 /* not ours */
 struct fid;
@@ -109,7 +108,7 @@ __BEGIN_DECLS
 
 #if defined(_KERNEL)
 
-extern int lfs_allclean_wakeup;
+extern kcondvar_t lfs_allclean_wakeup;
 extern struct pool lfs_inode_pool;		/* memory pool for inodes */
 extern struct pool lfs_dinode_pool;		/* memory pool for dinodes */
 extern struct pool lfs_inoext_pool;	/* memory pool for inode extension */
@@ -149,6 +148,8 @@ void lfs_freebuf(struct lfs *, struct buf *);
 struct buf *lfs_newbuf(struct lfs *, struct vnode *, daddr_t, size_t, int);
 void lfs_countlocked(int *, long *, const char *);
 int lfs_reserve(struct lfs *, struct vnode *, struct vnode *, int);
+int lfs_max_bufs(void);
+int lfs_wait_bufs(void);
 
 /* lfs_debug.c */
 #ifdef DEBUG

@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32.h,v 1.109 2015/11/26 13:15:34 martin Exp $	*/
+/*	$NetBSD: netbsd32.h,v 1.119 2018/08/11 03:41:06 mrg Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001, 2008, 2015 Matthew R. Green
@@ -49,6 +49,8 @@
 #include <compat/sys/ucontext.h>
 #include <compat/sys/mount.h>
 #include <compat/sys/signal.h>
+#include <compat/sys/siginfo.h>
+#include <compat/common/compat_util.h>
 
 #include <nfs/rpcv2.h>
 
@@ -187,6 +189,7 @@ typedef int32_t netbsd32_timer_t;
 typedef	int32_t netbsd32_time50_t;
 typedef	netbsd32_int64 netbsd32_time_t;
 typedef netbsd32_pointer_t netbsd32_timerp_t;
+typedef netbsd32_pointer_t netbsd32_clockidp_t;
 
 typedef netbsd32_pointer_t netbsd32_timespec50p_t;
 struct netbsd32_timespec50 {
@@ -209,7 +212,7 @@ struct netbsd32_timeval50 {
 typedef netbsd32_pointer_t netbsd32_timevalp_t;
 struct netbsd32_timeval {
 	netbsd32_time_t	tv_sec;		/* seconds */
-	netbsd32_long	tv_usec;	/* and microseconds */
+	suseconds_t	tv_usec;	/* and microseconds */
 };
 
 typedef netbsd32_pointer_t netbsd32_timezonep_t;
@@ -275,11 +278,28 @@ struct netbsd32_export_args30 {
 	int	ex_addrlen;		/* and the net address length */
 	netbsd32_pointer_t ex_mask;	/* mask of valid bits in saddr */
 	int	ex_masklen;		/* and the smask length */
-	netbsd32_charp ex_indexfile;	/* index file for WebNFS URLs */ 
+	netbsd32_charp ex_indexfile;	/* index file for WebNFS URLs */
 };
 
 /* from <sys/poll.h> */
 typedef netbsd32_pointer_t netbsd32_pollfdp_t;
+
+/* from <sys/ptrace.h> */
+typedef netbsd32_pointer_t netbsd32_ptrace_io_descp_t;
+struct netbsd32_ptrace_io_desc {
+	int	piod_op;		/* I/O operation */
+	netbsd32_voidp piod_offs;	/* child offset */
+	netbsd32_voidp piod_addr;	/* parent offset */
+	netbsd32_size_t piod_len;	/* request length (in) /
+					   actual count (out) */
+};
+
+struct netbsd32_ptrace_siginfo {
+	siginfo32_t	psi_siginfo;	/* signal information structure */
+	lwpid_t		psi_lwpid;	/* destination LWP of the signal
+					 * value 0 means the whole process
+					 * (route signal to all LWPs) */
+};
 
 /* from <sys/quotactl.h> */
 typedef netbsd32_pointer_t netbsd32_quotactlargsp_t;
@@ -381,6 +401,12 @@ struct	netbsd32_rusage {
 	netbsd32_long	ru_nsignals;	/* signals received */
 	netbsd32_long	ru_nvcsw;	/* voluntary context switches */
 	netbsd32_long	ru_nivcsw;	/* involuntary " */
+};
+
+typedef netbsd32_pointer_t netbsd32_wrusagep_t;
+struct netbsd32_wrusage {
+	struct netbsd32_rusage	wru_self;
+	struct netbsd32_rusage	wru_children;
 };
 
 typedef netbsd32_pointer_t netbsd32_orlimitp_t;
@@ -689,6 +715,12 @@ struct netbsd32_omsghdr {
 	int		 msg_accrightslen;
 };
 
+typedef netbsd32_pointer_t netbsd32_mmsghdrp_t;
+struct netbsd32_mmsghdr {
+	struct netbsd32_msghdr msg_hdr;
+	unsigned int msg_len;
+};
+
 /* from <sys/stat.h> */
 typedef netbsd32_pointer_t netbsd32_stat12p_t;
 struct netbsd32_stat12 {		/* NetBSD-1.2 stat struct */
@@ -933,7 +965,7 @@ struct netbsd32_tmpfs_args {
 /* from <fs/cd9660/cd9660_mount.h> */
 struct netbsd32_iso_args {
 	netbsd32_charp fspec;
-	struct export_args30 _pad1;
+	struct netbsd32_export_args30 _pad1;
 	int	flags;
 };
 
@@ -989,8 +1021,6 @@ struct netbsd32_mountd_exports_list {
 	netbsd32_export_argsp	mel_exports;
 };
 
-/* no struct export_args30 yet */
-
 /* from <nfs/nfsmount,h> */
 struct netbsd32_nfs_args {
 	int32_t		version;	/* args structure version number */
@@ -1026,6 +1056,17 @@ struct netbsd32_msdosfs_args {
 	int	version;	/* version of the struct */
 	mode_t  dirmask;	/* v2: mask to be applied for msdosfs perms */
 	int	gmtoff;		/* v3: offset from UTC in seconds */
+};
+
+/* from <miscfs/genfs/layer.h> */
+struct netbsd32_layer_args {
+	netbsd32_charp target;		/* Target of loopback  */
+	struct netbsd32_export_args30 _pad1; /* compat with old userland tools */
+};
+
+/* from <miscfs/nullfs/null.h> */
+struct netbsd32_null_args {
+	struct	netbsd32_layer_args	la;	/* generic layerfs args */
 };
 
 struct netbsd32_posix_spawn_file_actions_entry {
@@ -1097,14 +1138,20 @@ int	coredump_netbsd32(struct lwp *, struct coredump_iostate *);
 /*
  * random other stuff
  */
-#include <compat/common/compat_util.h>
-#include <compat/sys/siginfo.h>
 
 vaddr_t netbsd32_vm_default_addr(struct proc *, vaddr_t, vsize_t, int);
 void netbsd32_adjust_limits(struct proc *);
 
 void	netbsd32_si_to_si32(siginfo32_t *, const siginfo_t *);
+void	netbsd32_si32_to_si(siginfo_t *, const siginfo32_t *);
+
 void	netbsd32_ksi32_to_ksi(struct _ksiginfo *si, const struct __ksiginfo32 *si32);
+
+#ifdef KTRACE
+void netbsd32_ktrpsig(int, sig_t, const sigset_t *, const ksiginfo_t *);
+#else
+#define netbsd32_ktrpsig NULL
+#endif
 
 
 void	startlwp32(void *);

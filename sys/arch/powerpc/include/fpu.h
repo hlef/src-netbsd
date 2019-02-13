@@ -1,4 +1,4 @@
-/*	$NetBSD: fpu.h,v 1.20 2013/08/22 19:50:54 drochner Exp $	*/
+/*	$NetBSD: fpu.h,v 1.22 2018/04/19 21:50:07 christos Exp $	*/
 
 /*-
  * Copyright (C) 1996 Wolfgang Solfrank.
@@ -91,22 +91,22 @@ extern const pcu_ops_t fpu_ops;
 
 struct fpreg;
 
-static inline void
+static __inline void
 fpu_load(void)
 {
 	pcu_load(&fpu_ops);
 }
 
-static inline void
-fpu_save(void)
+static __inline void
+fpu_save(lwp_t *l)
 {
-	pcu_save(&fpu_ops);
+	pcu_save(&fpu_ops, l);
 }
 
-static inline void
-fpu_discard(void)
+static __inline void
+fpu_discard(lwp_t *l)
 {
-	pcu_discard(&fpu_ops, false);
+	pcu_discard(&fpu_ops, l, false);
 }
 
 void	fpu_load_from_fpreg(const struct fpreg *);

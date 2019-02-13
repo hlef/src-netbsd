@@ -1,10 +1,10 @@
-# $NetBSD: Makefile.inc,v 1.16 2014/08/10 23:25:49 matt Exp $
+# $NetBSD: Makefile.inc,v 1.18 2018/08/03 03:35:17 kamil Exp $
 
 .include <bsd.own.mk>
 
 COMMON_DIR:=${.PARSEDIR}
-COMMON_CODEDIRS=atomic gen gmon inet md net stdlib string sys
-COMMON_CODEDIRS+=hash/sha1 hash/sha2 hash/rmd160 hash/murmurhash
+COMMON_CODEDIRS=atomic gen gmon inet md misc net stdlib string sys
+COMMON_CODEDIRS+=hash/sha1 hash/sha2 hash/sha3 hash/rmd160 hash/murmurhash
 
 .if defined(COMMON_MACHINE_ARCH) && !empty(COMMON_MACHINE_ARCH) && \
     exists(${COMMON_DIR}/arch/${COMMON_MACHINE_ARCH})

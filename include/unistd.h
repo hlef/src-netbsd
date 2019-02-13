@@ -1,4 +1,4 @@
-/*	$NetBSD: unistd.h,v 1.147 2016/06/30 15:29:20 dholland Exp $	*/
+/*	$NetBSD: unistd.h,v 1.150 2018/08/15 10:21:42 martin Exp $	*/
 
 /*-
  * Copyright (c) 1998, 1999, 2008 The NetBSD Foundation, Inc.
@@ -213,7 +213,10 @@ int	 fsync(int);
 #if (_POSIX_C_SOURCE - 0) >= 199506L || (_XOPEN_SOURCE - 0) >= 500 || \
     defined(_REENTRANT) || defined(_NETBSD_SOURCE)
 int	 ttyname_r(int, char *, size_t);
+#ifndef __PTHREAD_ATFORK_DECLARED
+#define __PTHREAD_ATFORK_DECLARED
 int	 pthread_atfork(void (*)(void), void (*)(void), void (*)(void));
+#endif
 #endif
 
 /*
@@ -352,7 +355,6 @@ char	*getpassfd(const char *, char *, size_t, int *, int, int);
 
 char	*getpass_r(const char *, char *, size_t);
 int	 getpeereid(int, uid_t *, gid_t *);
-int	 getsubopt(char **, char * const *, char **);
 __aconst char *getusershell(void);
 int	 initgroups(const char *, gid_t);
 int	 iruserok(uint32_t, int, const char *, const char *);

@@ -1,4 +1,4 @@
-/*	$NetBSD: param.h,v 1.19 2013/10/26 18:07:52 matt Exp $	*/
+/*	$NetBSD: param.h,v 1.21 2018/10/18 09:01:52 skrll Exp $	*/
 
 /*
  * Copyright (c) 1994,1995 Mark Brinicombe.
@@ -145,6 +145,8 @@
 # endif /* __ARMEB__ */
 #endif /* !_KERNEL */
 
+#define MAXCPUS		8
+
 #define	MID_MACHINE	MID_ARM6
 
 /* ARM-specific macro to align a stack pointer (downwards). */
@@ -180,7 +182,7 @@
 #define	MCLBYTES	(1 << MCLSHIFT)	/* size of a m_buf cluster */
 
 #ifndef NMBCLUSTERS_MAX
-#define	NMBCLUSTERS_MAX	(0x2000000 / MCLBYTES)	/* Limit to 64MB for clusters */
+#define	NMBCLUSTERS_MAX	(0x4000000 / MCLBYTES)	/* Limit to 64MB for clusters */
 #endif
 
 /*

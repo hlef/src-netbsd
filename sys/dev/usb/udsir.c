@@ -1,4 +1,4 @@
-/*	$NetBSD: udsir.c,v 1.3 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: udsir.c,v 1.7 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: udsir.c,v 1.3 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: udsir.c,v 1.7 2018/09/03 16:29:34 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -344,7 +344,7 @@ udsir_open(void *h, int flag, int mode, struct lwp *l)
 		goto bad2;
 	}
 	error = usbd_create_xfer(sc->sc_rd_pipe, sc->sc_rd_maxpsz,
-	    USBD_SHORT_XFER_OK, 0, &sc->sc_rd_xfer);
+	    0, 0, &sc->sc_rd_xfer);
 	if (error)
 		 goto bad3;
 
@@ -357,11 +357,6 @@ udsir_open(void *h, int flag, int mode, struct lwp *l)
 	sc->sc_wr_buf = usbd_get_buffer(sc->sc_wr_xfer);
 
 	sc->sc_ur_buf = kmem_alloc(IRDA_MAX_FRAME_SIZE, KM_SLEEP);
-	if (sc->sc_ur_buf == NULL) {
-		error = ENOMEM;
-		goto bad5;
-	}
-
 	sc->sc_rd_index = sc->sc_rd_count = 0;
 	sc->sc_closing = 0;
 	sc->sc_rd_readinprogress = 0;
@@ -372,7 +367,7 @@ udsir_open(void *h, int flag, int mode, struct lwp *l)
 	sc->sc_direction = udir_idle;
 	sc->sc_params.speed = 0;
 	sc->sc_params.ebofs = 0;
-	sc->sc_params.maxsize = min(sc->sc_rd_maxpsz, sc->sc_wr_maxpsz);
+	sc->sc_params.maxsize = uimin(sc->sc_rd_maxpsz, sc->sc_wr_maxpsz);
 
 	deframe_init(&sc->sc_framestate, sc->sc_ur_buf, IRDA_MAX_FRAME_SIZE);
 
@@ -667,10 +662,19 @@ udsir_poll(void *h, int events, struct lwp *l)
 	return revents;
 }
 
-static const struct filterops udsirread_filtops =
-	{ 1, NULL, filt_udsirrdetach, filt_udsirread };
-static const struct filterops udsirwrite_filtops =
-	{ 1, NULL, filt_udsirwdetach, filt_udsirwrite };
+static const struct filterops udsirread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_udsirrdetach,
+	.f_event = filt_udsirread,
+};
+
+static const struct filterops udsirwrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_udsirwdetach,
+	.f_event = filt_udsirwrite,
+};
 
 static int
 udsir_kqfilter(void *h, struct knote *kn)
@@ -716,7 +720,7 @@ udsir_set_params(void *h, struct irda_params *p)
 		return EINVAL;
 
 	if (p->maxsize != sc->sc_params.maxsize) {
-		if (p->maxsize > min(sc->sc_rd_maxpsz, sc->sc_wr_maxpsz))
+		if (p->maxsize > uimin(sc->sc_rd_maxpsz, sc->sc_wr_maxpsz))
 			return EINVAL;
 		sc->sc_params.maxsize = p->maxsize;
 	}

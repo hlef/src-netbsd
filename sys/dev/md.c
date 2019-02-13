@@ -1,4 +1,4 @@
-/*	$NetBSD: md.c,v 1.78 2016/07/27 05:14:40 pgoyette Exp $	*/
+/*	$NetBSD: md.c,v 1.80 2018/03/03 19:26:12 christos Exp $	*/
 
 /*
  * Copyright (c) 1995 Gordon W. Ross, Leo Weppelman.
@@ -40,7 +40,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: md.c,v 1.78 2016/07/27 05:14:40 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: md.c,v 1.80 2018/03/03 19:26:12 christos Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_md.h"
@@ -135,7 +135,6 @@ static struct dkdriver mddkdriver = {
 	.d_strategy = mdstrategy
 };
 
-extern struct cfdriver md_cd;
 CFATTACH_DECL3_NEW(md, sizeof(struct md_softc),
 	0, md_attach, md_detach, NULL, NULL, NULL, DVF_DETACH_SHUTDOWN);
 
@@ -634,8 +633,16 @@ md_ioctl_server(struct md_softc *sc, struct md_conf *umd,
 	/* Sanity check addr, size. */
 	end = (vaddr_t) ((char *)umd->md_addr + umd->md_size);
 
-	if ((end >= VM_MAXUSER_ADDRESS) ||
-		(end < ((vaddr_t) umd->md_addr)) )
+	if (
+#ifndef _RUMPKERNEL
+	    /*
+	     * On some architectures (e.g. powerpc) rump kernel provides
+	     * "safe" low defaults which make this test fail since malloc
+	     * does return higher addresses than the "safe" default.
+	     */
+	    (end >= VM_MAXUSER_ADDRESS) ||
+#endif
+	    (end < ((vaddr_t) umd->md_addr)))
 		return EINVAL;
 
 	/* This unit is now configured. */

@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_ksyms.c,v 1.84 2016/07/07 06:55:43 msaitoh Exp $	*/
+/*	$NetBSD: kern_ksyms.c,v 1.87 2017/11/04 22:17:55 christos Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -73,7 +73,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_ksyms.c,v 1.84 2016/07/07 06:55:43 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_ksyms.c,v 1.87 2017/11/04 22:17:55 christos Exp $");
 
 #if defined(_KERNEL) && defined(_KERNEL_OPT)
 #include "opt_copy_symtab.h"
@@ -336,8 +336,9 @@ addsymtab(const char *name, void *symstart, size_t symsize,
 	nglob = 0;
 	for (i = n = 0; i < nsyms; i++) {
 
-		/* This breaks CTF mapping, so don't do it when
-		 * DTrace is enabled
+		/*
+		 * This breaks CTF mapping, so don't do it when
+		 * DTrace is enabled.
 		 */
 #ifndef KDTRACE_HOOKS
 		/*
@@ -373,7 +374,12 @@ addsymtab(const char *name, void *symstart, size_t symsize,
 		}
 #endif
 
-		nsym[n].st_shndx = SHBSS;
+		if (sym[i].st_shndx != SHN_ABS) {
+			nsym[n].st_shndx = SHBSS;
+		} else {
+			/* SHN_ABS is a magic value, don't overwrite it */
+		}
+
 		j = strlen(nsym[n].st_name + str) + 1;
 		if (j > ksyms_maxlen)
 			ksyms_maxlen = j;
@@ -396,6 +402,7 @@ addsymtab(const char *name, void *symstart, size_t symsize,
 	tab->sd_symstart = nsym;
 	tab->sd_symsize = n * sizeof(Elf_Sym);
 	tab->sd_nglob = nglob;
+
 	addsymtab_strstart = str;
 	if (kheapsort(nsym, n, sizeof(Elf_Sym), addsymtab_compar, &ts) != 0)
 		panic("addsymtab");
@@ -559,16 +566,15 @@ ksyms_addsyms_explicit(void *ehdr, void *symstart, size_t symsize,
  * Call with ksyms_lock, unless known that the symbol table can't change.
  */
 int
-ksyms_getval_unlocked(const char *mod, const char *sym, unsigned long *val,
-    int type)
+ksyms_getval_unlocked(const char *mod, const char *sym, Elf_Sym **symp,
+    unsigned long *val, int type)
 {
 	struct ksyms_symtab *st;
 	Elf_Sym *es;
 
 #ifdef KSYMS_DEBUG
 	if (ksyms_debug & FOLLOW_CALLS)
-		printf("ksyms_getval_unlocked: mod %s sym %s valp %p\n",
-		    mod, sym, val);
+		printf("%s: mod %s sym %s valp %p\n", __func__, mod, sym, val);
 #endif
 
 	TAILQ_FOREACH(st, &ksyms_symtabs, sd_queue) {
@@ -578,6 +584,8 @@ ksyms_getval_unlocked(const char *mod, const char *sym, unsigned long *val,
 			continue;
 		if ((es = findsym(sym, st, type)) != NULL) {
 			*val = es->st_value;
+			if (symp)
+				*symp = es;
 			return 0;
 		}
 	}
@@ -593,7 +601,7 @@ ksyms_getval(const char *mod, const char *sym, unsigned long *val, int type)
 		return ENOENT;
 
 	mutex_enter(&ksyms_lock);
-	rc = ksyms_getval_unlocked(mod, sym, val, type);
+	rc = ksyms_getval_unlocked(mod, sym, NULL, val, type);
 	mutex_exit(&ksyms_lock);
 	return rc;
 }
@@ -731,11 +739,14 @@ ksyms_modload(const char *name, void *symstart, vsize_t symsize,
     char *strstart, vsize_t strsize)
 {
 	struct ksyms_symtab *st;
+	void *nmap;
 
 	st = kmem_zalloc(sizeof(*st), KM_SLEEP);
+	nmap = kmem_zalloc(symsize / sizeof(Elf_Sym) * sizeof (uint32_t),
+			   KM_SLEEP);
 	mutex_enter(&ksyms_lock);
 	addsymtab(name, symstart, symsize, strstart, strsize, st, symstart,
-	    NULL, 0, NULL);
+	    NULL, 0, nmap);
 	mutex_exit(&ksyms_lock);
 }
 
@@ -757,6 +768,8 @@ ksyms_modunload(const char *name)
 		if (!ksyms_isopen) {
 			TAILQ_REMOVE(&ksyms_symtabs, st, sd_queue);
 			ksyms_sizes_calc();
+			kmem_free(st->sd_nmap,
+				  st->sd_nmapsize * sizeof(uint32_t));
 			kmem_free(st, sizeof(*st));
 		}
 		break;
@@ -984,6 +997,8 @@ ksymsclose(dev_t dev, int oflags, int devtype, struct lwp *l)
 		next = TAILQ_NEXT(st, sd_queue);
 		if (st->sd_gone) {
 			TAILQ_REMOVE(&ksyms_symtabs, st, sd_queue);
+			kmem_free(st->sd_nmap,
+				  st->sd_nmapsize * sizeof(uint32_t));
 			kmem_free(st, sizeof(*st));
 			resize = true;
 		}

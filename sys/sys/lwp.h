@@ -1,6 +1,6 @@
-/*	$NetBSD: lwp.h,v 1.172 2016/07/03 14:24:59 christos Exp $	*/
+/*	$NetBSD: lwp.h,v 1.179 2018/04/19 21:19:07 christos Exp $	*/
 
-/*-
+/*
  * Copyright (c) 2001, 2006, 2007, 2008, 2009, 2010
  *    The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -51,7 +51,7 @@
 #if defined(_KERNEL)
 struct lwp;
 /* forward declare this for <machine/cpu.h> so it can get l_cpu. */
-static inline struct cpu_info *lwp_getcpu(struct lwp *);
+static __inline struct cpu_info *lwp_getcpu(struct lwp *);
 #include <machine/cpu.h>		/* curcpu() and cpu_info */
 #endif
 
@@ -69,7 +69,7 @@ static inline struct cpu_info *lwp_getcpu(struct lwp *);
  * (:	unlocked, stable
  * !:	unlocked, may only be reliably accessed by the LWP itself
  *
- * Fields are clustered together by usage (to increase the likelyhood
+ * Fields are clustered together by usage (to increase the likelihood
  * of cache hits) and by size (to reduce dead space in the structure).
  */
 
@@ -231,6 +231,7 @@ extern int		maxlwp __read_mostly;	/* max number of lwps */
 /* These flags are kept in l_flag. */
 #define	LW_IDLE		0x00000001 /* Idle lwp. */
 #define	LW_LWPCTL	0x00000002 /* Adjust lwpctl in userret */
+#define	LW_CVLOCKDEBUG	0x00000004 /* Waker does lockdebug */
 #define	LW_SINTR	0x00000080 /* Sleep is interruptible. */
 #define	LW_SYSTEM	0x00000200 /* Kernel thread */
 #define	LW_WSUSPEND	0x00020000 /* Suspend before return to user */
@@ -255,6 +256,7 @@ extern int		maxlwp __read_mostly;	/* max number of lwps */
 #define	LP_SYSCTLWRITE	0x00000080 /* sysctl write lock held */
 #define	LP_MUSTJOIN	0x00000100 /* Must join kthread on exit */
 #define	LP_VFORKWAIT	0x00000200 /* Waiting at vfork() for a child */
+#define	LP_SINGLESTEP	0x00000400 /* Single step thread in ptrace(2) */
 #define	LP_TIMEINTR	0x00010000 /* Time this soft interrupt */
 #define	LP_RUNNING	0x20000000 /* Active on a CPU */
 #define	LP_BOUND	0x80000000 /* Bound to a CPU */
@@ -289,7 +291,7 @@ extern int		maxlwp __read_mostly;	/* max number of lwps */
 #define	LSSUSPENDED	8	/* Not running, not signalable. */
 
 #if defined(_KERNEL) || defined(_KMEMUSER)
-static inline void *
+static __inline void *
 lwp_getpcb(struct lwp *l)
 {
 
@@ -340,7 +342,8 @@ void	lwp_need_userret(lwp_t *);
 void	lwp_free(lwp_t *, bool, bool);
 uint64_t lwp_pctr(void);
 int	lwp_setprivate(lwp_t *, void *);
-int	do_lwp_create(lwp_t *, void *, u_long, lwpid_t *);
+int	do_lwp_create(lwp_t *, void *, u_long, lwpid_t *, const sigset_t *,
+    const stack_t *);
 
 void	lwpinit_specificdata(void);
 int	lwp_specific_key_create(specificdata_key_t *, specificdata_dtor_t);
@@ -363,7 +366,7 @@ void	lwp_whatis(uintptr_t, void (*)(const char *, ...) __printflike(1, 2));
 /*
  * Lock an LWP. XXX _MODULE
  */
-static inline void
+static __inline void
 lwp_lock(lwp_t *l)
 {
 	kmutex_t *old = l->l_mutex;
@@ -383,13 +386,13 @@ lwp_lock(lwp_t *l)
 /*
  * Unlock an LWP. XXX _MODULE
  */
-static inline void
+static __inline void
 lwp_unlock(lwp_t *l)
 {
 	mutex_spin_exit(l->l_mutex);
 }
 
-static inline void
+static __inline void
 lwp_changepri(lwp_t *l, pri_t pri)
 {
 	KASSERT(mutex_owned(l->l_mutex));
@@ -401,7 +404,7 @@ lwp_changepri(lwp_t *l, pri_t pri)
 	KASSERT(l->l_priority == pri);
 }
 
-static inline void
+static __inline void
 lwp_lendpri(lwp_t *l, pri_t pri)
 {
 	KASSERT(mutex_owned(l->l_mutex));
@@ -410,7 +413,7 @@ lwp_lendpri(lwp_t *l, pri_t pri)
 	KASSERT(l->l_inheritedprio == pri);
 }
 
-static inline pri_t
+static __inline pri_t
 lwp_eprio(lwp_t *l)
 {
 	pri_t pri;
@@ -421,27 +424,27 @@ lwp_eprio(lwp_t *l)
 	return MAX(l->l_auxprio, pri);
 }
 
-int lwp_create(lwp_t *, struct proc *, vaddr_t, int,
-    void *, size_t, void (*)(void *), void *, lwp_t **, int);
+int lwp_create(lwp_t *, struct proc *, vaddr_t, int, void *, size_t,
+    void (*)(void *), void *, lwp_t **, int, const sigset_t *, const stack_t *);
 
 /*
  * XXX _MODULE
  * We should provide real stubs for the below that modules can use.
  */
 
-static inline void
+static __inline void
 spc_lock(struct cpu_info *ci)
 {
 	mutex_spin_enter(ci->ci_schedstate.spc_mutex);
 }
 
-static inline void
+static __inline void
 spc_unlock(struct cpu_info *ci)
 {
 	mutex_spin_exit(ci->ci_schedstate.spc_mutex);
 }
 
-static inline void
+static __inline void
 spc_dlock(struct cpu_info *ci1, struct cpu_info *ci2)
 {
 	struct schedstate_percpu *spc1 = &ci1->ci_schedstate;
@@ -474,13 +477,13 @@ extern struct lwp	*curlwp;		/* Current running LWP */
  * This provide a way for <machine/cpu.h> to get l_cpu for curlwp before
  * struct lwp is defined.
  */
-static inline struct cpu_info *
+static __inline struct cpu_info *
 lwp_getcpu(struct lwp *l)
 {
 	return l->l_cpu;
 }
 
-static inline bool
+static __inline bool
 CURCPU_IDLE_P(void)
 {
 	struct cpu_info *ci = curcpu();
@@ -493,7 +496,7 @@ CURCPU_IDLE_P(void)
  * compiled as a module should use kpreempt_disable() and
  * kpreempt_enable().
  */
-static inline void
+static __inline void
 KPREEMPT_DISABLE(lwp_t *l)
 {
 
@@ -502,7 +505,7 @@ KPREEMPT_DISABLE(lwp_t *l)
 	__insn_barrier();
 }
 
-static inline void
+static __inline void
 KPREEMPT_ENABLE(lwp_t *l)
 {
 
@@ -522,24 +525,28 @@ KPREEMPT_ENABLE(lwp_t *l)
 #define	DOPREEMPT_COUNTED	0x02
 
 /*
- * Prevent curlwp from migrating between CPUs beteen curlwp_bind and
+ * Prevent curlwp from migrating between CPUs between curlwp_bind and
  * curlwp_bindx. One use case is psref(9) that has a contract that
  * forbids migrations.
  */
-static inline int
+static __inline int
 curlwp_bind(void)
 {
 	int bound;
 
 	bound = curlwp->l_pflag & LP_BOUND;
 	curlwp->l_pflag |= LP_BOUND;
+	__insn_barrier();
 
 	return bound;
 }
 
-static inline void
+static __inline void
 curlwp_bindx(int bound)
 {
+
+	KASSERT(curlwp->l_pflag & LP_BOUND);
+	__insn_barrier();
 	curlwp->l_pflag ^= bound ^ LP_BOUND;
 }
 

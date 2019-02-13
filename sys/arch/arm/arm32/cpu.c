@@ -1,4 +1,4 @@
-/*	$NetBSD: cpu.c,v 1.114 2016/07/11 14:35:00 kiyohara Exp $	*/
+/*	$NetBSD: cpu.c,v 1.123 2018/10/18 09:01:52 skrll Exp $	*/
 
 /*
  * Copyright (c) 1995 Mark Brinicombe.
@@ -42,18 +42,19 @@
  */
 
 #include "opt_armfpe.h"
+#include "opt_cputypes.h"
 #include "opt_multiprocessor.h"
 
+#include <sys/cdefs.h>
+__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.123 2018/10/18 09:01:52 skrll Exp $");
+
 #include <sys/param.h>
-
-__KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.114 2016/07/11 14:35:00 kiyohara Exp $");
-
-#include <sys/systm.h>
 #include <sys/conf.h>
 #include <sys/cpu.h>
 #include <sys/device.h>
 #include <sys/kmem.h>
 #include <sys/proc.h>
+#include <sys/systm.h>
 
 #include <uvm/uvm_extern.h>
 
@@ -63,7 +64,9 @@ __KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.114 2016/07/11 14:35:00 kiyohara Exp $");
 extern const char *cpu_arch;
 
 #ifdef MULTIPROCESSOR
-volatile u_int arm_cpu_hatched = 0;
+uint64_t cpu_mpidr[MAXCPUS];
+
+volatile u_int arm_cpu_hatched __cacheline_aligned = 0;
 volatile uint32_t arm_cpu_mbox __cacheline_aligned = 0;
 uint32_t arm_cpu_marker[2] __cacheline_aligned = { 0, 0 };
 u_int arm_cpu_max = 1;
@@ -77,7 +80,7 @@ void identify_features(device_t);
 /*
  * Identify the master (boot) CPU
  */
-  
+
 void
 cpu_attach(device_t dv, cpuid_t id)
 {
@@ -86,6 +89,9 @@ cpu_attach(device_t dv, cpuid_t id)
 
 	if (id == 0) {
 		ci = curcpu();
+
+		/* Read SCTLR from cpu */
+		ci->ci_ctrl = cpu_control(0, 0);
 
 		/* Get the CPU ID from coprocessor 15 */
 
@@ -96,7 +102,6 @@ cpu_attach(device_t dv, cpuid_t id)
 #ifdef MULTIPROCESSOR
 		KASSERT(cpu_info[id] == NULL);
 		ci = kmem_zalloc(sizeof(*ci), KM_SLEEP);
-		KASSERT(ci != NULL);
 		ci->ci_cpl = IPL_HIGH;
 		ci->ci_cpuid = id;
 		uint32_t mpidr = armreg_mpidr_read();
@@ -113,10 +118,9 @@ cpu_attach(device_t dv, cpuid_t id)
 		ci->ci_arm_cpuid = cpu_info_store.ci_arm_cpuid;
 		ci->ci_arm_cputype = cpu_info_store.ci_arm_cputype;
 		ci->ci_arm_cpurev = cpu_info_store.ci_arm_cpurev;
-		ci->ci_ctrl = cpu_info_store.ci_ctrl;
 		ci->ci_undefsave[2] = cpu_info_store.ci_undefsave[2];
 		cpu_info[ci->ci_cpuid] = ci;
-		if ((arm_cpu_hatched & (1 << id)) == 0) {
+		if ((arm_cpu_hatched & __BIT(id)) == 0) {
 			ci->ci_dev = dv;
 			dv->dv_private = ci;
 			aprint_naive(": disabled\n");
@@ -324,7 +328,7 @@ static const char * const pxa2x0_steppings[16] = {
 };
 
 /* Steppings for PXA255/26x.
- * rev 5: PXA26x B0, rev 6: PXA255 A0  
+ * rev 5: PXA26x B0, rev 6: PXA255 A0
  */
 static const char * const pxa255_steppings[16] = {
 	"rev 0",	"rev 1",	"rev 2",	"step A-0",
@@ -515,6 +519,8 @@ const struct cpuidtab cpuids[] = {
 	  pN_steppings, "7A" },
 	{ CPU_ID_CORTEXA17R1,	CPU_CLASS_CORTEX,	"Cortex-A17 r1",
 	  pN_steppings, "7A" },
+	{ CPU_ID_CORTEXA35R0,	CPU_CLASS_CORTEX,	"Cortex-A35 r0",
+	  pN_steppings, "8A" },
 	{ CPU_ID_CORTEXA53R0,	CPU_CLASS_CORTEX,	"Cortex-A53 r0",
 	  pN_steppings, "8A" },
 	{ CPU_ID_CORTEXA57R0,	CPU_CLASS_CORTEX,	"Cortex-A57 r0",
@@ -612,7 +618,7 @@ print_cache_info(device_t dv, struct arm_cache_info *info, u_int level)
 		    info->icache_type & CACHE_TYPE_PIxx ? 'P' : 'V',
 		    info->icache_type & CACHE_TYPE_xxPT ? 'P' : 'V');
 		aprint_normal_dev(dv, "%dKB/%dB %d-way %s L%u %cI%cT Data cache\n",
-		    info->dcache_size / 1024, 
+		    info->dcache_size / 1024,
 		    info->dcache_line_size, info->dcache_ways,
 		    wtnames[info->cache_type], level + 1,
 		    info->dcache_type & CACHE_TYPE_PIxx ? 'P' : 'V',
@@ -738,15 +744,6 @@ identify_arm_cpu(device_t dv, struct cpu_info *ci)
 
 
 	switch (cpu_class) {
-#ifdef CPU_ARM2
-	case CPU_CLASS_ARM2:
-#endif
-#ifdef CPU_ARM250
-	case CPU_CLASS_ARM2AS:
-#endif
-#ifdef CPU_ARM3
-	case CPU_CLASS_ARM3:
-#endif
 #ifdef CPU_ARM6
 	case CPU_CLASS_ARM6:
 #endif
@@ -755,7 +752,7 @@ identify_arm_cpu(device_t dv, struct cpu_info *ci)
 #endif
 #ifdef CPU_ARM7TDMI
 	case CPU_CLASS_ARM7TDMI:
-#endif		
+#endif
 #ifdef CPU_ARM8
 	case CPU_CLASS_ARM8:
 #endif

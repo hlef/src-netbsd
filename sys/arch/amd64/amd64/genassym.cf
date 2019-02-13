@@ -1,4 +1,4 @@
-#	$NetBSD: genassym.cf,v 1.60 2015/11/20 11:58:00 maxv Exp $
+#	$NetBSD: genassym.cf,v 1.70 2018/08/12 15:31:01 maxv Exp $
 
 #
 # Copyright (c) 1998, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -143,8 +143,6 @@ define	L3_SLOT_KERNBASE	pl3_pi(KERNBASE)
 define	L2_SLOT_KERNBASE	pl2_pi(KERNBASE)
 define	L1_SLOT_KERNBASE	pl1_pi(KERNBASE)
 
-define	PDIR_SLOT_PTE		PDIR_SLOT_PTE
-
 define	PDE_SIZE		sizeof(pd_entry_t)
 
 define	VM_MAXUSER_ADDRESS	(unsigned long long)VM_MAXUSER_ADDRESS
@@ -223,6 +221,8 @@ define	TF_REGSIZE		offsetof(struct trapframe, tf_trapno)
 # Total size includes registers pushed by hardware
 define	FRAMESIZE		sizeof(struct trapframe)
 
+define	TSS_RSP0		offsetof(struct cpu_tss, tss.tss_rsp0)
+
 define	CPU_INFO_SCRATCH	offsetof(struct cpu_info, ci_scratch)
 define	CPU_INFO_SELF		offsetof(struct cpu_info, ci_self)
 define	CPU_INFO_RESCHED	offsetof(struct cpu_info, ci_want_resched)
@@ -233,7 +233,14 @@ define	CPU_INFO_CURLWP		offsetof(struct cpu_info, ci_curlwp)
 define	CPU_INFO_CURLDT		offsetof(struct cpu_info, ci_curldt)
 define	CPU_INFO_IDLELWP	offsetof(struct cpu_info, ci_data.cpu_idlelwp)
 define	CPU_INFO_PMAP		offsetof(struct cpu_info, ci_pmap)
-define	CPU_INFO_RSP0		offsetof(struct cpu_info, ci_tss.tss_rsp0)
+define	CPU_INFO_TSS		offsetof(struct cpu_info, ci_tss)
+ifdef SVS
+define	CPU_INFO_UPDIRPA	offsetof(struct cpu_info, ci_svs_updirpa)
+define	CPU_INFO_KPDIRPA	offsetof(struct cpu_info, ci_svs_kpdirpa)
+define	CPU_INFO_RSP0		offsetof(struct cpu_info, ci_svs_rsp0)
+define	CPU_INFO_URSP0		offsetof(struct cpu_info, ci_svs_ursp0)
+define	CPU_INFO_KRSP0		offsetof(struct cpu_info, ci_svs_krsp0)
+endif
 define	CPU_INFO_NSYSCALL	offsetof(struct cpu_info, ci_data.cpu_nsyscall)
 define	CPU_INFO_NTRAP		offsetof(struct cpu_info, ci_data.cpu_ntrap)
 define	CPU_INFO_NINTR		offsetof(struct cpu_info, ci_data.cpu_nintr)
@@ -278,11 +285,7 @@ endif
 define	IH_FUN			offsetof(struct intrhand, ih_fun)
 define	IH_ARG			offsetof(struct intrhand, ih_arg)
 define  IH_LEVEL		offsetof(struct intrhand, ih_level)
-ifdef XEN
-define IH_IPL_NEXT		offsetof(struct intrhand, ih_ipl_next)
-else
 define	IH_NEXT			offsetof(struct intrhand, ih_next)
-endif
 
 ifdef COMPAT_NETBSD32
 define	SC_FS32			offsetof(struct netbsd32_sigcontext, sc_fs)
@@ -299,13 +302,6 @@ define  LINUX32_SYS_sigreturn		LINUX32_SYS_sigreturn
 define  LINUX32_SYS_exit		LINUX32_SYS_exit
 endif
 
-ifdef XEN
-define	SIZEOF_IPLSOURCE	sizeof(struct iplsource)
-define	IS_RECURSE      offsetof(struct iplsource, ipl_recurse)
-define	IS_RESUME       offsetof(struct iplsource, ipl_resume)
-define	IS_HANDLERS     offsetof(struct iplsource, ipl_handlers)
-define	EV_EVCNTL	offsetof(struct evcnt, ev_count)
-else
 define	IS_RECURSE	offsetof(struct intrsource, is_recurse)
 define	IS_RESUME	offsetof(struct intrsource, is_resume)
 define	IS_EVCNT	offsetof(struct intrsource, is_evcnt.ev_count)
@@ -316,7 +312,6 @@ define	IS_PIN		offsetof(struct intrsource, is_pin)
 define	IS_TYPE		offsetof(struct intrsource, is_type)
 define	IS_MAXLEVEL	offsetof(struct intrsource, is_maxlevel)
 define	IS_LWP			offsetof(struct intrsource, is_lwp)
-endif
 
 define	IPL_NONE		IPL_NONE
 define	IPL_PREEMPT		IPL_PREEMPT
@@ -370,7 +365,7 @@ define	NKL2_KIMG_ENTRIES	NKL2_KIMG_ENTRIES
 define	PGOFSET			PGOFSET
 define	PGSHIFT			PGSHIFT
 
-define	VM_MIN_KERNEL_ADDRESS_HIGH32	(VM_MIN_KERNEL_ADDRESS >> 32)
+define	VM_SPACE_SEP_HIGH32	(0xFFFF800000000000 >> 32)
 
 define	RESCHED_KPREEMPT	RESCHED_KPREEMPT
 

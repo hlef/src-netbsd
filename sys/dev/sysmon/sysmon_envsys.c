@@ -1,4 +1,4 @@
-/*	$NetBSD: sysmon_envsys.c,v 1.139 2015/12/14 01:08:47 pgoyette Exp $	*/
+/*	$NetBSD: sysmon_envsys.c,v 1.143 2018/05/26 21:15:46 thorpej Exp $	*/
 
 /*-
  * Copyright (c) 2007, 2008 Juan Romero Pardines.
@@ -64,7 +64,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sysmon_envsys.c,v 1.139 2015/12/14 01:08:47 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sysmon_envsys.c,v 1.143 2018/05/26 21:15:46 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/types.h>
@@ -525,6 +525,8 @@ sysmon_envsys_create(void)
 {
 	struct sysmon_envsys *sme;
 
+	CTASSERT(SME_CALLOUT_INVALID == 0);
+
 	sme = kmem_zalloc(sizeof(*sme), KM_SLEEP);
 	TAILQ_INIT(&sme->sme_sensors_list);
 	LIST_INIT(&sme->sme_events_list);
@@ -576,7 +578,7 @@ sysmon_envsys_sensor_attach(struct sysmon_envsys *sme, envsys_data_t *edata)
 	 * Find the correct units for this sensor.
 	 */
 	sdt_units = sme_find_table_entry(SME_DESC_UNITS, edata->units);
-	if (sdt_units->type == -1)
+	if (sdt_units == NULL || sdt_units->type == -1)
 		return EINVAL;
 
 	/*
@@ -650,9 +652,12 @@ sysmon_envsys_sensor_detach(struct sysmon_envsys *sme, envsys_data_t *edata)
 	/*
 	 * remove it, unhook from rnd(4), and decrement the sensors count.
 	 */
+	if (oedata->flags & ENVSYS_FHAS_ENTROPY)
+		rnd_detach_source(&oedata->rnd_src);
 	sme_event_unregister_sensor(sme, edata);
 	if (LIST_EMPTY(&sme->sme_events_list)) {
-		sme_events_halt_callout(sme);
+		if (sme->sme_callout_state == SME_CALLOUT_READY)
+			sme_events_halt_callout(sme);
 		destroy = true;
 	}
 	TAILQ_REMOVE(&sme->sme_sensors_list, edata, sensors_head);
@@ -970,6 +975,7 @@ sysmon_envsys_unregister(struct sysmon_envsys *sme)
 {
 	prop_array_t array;
 	struct sysmon_envsys *osme;
+	envsys_data_t *edata;
 
 	KASSERT(sme != NULL);
 
@@ -986,6 +992,10 @@ sysmon_envsys_unregister(struct sysmon_envsys *sme)
 	}
 	LIST_REMOVE(sme, sme_list);
 	mutex_exit(&sme_global_mtx);
+
+	TAILQ_FOREACH(edata, &sme->sme_sensors_list, sensors_head) {
+		sysmon_envsys_sensor_detach(sme, edata);
+	}
 
 	/*
 	 * Unregister all events associated with device.
@@ -1262,15 +1272,23 @@ sme_remove_userprops(void)
 			}
 
 			/*
-			 * Finally, remove any old limits event, then
-			 * install a new event (which will update the
-			 * dictionary)
+			 * If the sensor is providing entropy data,
+			 * get rid of the rndsrc;  we'll provide a new
+			 * one shortly.
+			 */
+			if (edata->flags & ENVSYS_FHAS_ENTROPY)
+				rnd_detach_source(&edata->rnd_src);
+
+			/*
+			 * Remove the old limits event, if any
 			 */
 			sme_event_unregister(sme, edata->desc,
 			    PENVSYS_EVENT_LIMITS);
 
 			/*
-			 * Find the correct units for this sensor.
+			 * Create and install a new event (which will
+			 * update the dictionary) with the correct
+			 * units.
 			 */
 			sdt_units = sme_find_table_entry(SME_DESC_UNITS,
 			    edata->units);
@@ -1283,6 +1301,11 @@ sme_remove_userprops(void)
 				    &lims, props, PENVSYS_EVENT_LIMITS,
 				    sdt_units->crittype);
 			}
+
+			/* Finally, if the sensor provides entropy,
+			 * create an additional event entry and attach
+			 * the rndsrc
+			 */
 			if (edata->flags & ENVSYS_FHAS_ENTROPY) {
 				sme_event_register(sdict, edata, sme,
 				    &lims, props, PENVSYS_EVENT_NULL,
@@ -1301,8 +1324,17 @@ sme_remove_userprops(void)
 		 * Restore default timeout value.
 		 */
 		sme->sme_events_timeout = SME_EVENTS_DEFTIMEOUT;
+
+		/*
+		 * Note that we need to hold the sme_mtx while calling
+		 * sme_schedule_callout().  Thus to avoid dropping,
+		 * reacquiring, and dropping it again, we just tell
+		 * sme_envsys_release() that the mutex is already owned.
+		 */
+		mutex_enter(&sme->sme_mtx);
 		sme_schedule_callout(sme);
-		sysmon_envsys_release(sme, false);
+		sysmon_envsys_release(sme, true);
+		mutex_exit(&sme->sme_mtx);
 	}
 	mutex_exit(&sme_global_mtx);
 }
@@ -1343,7 +1375,9 @@ sme_add_property_dictionary(struct sysmon_envsys *sme, prop_array_t array,
 	 */
 	if (sme->sme_events_timeout == 0) {
 		sme->sme_events_timeout = SME_EVENTS_DEFTIMEOUT;
+		mutex_enter(&sme->sme_mtx);
 		sme_schedule_callout(sme);
+		mutex_exit(&sme->sme_mtx);
 	}
 
 	if (!prop_dictionary_set_uint64(pdict, "refresh-timeout",
@@ -1672,6 +1706,8 @@ sme_update_sensor_dictionary(prop_object_t dict, envsys_data_t *edata,
 	 * update sensor's type.
 	 */
 	sdt = sme_find_table_entry(SME_DESC_UNITS, edata->units);
+	if (sdt == NULL)
+		return EINVAL;
 
 	DPRINTFOBJ(("%s: sensor #%d units=%d (%s)\n", __func__, edata->sensor,
 	    sdt->type, sdt->desc));
@@ -1750,6 +1786,8 @@ sme_update_sensor_dictionary(prop_object_t dict, envsys_data_t *edata,
 	if (edata->units == ENVSYS_DRIVE) {
 		sdt = sme_find_table_entry(SME_DESC_DRIVE_STATES,
 					   edata->value_cur);
+		if (sdt == NULL)
+			return EINVAL;
 		error = sme_sensor_upstring(dict, "drive-state", sdt->desc);
 		if (error)
 			return error;
@@ -1762,6 +1800,8 @@ sme_update_sensor_dictionary(prop_object_t dict, envsys_data_t *edata,
 	if (edata->units == ENVSYS_BATTERY_CAPACITY) {
 		sdt = sme_find_table_entry(SME_DESC_BATTERY_CAPACITY,
 		    edata->value_cur);
+		if (sdt == NULL)
+			return EINVAL;
 		error = sme_sensor_upstring(dict, "battery-capacity",
 					    sdt->desc);
 		if (error)
@@ -1817,7 +1857,7 @@ sme_userset_dictionary(struct sysmon_envsys *sme, prop_dictionary_t udict,
 					sme_schedule_callout(sme);
 				}
 				mutex_exit(&sme->sme_mtx);
-		}
+			}
 		}
 		return error;
 

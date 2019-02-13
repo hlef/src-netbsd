@@ -1,4 +1,4 @@
-/*	$NetBSD: if_cue.c,v 1.73 2016/06/10 13:27:15 ozaki-r Exp $	*/
+/*	$NetBSD: if_cue.c,v 1.80 2018/08/02 06:09:04 riastradh Exp $	*/
 /*
  * Copyright (c) 1997, 1998, 1999, 2000
  *	Bill Paul <wpaul@ee.columbia.edu>.  All rights reserved.
@@ -56,10 +56,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_cue.c,v 1.73 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_cue.c,v 1.80 2018/08/02 06:09:04 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
+#include "opt_usb.h"
 #endif
 
 #include <sys/param.h>
@@ -541,7 +542,7 @@ cue_attach(device_t parent, device_t self, void *aux)
 	ifp->if_ioctl = cue_ioctl;
 	ifp->if_start = cue_start;
 	ifp->if_watchdog = cue_watchdog;
-	strncpy(ifp->if_xname, device_xname(sc->cue_dev), IFNAMSIZ);
+	strlcpy(ifp->if_xname, device_xname(sc->cue_dev), IFNAMSIZ);
 
 	IFQ_SET_READY(&ifp->if_snd);
 
@@ -570,13 +571,18 @@ cue_detach(device_t self, int flags)
 
 	DPRINTFN(2,("%s: %s: enter\n", device_xname(sc->cue_dev), __func__));
 
-	callout_stop(&sc->cue_stat_ch);
 	/*
-	 * Remove any pending task.  It cannot be executing because it run
-	 * in the same thread as detach.
+	 * XXX Halting callout guarantees no more tick tasks.  What
+	 * guarantees no more stop tasks?  What guarantees no more
+	 * calls to cue_send?  Don't we need to wait for if_detach or
+	 * something?  Should we set sc->cue_dying here?  Is device
+	 * deactivation guaranteed to have already happened?
 	 */
-	usb_rem_task(sc->cue_udev, &sc->cue_tick_task);
-	usb_rem_task(sc->cue_udev, &sc->cue_stop_task);
+	callout_halt(&sc->cue_stat_ch, NULL);
+	usb_rem_task_wait(sc->cue_udev, &sc->cue_tick_task, USB_TASKQ_DRIVER,
+	    NULL);
+	usb_rem_task_wait(sc->cue_udev, &sc->cue_stop_task, USB_TASKQ_DRIVER,
+	    NULL);
 
 	if (!sc->cue_attached) {
 		/* Detached before attached finished, so just bail out. */
@@ -678,7 +684,7 @@ cue_rx_list_init(struct cue_softc *sc)
 			return ENOBUFS;
 		if (c->cue_xfer == NULL) {
 			int error = usbd_create_xfer(sc->cue_ep[CUE_ENDPT_RX],
-			    CUE_BUFSZ, USBD_SHORT_XFER_OK, 0, &c->cue_xfer);
+			    CUE_BUFSZ, 0, 0, &c->cue_xfer);
 			if (error)
 				return error;
 			c->cue_buf = usbd_get_buffer(c->cue_xfer);
@@ -767,7 +773,6 @@ cue_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		goto done;
 	}
 
-	ifp->if_ipackets++;
 	m_adj(m, sizeof(uint16_t));
 	m->m_pkthdr.len = m->m_len = total_len;
 
@@ -780,14 +785,6 @@ cue_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		ifp->if_ierrors++;
 		goto done1;
 	}
-
-	/*
-	 * Handle BPF listeners. Let the BPF user see the packet, but
-	 * don't pass it up to the ether_input() layer unless it's
-	 * a broadcast packet, multicast packet, matches our ethernet
-	 * address or the interface is in promiscuous mode.
-	 */
-	bpf_mtap(ifp, m);
 
 	DPRINTFN(10,("%s: %s: deliver %d\n", device_xname(sc->cue_dev),
 		    __func__, m->m_len));
@@ -967,7 +964,7 @@ cue_start(struct ifnet *ifp)
 	 * If there's a BPF listener, bounce a copy of this frame
 	 * to him.
 	 */
-	bpf_mtap(ifp, m_head);
+	bpf_mtap(ifp, m_head, BPF_D_OUT);
 
 	ifp->if_flags |= IFF_OACTIVE;
 

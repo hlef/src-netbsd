@@ -1,4 +1,4 @@
-/*	$NetBSD: lm75.c,v 1.29 2016/01/11 18:23:11 jdc Exp $	*/
+/*	$NetBSD: lm75.c,v 1.33 2018/06/26 06:03:57 thorpej Exp $	*/
 
 /*
  * Copyright (c) 2003 Wasabi Systems, Inc.
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: lm75.c,v 1.29 2016/01/11 18:23:11 jdc Exp $");
+__KERNEL_RCSID(0, "$NetBSD: lm75.c,v 1.33 2018/06/26 06:03:57 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -48,6 +48,14 @@ __KERNEL_RCSID(0, "$NetBSD: lm75.c,v 1.29 2016/01/11 18:23:11 jdc Exp $");
 
 #include <dev/i2c/i2cvar.h>
 #include <dev/i2c/lm75reg.h>
+
+#ifdef macppc
+#define HAVE_OF 1
+#endif
+
+#ifdef HAVE_OF
+#include <dev/ofw/openfirm.h>
+#endif
 
 struct lmtemp_softc {
 	device_t sc_dev;
@@ -93,13 +101,14 @@ static void	lmtemp_setlim_lm77(struct sysmon_envsys *, envsys_data_t *,
 static void	lmtemp_setup_sysctl(struct lmtemp_softc *);
 static int	sysctl_lm75_temp(SYSCTLFN_ARGS);
 
-static const char * lmtemp_compats[] = {
-	"i2c-lm75",
+static const struct device_compatible_entry compat_data[] = {
+	{ "i2c-lm75",			0 },
+	{ "ds1775",			0 },
 	/*
 	 * see XXX in _attach() below: add code once non-lm75 matches are
 	 * added here!
 	 */
-	NULL
+	{ NULL,				0 }
 };
 
 enum {
@@ -137,35 +146,23 @@ static int
 lmtemp_match(device_t parent, cfdata_t cf, void *aux)
 {
 	struct i2c_attach_args *ia = aux;
-	int i;
+	int i, match_result;
 
-	if (ia->ia_name == NULL) {
-		/*
-		 * Indirect config - not much we can do!
-		 */
-		for (i = 0; lmtemptbl[i].lmtemp_type != -1 ; i++)
-			if (lmtemptbl[i].lmtemp_type == cf->cf_flags)
-				break;
-		if (lmtemptbl[i].lmtemp_type == -1)
-			return 0;
+	if (iic_use_direct_match(ia, cf, compat_data, &match_result))
+		return match_result;
 
-		if ((ia->ia_addr & lmtemptbl[i].lmtemp_addrmask) ==
-		    lmtemptbl[i].lmtemp_addr)
-			return 1;
-	} else {
-		/*
-		 * Direct config - match via the list of compatible
-		 * hardware or simply match the device name.
-		 */
-		if (ia->ia_ncompat > 0) {
-			if (iic_compat_match(ia, lmtemp_compats))
-				return 1;
-		} else {
-			if (strcmp(ia->ia_name, "lmtemp") == 0)
-				return 1;
-		}
-	}
+	/*
+	 * Indirect config - not much we can do!
+	 */
+	for (i = 0; lmtemptbl[i].lmtemp_type != -1 ; i++)
+		if (lmtemptbl[i].lmtemp_type == cf->cf_flags)
+			break;
+	if (lmtemptbl[i].lmtemp_type == -1)
+		return 0;
 
+	if ((ia->ia_addr & lmtemptbl[i].lmtemp_addrmask) ==
+	    lmtemptbl[i].lmtemp_addr)
+		return I2C_MATCH_ADDRESS_ONLY;
 
 	return 0;
 }
@@ -175,6 +172,7 @@ lmtemp_attach(device_t parent, device_t self, void *aux)
 {
 	struct lmtemp_softc *sc = device_private(self);
 	struct i2c_attach_args *ia = aux;
+	char name[64];
 	int i;
 
 	sc->sc_dev = self;
@@ -184,8 +182,12 @@ lmtemp_attach(device_t parent, device_t self, void *aux)
 			    device_cfdata(self)->cf_flags)
 				break;
 	} else {
-		/* XXX - add code when adding other direct matches! */
-		i = 0;
+		if (strcmp(ia->ia_name, "ds1775") == 0) {
+			i = 1;	/* LMTYPE_DS75 */
+		} else {
+			/* XXX - add code when adding other direct matches! */
+			i = 0;
+		}
 	}
 
 	sc->sc_tag = ia->ia_tag;
@@ -254,8 +256,18 @@ lmtemp_attach(device_t parent, device_t self, void *aux)
 	sc->sc_sensor.units =  ENVSYS_STEMP;
 	sc->sc_sensor.state =  ENVSYS_SINVALID;
 	sc->sc_sensor.flags =  ENVSYS_FMONLIMITS;
-	(void)strlcpy(sc->sc_sensor.desc,
+
+	(void)strlcpy(name,
 	    ia->ia_name? ia->ia_name : device_xname(self),
+	    sizeof(sc->sc_sensor.desc));
+#ifdef HAVE_OF
+	int ch;
+	ch = OF_child(ia->ia_cookie);
+	if (ch != 0) {
+		OF_getprop(ch, "location", name, 64);
+	}
+#endif
+	(void)strlcpy(sc->sc_sensor.desc, name,
 	    sizeof(sc->sc_sensor.desc));
 	if (sysmon_envsys_sensor_attach(sc->sc_sme, &sc->sc_sensor)) {
 		sysmon_envsys_destroy(sc->sc_sme);

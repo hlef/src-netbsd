@@ -1,4 +1,4 @@
-/*	$NetBSD: vm_machdep.c,v 1.70 2015/03/29 09:47:48 matt Exp $	*/
+/*	$NetBSD: vm_machdep.c,v 1.75 2018/07/12 12:48:50 jakllsch Exp $	*/
 
 /*
  * Copyright (c) 1994-1998 Mark Brinicombe.
@@ -44,11 +44,10 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: vm_machdep.c,v 1.70 2015/03/29 09:47:48 matt Exp $");
+__KERNEL_RCSID(0, "$NetBSD: vm_machdep.c,v 1.75 2018/07/12 12:48:50 jakllsch Exp $");
 
 #include "opt_armfpe.h"
 #include "opt_pmap_debug.h"
-#include "opt_perfctrs.h"
 #include "opt_cputypes.h"
 
 #include <sys/param.h>
@@ -58,7 +57,6 @@ __KERNEL_RCSID(0, "$NetBSD: vm_machdep.c,v 1.70 2015/03/29 09:47:48 matt Exp $")
 #include <sys/vnode.h>
 #include <sys/cpu.h>
 #include <sys/buf.h>
-#include <sys/pmc.h>
 #include <sys/exec.h>
 #include <sys/syslog.h>
 
@@ -84,15 +82,6 @@ void lwp_trampoline(void);
 void
 cpu_proc_fork(struct proc *p1, struct proc *p2)
 {
-
-#if defined(PERFCTRS)
-	if (PMC_ENABLED(p1))
-		pmc_md_fork(p1, p2);
-	else {
-		p2->p_md.pmc_enabled = 0;
-		p2->p_md.pmc_state = NULL;
-	}
-#endif
 	/*
 	 * Copy machine arch string (it's small so just memcpy it).
 	 */
@@ -245,8 +234,8 @@ vmapbuf(struct buf *bp, vsize_t len)
 	 */
 	while (len) {
 		(void) pmap_extract(pm, faddr, &fpa);
-		pmap_kenter_pa(taddr, fpa, VM_PROT_READ|VM_PROT_WRITE,
-		    PMAP_WIRED);
+		pmap_enter(pmap_kernel(), taddr, fpa, VM_PROT_READ|VM_PROT_WRITE,
+		    VM_PROT_READ|VM_PROT_WRITE|PMAP_WIRED);
 		faddr += PAGE_SIZE;
 		taddr += PAGE_SIZE;
 		len -= PAGE_SIZE;
@@ -281,11 +270,99 @@ vunmapbuf(struct buf *bp, vsize_t len)
 	off = (vaddr_t)bp->b_data - addr;
 	len = round_page(off + len);
 
-	pmap_kremove(addr, len);
+	pmap_remove(pmap_kernel(), addr, addr + len);
 	pmap_update(pmap_kernel());
 	uvm_km_free(phys_map, addr, len, UVM_KMF_VAONLY);
 	bp->b_data = bp->b_saveaddr;
 	bp->b_saveaddr = 0;
+}
+
+void
+ktext_write(void *to, const void *from, size_t size)
+{
+	struct pmap *pmap = pmap_kernel();
+	pd_entry_t *pde, oldpde, tmppde;
+	pt_entry_t *pte, oldpte, tmppte;
+	vaddr_t pgva;
+	size_t limit, savesize;
+	const char *src;
+	char *dst;
+
+	/* XXX: gcc */
+	oldpte = 0;
+
+	if ((savesize = size) == 0)
+		return;
+
+	dst = (char *) to;
+	src = (const char *) from;
+
+	do {
+		/* Get the PDE of the current VA. */
+		if (pmap_get_pde_pte(pmap, (vaddr_t) dst, &pde, &pte) == false)
+			goto no_mapping;
+		switch ((oldpde = *pde) & L1_TYPE_MASK) {
+		case L1_TYPE_S:
+			pgva = (vaddr_t)dst & L1_S_FRAME;
+			limit = L1_S_SIZE - ((vaddr_t)dst & L1_S_OFFSET);
+
+			tmppde = l1pte_set_writable(oldpde);
+			*pde = tmppde;
+			PTE_SYNC(pde);
+			break;
+
+		case L1_TYPE_C:
+			pgva = (vaddr_t)dst & L2_S_FRAME;
+			limit = L2_S_SIZE - ((vaddr_t)dst & L2_S_OFFSET);
+
+			if (pte == NULL)
+				goto no_mapping;
+			oldpte = *pte;
+			tmppte = l2pte_set_writable(oldpte);
+			*pte = tmppte;
+			PTE_SYNC(pte);
+			break;
+
+		default:
+		no_mapping:
+			printf(" address 0x%08lx not a valid page\n",
+			    (vaddr_t) dst);
+			return;
+		}
+		cpu_tlb_flushD_SE(pgva);
+		cpu_cpwait();
+
+		if (limit > size)
+			limit = size;
+		size -= limit;
+
+		/*
+		 * Page is now writable.  Do as much access as we
+		 * can in this page.
+		 */
+		for (; limit > 0; limit--)
+			*dst++ = *src++;
+
+		/*
+		 * Restore old mapping permissions.
+		 */
+		switch (oldpde & L1_TYPE_MASK) {
+		case L1_TYPE_S:
+			*pde = oldpde;
+			PTE_SYNC(pde);
+			break;
+
+		case L1_TYPE_C:
+			*pte = oldpte;
+			PTE_SYNC(pte);
+			break;
+		}
+		cpu_tlb_flushD_SE(pgva);
+		cpu_cpwait();
+	} while (size != 0);
+
+	/* Sync the I-cache. */
+	cpu_icache_sync_range((vaddr_t)to, savesize);
 }
 
 /* End of vm_machdep.c */

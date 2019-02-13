@@ -1,4 +1,4 @@
-/* $NetBSD: kern_auth.c,v 1.75 2015/10/06 22:13:39 christos Exp $ */
+/* $NetBSD: kern_auth.c,v 1.77 2018/09/03 16:29:35 riastradh Exp $ */
 
 /*-
  * Copyright (c) 2005, 2006 Elad Efrat <elad@NetBSD.org>
@@ -28,7 +28,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_auth.c,v 1.75 2015/10/06 22:13:39 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_auth.c,v 1.77 2018/09/03 16:29:35 riastradh Exp $");
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -609,7 +609,7 @@ kauth_uucred_to_cred(kauth_cred_t cred, const struct uucred *uuc)
 	cred->cr_gid = uuc->cr_gid;
 	cred->cr_egid = uuc->cr_gid;
 	cred->cr_svgid = uuc->cr_gid;
-	cred->cr_ngroups = min(uuc->cr_ngroups, NGROUPS);
+	cred->cr_ngroups = uimin(uuc->cr_ngroups, NGROUPS);
 	kauth_cred_setgroups(cred, __UNCONST(uuc->cr_groups),
 	    cred->cr_ngroups, -1, UIO_SYSSPACE);
 }
@@ -627,7 +627,7 @@ kauth_cred_to_uucred(struct uucred *uuc, const kauth_cred_t cred)
 	KASSERT(uuc != NULL);
 	int ng;
 
-	ng = min(cred->cr_ngroups, NGROUPS);
+	ng = uimin(cred->cr_ngroups, NGROUPS);
 	uuc->cr_uid = cred->cr_euid;  
 	uuc->cr_gid = cred->cr_egid;  
 	uuc->cr_ngroups = ng;
@@ -681,7 +681,7 @@ kauth_cred_toucred(kauth_cred_t cred, struct ki_ucred *uc)
 	uc->cr_ref = cred->cr_refcnt;
 	uc->cr_uid = cred->cr_euid;
 	uc->cr_gid = cred->cr_egid;
-	uc->cr_ngroups = min(cred->cr_ngroups, __arraycount(uc->cr_groups));
+	uc->cr_ngroups = uimin(cred->cr_ngroups, __arraycount(uc->cr_groups));
 	memcpy(uc->cr_groups, cred->cr_groups,
 	       uc->cr_ngroups * sizeof(uc->cr_groups[0]));
 }
@@ -754,15 +754,8 @@ kauth_register_scope(const char *id, kauth_scope_callback_t callback,
 
 	/* Allocate space for a new scope and listener. */
 	scope = kmem_alloc(sizeof(*scope), KM_SLEEP);
-	if (scope == NULL)
-		return NULL;
-	if (callback != NULL) {
+	if (callback != NULL)
 		listener = kmem_alloc(sizeof(*listener), KM_SLEEP);
-		if (listener == NULL) {
-			kmem_free(scope, sizeof(*scope));
-			return (NULL);
-		}
-	}
 
 	/*
 	 * Acquire scope list lock.
@@ -887,9 +880,6 @@ kauth_listen_scope(const char *id, kauth_scope_callback_t callback,
 	kauth_listener_t listener;
 
 	listener = kmem_alloc(sizeof(*listener), KM_SLEEP);
-	if (listener == NULL)
-		return (NULL);
-
 	rw_enter(&kauth_lock, RW_WRITER);
 
 	/*

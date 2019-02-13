@@ -1,4 +1,4 @@
-/*	$NetBSD: if_de.c,v 1.147 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_de.c,v 1.155 2018/09/03 16:29:32 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1994-1997 Matt Thomas (matt@3am-software.com)
@@ -37,7 +37,7 @@
  *   board which support 21040, 21041, or 21140 (mostly).
  */
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_de.c,v 1.147 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_de.c,v 1.155 2018/09/03 16:29:32 riastradh Exp $");
 
 #define	TULIP_HDR_DATA
 
@@ -74,14 +74,12 @@ __KERNEL_RCSID(0, "$NetBSD: if_de.c,v 1.147 2016/06/10 13:27:14 ozaki-r Exp $");
 #include <net/if_dl.h>
 #include <net/route.h>
 #include <net/netisr.h>
+#include <net/bpf.h>
 
 #if defined(__bsdi__) && _BSDI_VERSION >= 199701
 #include <dev/mii/mii.h>
 #include <dev/mii/miivar.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -1148,7 +1146,7 @@ tulip_21041_media_poll(
     }
 
     /*
-     * If we've been been asked to start a poll or link change interrupt
+     * If we've been asked to start a poll or link change interrupt
      * restart the probe (and reset the tulip to a known state).
      */
     if (event == TULIP_MEDIAPOLL_START) {
@@ -3641,12 +3639,6 @@ tulip_rx_intr(
 #endif /* TULIP_BUS_DMA */
 
 	    eh = *mtod(ms, struct ether_header *);
-	    if (sc->tulip_bpf != NULL) {
-		if (me == ms)
-		    bpf_tap(ifp, mtod(ms, void *), total_len);
-		else
-		    bpf_mtap(ifp, ms);
-	    }
 	    sc->tulip_flags |= TULIP_RXACT;
 	    if ((sc->tulip_flags & (TULIP_PROMISC|TULIP_HASHONLY))
 		    && (eh.ether_dhost[0] & 1) == 0
@@ -3704,7 +3696,6 @@ tulip_rx_intr(
 #if defined(TULIP_DEBUG)
 	cnt++;
 #endif
-	ifp->if_ipackets++;
 	if (++eop == ri->ri_last)
 	    eop = ri->ri_first;
 	ri->ri_nextin = eop;
@@ -3897,8 +3888,6 @@ tulip_tx_intr(
 		    TULIP_TXMAP_POSTSYNC(sc, map);
 		    tulip_free_txmap(sc, map);
 #endif /* TULIP_BUS_DMA */
-		    if (sc->tulip_bpf != NULL)
-			bpf_mtap(&sc->tulip_if, m);
 		    m_freem(m);
 #if defined(TULIP_DEBUG)
 		} else {
@@ -4111,7 +4100,7 @@ tulip_intr_handler(
 	if (sc->tulip_flags & (TULIP_WANTTXSTART|TULIP_TXPROBE_ACTIVE|TULIP_DOINGSETUP|TULIP_PROMISC)) {
 	    tulip_tx_intr(sc);
 	    if ((sc->tulip_flags & TULIP_TXPROBE_ACTIVE) == 0)
-		tulip_ifstart(&sc->tulip_if);
+		if_schedule_deferred_start(&sc->tulip_if);
 	}
     }
     if (sc->tulip_flags & TULIP_NEEDRESET) {
@@ -4487,7 +4476,7 @@ tulip_txput(
 	unsigned clsize = PAGE_SIZE - (((u_long) addr) & PAGE_MASK);
 
 	while (len > 0) {
-	    unsigned slen = min(len, clsize);
+	    unsigned slen = uimin(len, clsize);
 #ifdef BIG_PACKET
 	    int partial = 0;
 	    if (slen >= 2048)
@@ -4551,6 +4540,8 @@ tulip_txput(
     } while ((m0 = m0->m_next) != NULL);
 #endif /* TULIP_BUS_DMA */
 
+    if (sc->tulip_bpf != NULL)
+	bpf_mtap(&sc->tulip_if, m, BPF_D_OUT);
     /*
      * The descriptors have been filled in.  Now get ready
      * to transmit.
@@ -5136,6 +5127,7 @@ tulip_attach(
     TULIP_ETHER_IFATTACH(sc);
 #else
     if_attach(ifp);
+    if_deferred_start_init(ifp, NULL);
 #if defined(__NetBSD__) || (defined(__FreeBSD__) && BSD >= 199506)
     TULIP_ETHER_IFATTACH(sc);
 #endif

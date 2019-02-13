@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -54,6 +54,7 @@
 #define METHOD_NAME__CLS        "_CLS"
 #define METHOD_NAME__CRS        "_CRS"
 #define METHOD_NAME__DDN        "_DDN"
+#define METHOD_NAME__DMA        "_DMA"
 #define METHOD_NAME__HID        "_HID"
 #define METHOD_NAME__INI        "_INI"
 #define METHOD_NAME__PLD        "_PLD"
@@ -82,11 +83,14 @@
 /* Definitions of the predefined namespace names  */
 
 #define ACPI_UNKNOWN_NAME       (UINT32) 0x3F3F3F3F     /* Unknown name is "????" */
-#define ACPI_ROOT_NAME          (UINT32) 0x5F5F5F5C     /* Root name is    "\___" */
-
 #define ACPI_PREFIX_MIXED       (UINT32) 0x69706341     /* "Acpi" */
 #define ACPI_PREFIX_LOWER       (UINT32) 0x69706361     /* "acpi" */
 
+/* Root name stuff */
+
+#define ACPI_ROOT_NAME          (UINT32) 0x5F5F5F5C     /* Root name is    "\___" */
+#define ACPI_ROOT_PATHNAME      "\\___"
+#define ACPI_NAMESPACE_ROOT     "Namespace Root"
 #define ACPI_NS_ROOT_PATH       "\\"
 
 #endif  /* __ACNAMES_H__  */

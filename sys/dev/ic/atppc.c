@@ -1,4 +1,4 @@
-/* $NetBSD: atppc.c,v 1.32 2014/07/13 17:12:23 dholland Exp $ */
+/* $NetBSD: atppc.c,v 1.34 2018/09/03 16:29:31 riastradh Exp $ */
 
 /*
  * Copyright (c) 2001 Alcove - Nicolas Souchu
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: atppc.c,v 1.32 2014/07/13 17:12:23 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: atppc.c,v 1.34 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "opt_atppc.h"
 
@@ -1544,27 +1544,22 @@ atppc_add_handler(device_t dev, void (*handler)(void *), void *arg)
 {
 	struct atppc_softc *atppc = device_private(dev);
 	struct atppc_handler_node *callback;
-	int rval = 0;
 
 	if (handler == NULL) {
 		ATPPC_DPRINTF(("%s(%s): attempt to register NULL handler.\n",
 			__func__, device_xname(dev)));
-		rval = EINVAL;
-	} else {
-		callback = kmem_alloc(sizeof(*callback), KM_SLEEP);
-		if (callback) {
-			callback->func = handler;
-			callback->arg = arg;
-			mutex_enter(&atppc->sc_lock);
-			SLIST_INSERT_HEAD(&(atppc->sc_handler_listhead),
-				callback, entries);
-			mutex_exit(&atppc->sc_lock);
-		} else {
-			rval = ENOMEM;
-		}
+		return EINVAL;
 	}
 
-	return rval;
+	callback = kmem_alloc(sizeof(*callback), KM_SLEEP);
+	callback->func = handler;
+	callback->arg = arg;
+	mutex_enter(&atppc->sc_lock);
+	SLIST_INSERT_HEAD(&(atppc->sc_handler_listhead),
+		callback, entries);
+	mutex_exit(&atppc->sc_lock);
+
+	return 0;
 }
 
 /* Remove a handler added by atppc_add_handler() */
@@ -1888,7 +1883,7 @@ atppc_ecp_read_dma(struct atppc_softc *atppc, unsigned int *length,
 	unsigned char ecr)
 {
 	/* Limit transfer to maximum DMA size and start it */
-	*length = min(*length, atppc->sc_dma_maxsize);
+	*length = uimin(*length, atppc->sc_dma_maxsize);
 	atppc->sc_dmastat = ATPPC_DMA_INIT;
 	atppc->sc_dma_start(atppc, atppc->sc_inbstart, *length,
 		ATPPC_DMA_MODE_READ);
@@ -2114,7 +2109,7 @@ atppc_fifo_write_dma(struct atppc_softc * const atppc, unsigned char ecr,
 		atppc_barrier_w(atppc);
 
 		/* Limit transfer to maximum DMA size and start it */
-		worklen = min(len, atppc->sc_dma_maxsize);
+		worklen = uimin(len, atppc->sc_dma_maxsize);
 		atppc->sc_dmastat = ATPPC_DMA_INIT;
 		atppc->sc_dma_start(atppc, atppc->sc_outbstart,
 			worklen, ATPPC_DMA_MODE_WRITE);
@@ -2199,7 +2194,7 @@ atppc_fifo_write_pio(struct atppc_softc * const atppc, unsigned char ecr,
 			return;
 
 		/* Limit transfer to minimum of space in FIFO and buffer */
-		worklen = min(len, atppc->sc_fifo);
+		worklen = uimin(len, atppc->sc_fifo);
 
 		/* Write to FIFO */
 		atppc_w_fifo_multi(atppc, atppc->sc_outbstart, worklen);

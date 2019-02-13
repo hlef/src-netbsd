@@ -1,4 +1,4 @@
-#	$NetBSD: configure.ac,v 1.84 2015/07/26 14:01:53 kamil Exp $
+#	$NetBSD: configure.ac,v 1.94 2018/08/30 12:05:34 christos Exp $
 #
 # Autoconf definition file for libnbcompat.
 #
@@ -78,11 +78,11 @@ AC_CHECK_HEADERS(sys/ioctl.h sys/mman.h sys/param.h \
 
 # Find headers that may not be available.
 AC_HEADER_DIRENT
-AC_CHECK_HEADERS(sys/mtio.h sys/sysmacros.h sys/syslimits.h \
+AC_CHECK_HEADERS(sys/mtio.h sys/sysmacros.h sys/syslimits.h stdio_ext.h \
 	getopt.h features.h malloc.h sys/poll.h pthread.h stddef.h rpc/types.h)
 AC_CHECK_HEADERS(sys/bswap.h machine/bswap.h sys/cdefs.h machine/endian.h \
 	sys/endian.h sys/featuretest.h err.h inttypes.h libgen.h paths.h \
-	stdint.h util.h resolv.h arpa/nameser.h,,
+	libgen.h stdint.h util.h resolv.h arpa/nameser.h,,
 	[test -f include/$ac_header || touch include/$ac_header])
 AC_CHECK_HEADERS(rpc/types.h netconfig.h,,
 	[echo '#include "nbtool_config.h"' >include/$ac_header.new
@@ -140,6 +140,38 @@ AC_CHECK_MEMBERS(struct statvfs.f_iosize,,, [#include <sys/statvfs.h>])
 AC_CHECK_MEMBERS(struct tm.tm_gmtoff,,, [#include <time.h>])
 
 # Global variable decls.
+AC_CHECK_DECLS([asprintf, asnprintf, vasprintf, vasnprintf, vsnprintf, fgetln, fparseln,
+	fpurge, getdelim, getline, snprintf],,, [
+#include <stdio.h>
+])
+
+AC_CHECK_DECLS([atoll, heapsort, mkdtemp, mkstemp, reallocarr, getsubopt,
+	setenv, strtoi, strtoll, strtou, setprogname, getprogname],,, [
+#include <stdlib.h>
+])
+
+AC_CHECK_DECLS([basename, dirname],,, [
+#include <libgen.h>
+])
+
+AC_CHECK_DECLS([raise_default_signal],,, [
+#include <util.h>
+])
+
+AC_CHECK_DECLS([issetugid, pread, pwrite],,, [
+#include <unistd.h>
+])
+
+AC_CHECK_DECLS([strmode],,, [
+#include <unistd.h>
+#include <string.h>
+])
+
+AC_CHECK_DECLS([isblank],,, [
+#include <ctype.h>
+])
+
+
 AC_CHECK_DECLS([optind, optreset],,, [
 #include <stdio.h>
 #include <stdlib.h>
@@ -160,7 +192,8 @@ AC_CHECK_FUNCS(atoll asprintf asnprintf basename devname dirfd dirname \
 	pwrite raise_default_signal random reallocarr setenv \
 	setgroupent setprogname setpassent \
 	snprintb_m snprintf strlcat strlcpy strmode \
-	strndup strnlen strsep strsuftoll strtoi strtoll strtou \
+	strcasecmp strncasecmp strndup strnlen strsep strsuftoll strtoi \
+	strtoll strtou \
 	user_from_uid uid_from_user vasprintf vasnprintf vsnprintf)
 
 AC_CHECK_DECLS([user_from_uid, uid_from_user, pwcache_userdb],,,[
@@ -169,14 +202,18 @@ AC_CHECK_DECLS([user_from_uid, uid_from_user, pwcache_userdb],,,[
 AC_CHECK_DECLS([group_from_gid, gid_from_group, pwcache_groupdb],,,[
 #include <grp.h>
 ])
-AC_CHECK_DECLS([strndup, strnlen],,,[#include <string.h>])
-AC_CHECK_DECLS([strsuftoll],,,[#include <stdlib.h>])
+AC_CHECK_DECLS([strcasecmp, strncasecmp, strlcpy, strlcat, strndup,
+		strnlen, strsep],,,[
+#include <string.h>
+])
+AC_CHECK_DECLS([strsuftoll, mi_vector_hash],,,[#include <stdlib.h>])
 AC_CHECK_DECLS([lchflags, lchmod, lchown],,,[
 #include <sys/stat.h>
 #include <unistd.h>
 ])
 
-AC_CHECK_DECLS([errc, verrc, warnc, vwarnc],,, [
+AC_CHECK_DECLS([err, errc, errx, verrc, verrx, warn, warnc, warnx, vwarnc,
+		vwarnx],,,[
 #ifdef HAVE_ERR_H
 #include <err.h>
 #endif

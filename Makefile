@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile,v 1.317 2016/01/14 02:51:25 christos Exp $
+#	$NetBSD: Makefile,v 1.324 2018/05/02 07:34:44 pgoyette Exp $
 
 #
 # This is the top-level makefile for building NetBSD. For an outline of
@@ -30,6 +30,7 @@
 #   NOCLEANDIR, if defined, will avoid a `make cleandir' at the start
 #	of the `make build'.
 #   NOINCLUDES will avoid the `make includes' usually done by `make build'.
+#   NOBINARIES will not build binaries, only includes and libraries
 #
 #   See mk.conf(5) for more details.
 #
@@ -96,9 +97,9 @@
 #                    if ${MKCOMPAT} != "no".
 #   do-compat-lib:   builds and installs prerequisites from compat/lib
 #                    if ${MKCOMPAT} != "no".
+#   do-x11:          builds and installs X11 tools and libraries
+#                    from src/external/mit/xorg if ${MKX11} != "no".
 #   do-build:        builds and installs the entire system.
-#   do-x11:          builds and installs X11 if ${MKX11} != "no"; either
-#                    X11R7 from src/external/mit/xorg 
 #   do-extsrc:       builds and installs extsrc if ${MKEXTSRC} != "no".
 #   do-obsolete:     installs the obsolete sets (for the postinstall-* targets).
 #
@@ -136,7 +137,7 @@ _SRC_TOP_OBJ_=
 # _SUBDIR is used to set SUBDIR, after removing directories that have
 # BUILD_${dir}=no, or that have no ${dir}/Makefile.
 #
-_SUBDIR=	tools lib include gnu external crypto/external bin games
+_SUBDIR=	tools lib include external crypto/external bin games
 _SUBDIR+=	libexec sbin usr.bin
 _SUBDIR+=	usr.sbin share sys etc tests compat
 _SUBDIR+=	.WAIT rescue .WAIT distrib regress
@@ -237,11 +238,13 @@ BUILDTARGETS+=	do-compat-lib
 .if ${MKX11} != "no"
 BUILDTARGETS+=	do-x11
 .endif
+.if !defined(NOBINARIES)
 BUILDTARGETS+=	do-build
 .if ${MKEXTSRC} != "no"
 BUILDTARGETS+=	do-extsrc
 .endif
 BUILDTARGETS+=	do-obsolete
+.endif
 
 #
 # Enforce proper ordering of some rules.
@@ -249,7 +252,6 @@ BUILDTARGETS+=	do-obsolete
 
 .ORDER:		${BUILDTARGETS}
 includes-lib:	.PHONY includes-include includes-sys
-includes-gnu:	.PHONY includes-lib
 
 #
 # Record the values of variables that might affect the build.
@@ -526,3 +528,4 @@ dependall-distrib depend-distrib all-distrib: .PHONY
 .include <bsd.obj.mk>
 .include <bsd.kernobj.mk>
 .include <bsd.subdir.mk>
+.include <bsd.clean.mk>

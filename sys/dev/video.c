@@ -1,4 +1,4 @@
-/* $NetBSD: video.c,v 1.32 2014/07/25 08:10:35 dholland Exp $ */
+/* $NetBSD: video.c,v 1.35 2018/09/03 16:29:30 riastradh Exp $ */
 
 /*
  * Copyright (c) 2008 Patrick Mahoney <pat@polycrystal.org>
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: video.c,v 1.32 2014/07/25 08:10:35 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: video.c,v 1.35 2018/09/03 16:29:30 riastradh Exp $");
 
 #include "video.h"
 #if NVIDEO > 0
@@ -57,6 +57,8 @@ __KERNEL_RCSID(0, "$NetBSD: video.c,v 1.32 2014/07/25 08:10:35 dholland Exp $");
 #include <sys/videoio.h>
 
 #include <dev/video_if.h>
+
+#include "ioconf.h"
 
 /* #define VIDEO_DEBUG 1 */
 
@@ -223,8 +225,6 @@ const struct cdevsw video_cdevsw = {
 
 CFATTACH_DECL_NEW(video, sizeof(struct video_softc),
 		  video_match, video_attach, video_detach, video_activate);
-
-extern struct cfdriver video_cd;
 
 static const char *	video_pixel_format_str(enum video_pixel_format);
 
@@ -1757,7 +1757,7 @@ retry:
 
 	mutex_exit(&vs->vs_lock);
 	
-	len = min(uio->uio_resid, vb->vb_buf->bytesused - vs->vs_bytesread);
+	len = uimin(uio->uio_resid, vb->vb_buf->bytesused - vs->vs_bytesread);
 	offset = vb->vb_buf->m.offset + vs->vs_bytesread;
 
 	if (scatter_io_init(&vs->vs_data, offset, len, &sio)) {
@@ -2376,15 +2376,7 @@ video_buffer_alloc(void)
 	struct video_buffer *vb;
 
 	vb = kmem_alloc(sizeof(*vb), KM_SLEEP);
-	if (vb == NULL)
-		return NULL;
-
 	vb->vb_buf = kmem_alloc(sizeof(*vb->vb_buf), KM_SLEEP);
-	if (vb->vb_buf == NULL) {
-		kmem_free(vb, sizeof(*vb));
-		return NULL;
-	}
-
 	return vb;
 }
 
@@ -2430,17 +2422,11 @@ video_stream_realloc_bufs(struct video_stream *vs, uint8_t nbufs)
 	if (nbufs > 0) {
 		vs->vs_buf =
 		    kmem_alloc(sizeof(struct video_buffer *) * nbufs, KM_SLEEP);
-		if (vs->vs_buf == NULL) {
-			vs->vs_nbufs = oldnbufs;
-			vs->vs_buf = oldbuf;
-
-			return ENOMEM;
-		}
 	} else {
 		vs->vs_buf = NULL;
 	}
 
-	minnbufs = min(vs->vs_nbufs, oldnbufs);
+	minnbufs = uimin(vs->vs_nbufs, oldnbufs);
 	/* copy any bufs that will be reused */
 	for (i = 0; i < minnbufs; ++i)
 		vs->vs_buf[i] = oldbuf[i];
@@ -2659,31 +2645,17 @@ scatter_buf_set_size(struct scatter_buf *sb, size_t sz)
 	if (npages > 0) {
 		sb->sb_page_ary =
 		    kmem_alloc(sizeof(uint8_t *) * npages, KM_SLEEP);
-		if (sb->sb_page_ary == NULL) {
-			sb->sb_npages = oldnpages;
-			sb->sb_page_ary = old_ary;
-			return ENOMEM;
-		}
 	} else {
 		sb->sb_page_ary = NULL;
 	}
 
-	minpages = min(npages, oldnpages);
+	minpages = uimin(npages, oldnpages);
 	/* copy any pages that will be reused */
 	for (i = 0; i < minpages; ++i)
 		sb->sb_page_ary[i] = old_ary[i];
 	/* allocate any new pages */
-	for (; i < npages; ++i) {
-		sb->sb_page_ary[i] = pool_cache_get(sb->sb_pool, 0);
-		/* TODO: does pool_cache_get return NULL on
-		 * ENOMEM?  If so, we need to release or note
-		 * the pages with did allocate
-		 * successfully. */
-		if (sb->sb_page_ary[i] == NULL) {
-			DPRINTF(("video: pool_cache_get ENOMEM\n"));
-			return ENOMEM;
-		}
-	}
+	for (; i < npages; ++i)
+		sb->sb_page_ary[i] = pool_cache_get(sb->sb_pool, PR_WAITOK);
 	/* return any pages no longer needed */
 	for (; i < oldnpages; ++i)
 		pool_cache_put(sb->sb_pool, old_ary[i]);
@@ -2748,7 +2720,7 @@ scatter_io_next(struct scatter_io *sio, void **p, size_t *sz)
 	pg = sio->sio_offset >> PAGE_SHIFT;
 	pgo = sio->sio_offset & PAGE_MASK;
 
-	*sz = min(PAGE_SIZE - pgo, sio->sio_resid);
+	*sz = uimin(PAGE_SIZE - pgo, sio->sio_resid);
 	*p = sio->sio_buf->sb_page_ary[pg] + pgo;
 
 	sio->sio_offset += *sz;

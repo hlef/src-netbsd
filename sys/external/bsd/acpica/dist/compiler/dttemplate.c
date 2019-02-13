@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,7 +43,6 @@
 
 #include "aslcompiler.h"
 #include "acapps.h"
-#include "dtcompiler.h"
 #include "dttemplate.h" /* Contains the hex ACPI table templates */
 
 #define _COMPONENT          DT_COMPILER
@@ -207,7 +206,7 @@ Exit:
     /* Shutdown ACPICA subsystem */
 
     (void) AcpiTerminate ();
-    CmDeleteCaches ();
+    UtDeleteLocalCaches ();
     return (Status);
 }
 

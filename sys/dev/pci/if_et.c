@@ -1,4 +1,4 @@
-/*	$NetBSD: if_et.c,v 1.12 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_et.c,v 1.17 2018/06/26 06:48:01 msaitoh Exp $	*/
 /*	$OpenBSD: if_et.c,v 1.11 2008/06/08 06:18:07 jsg Exp $	*/
 /*
  * Copyright (c) 2007 The DragonFly Project.  All rights reserved.
@@ -37,7 +37,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_et.c,v 1.12 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_et.c,v 1.17 2018/06/26 06:48:01 msaitoh Exp $");
 
 #include "opt_inet.h"
 #include "vlan.h"
@@ -284,6 +284,7 @@ et_attach(device_t parent, device_t self, void *aux)
 		ifmedia_set(&sc->sc_miibus.mii_media, IFM_ETHER | IFM_AUTO);
 
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr);
 
 	callout_init(&sc->sc_tick, 0);
@@ -1101,7 +1102,7 @@ et_start(struct ifnet *ifp)
 
 		trans = 1;
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
 	if (trans) {
@@ -1223,8 +1224,7 @@ et_setmulti(struct et_softc *sc)
 			addr[i] &=  enm->enm_addrlo[i];
 		}
 
-		h = ether_crc32_be(LLADDR((struct sockaddr_dl *)addr),
-		    ETHER_ADDR_LEN);
+		h = ether_crc32_be(addr, ETHER_ADDR_LEN);
 		h = (h & 0x3f800000) >> 23;
 
 		hp = &hash[0];
@@ -1756,9 +1756,6 @@ et_rxeof(struct et_softc *sc)
 				    ETHER_CRC_LEN;
 				m_set_rcvif(m, ifp);
 
-				bpf_mtap(ifp, m);
-
-				ifp->if_ipackets++;
 				if_percpuq_enqueue(ifp->if_percpuq, m);
 			}
 		} else {
@@ -1971,7 +1968,7 @@ et_txeof(struct et_softc *sc)
 	if (tbd->tbd_used + ET_NSEG_SPARE <= ET_TX_NDESC)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
-	et_start(ifp);
+	if_schedule_deferred_start(ifp);
 }
 
 void
@@ -2028,6 +2025,10 @@ et_newbuf(struct et_rxbuf_data *rbd, int buf_idx, int init, int len0)
 		if (m == NULL)
 			return (ENOBUFS);
 		MCLGET(m, init ? M_WAITOK : M_DONTWAIT);
+		if ((m->m_flags & M_EXT) == 0) {
+			m_freem(m);
+			return (ENOBUFS);
+		}
 		len = MCLBYTES;
 	} else {
 		MGETHDR(m, init ? M_WAITOK : M_DONTWAIT, MT_DATA);

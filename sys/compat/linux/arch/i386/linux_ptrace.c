@@ -1,4 +1,4 @@
-/*	$NetBSD: linux_ptrace.c,v 1.31 2015/10/13 08:24:35 pgoyette Exp $	*/
+/*	$NetBSD: linux_ptrace.c,v 1.33 2018/09/03 16:29:29 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: linux_ptrace.c,v 1.31 2015/10/13 08:24:35 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: linux_ptrace.c,v 1.33 2018/09/03 16:29:29 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/mount.h>
@@ -197,13 +197,10 @@ linux_sys_ptrace_arch(struct lwp *l, const struct linux_sys_ptrace_args *uap,
 		goto out;
 	}
 	/*
-	 * 2. It is being traced by procfs (which has different signal
-	 *    delivery semantics),
-	 * 3. It is not being traced by _you_, or
-	 * 4. It is not currently stopped.
+	 * 2. It is not being traced by _you_, or
+	 * 3. It is not currently stopped.
 	 */
-	if (ISSET(t->p_slflag, PSL_FSTRACE) || t->p_pptr != p ||
-	    t->p_stat != SSTOP || !t->p_waited) {
+	if (t->p_pptr != p || t->p_stat != SSTOP || !t->p_waited) {
 		mutex_exit(t->p_lock);
 		mutex_exit(proc_lock);
 		error = EBUSY;
@@ -278,7 +275,7 @@ linux_sys_ptrace_arch(struct lwp *l, const struct linux_sys_ptrace_args *uap,
 			memset(linux_fpregs, '\0', sizeof(struct linux_fpctx));
 		}
 		memcpy(linux_fpregs, fpregs,
-		    min(sizeof(struct linux_fpctx), fp_size));
+		    uimin(sizeof(struct linux_fpctx), fp_size));
 		error = copyout(linux_fpregs, (void *)SCARG(uap, data),
 		    sizeof(struct linux_fpctx));
 		break;
@@ -286,7 +283,7 @@ linux_sys_ptrace_arch(struct lwp *l, const struct linux_sys_ptrace_args *uap,
 	case LINUX_PTRACE_SETFPREGS:
 		memset(fpregs, '\0', sizeof(struct fpreg));
 		memcpy(fpregs, linux_fpregs,
-		    min(sizeof(struct linux_fpctx), sizeof(struct fpreg)));
+		    uimin(sizeof(struct linux_fpctx), sizeof(struct fpreg)));
 		error = process_write_regs(lt, regs);
 		mutex_exit(t->p_lock);
 		break;

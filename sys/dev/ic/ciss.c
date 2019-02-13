@@ -1,4 +1,4 @@
-/*	$NetBSD: ciss.c,v 1.36 2016/07/14 04:00:45 msaitoh Exp $	*/
+/*	$NetBSD: ciss.c,v 1.39 2018/09/03 16:29:31 riastradh Exp $	*/
 /*	$OpenBSD: ciss.c,v 1.68 2013/05/30 16:15:02 deraadt Exp $	*/
 
 /*
@@ -19,7 +19,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ciss.c,v 1.36 2016/07/14 04:00:45 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ciss.c,v 1.39 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "bio.h"
 
@@ -380,7 +380,7 @@ ciss_attach(struct ciss_softc *sc)
 
 	sc->sc_adapter.adapt_dev = sc->sc_dev;
 	sc->sc_adapter.adapt_openings = sc->sc_channel.chan_openings;
-	sc->sc_adapter.adapt_max_periph = min(sc->sc_adapter.adapt_openings, 256);
+	sc->sc_adapter.adapt_max_periph = uimin(sc->sc_adapter.adapt_openings, 256);
 	sc->sc_adapter.adapt_request = ciss_scsi_cmd;
 	sc->sc_adapter.adapt_minphys = cissminphys;
 	sc->sc_adapter.adapt_ioctl = ciss_scsi_ioctl;
@@ -593,9 +593,11 @@ ciss_cmd(struct ciss_ccb *ccb, int flags, int wait)
 	bus_dmamap_sync(sc->sc_dmat, sc->cmdmap, 0, sc->cmdmap->dm_mapsize,
 	    BUS_DMASYNC_PREWRITE);
 
+#ifndef CISS_NO_INTERRUPT_HACK
 	if ((wait & (XS_CTL_POLL|XS_CTL_NOSLEEP)) == (XS_CTL_POLL|XS_CTL_NOSLEEP))
 		bus_space_write_4(sc->sc_iot, sc->sc_ioh, CISS_IMR,
 		    bus_space_read_4(sc->sc_iot, sc->sc_ioh, CISS_IMR) | sc->iem);
+#endif
 
 	mutex_enter(&sc->sc_mutex);
 	TAILQ_INSERT_TAIL(&sc->sc_ccbq, ccb, ccb_link);
@@ -637,9 +639,11 @@ ciss_cmd(struct ciss_ccb *ccb, int flags, int wait)
 		    ccb->ccb_err.cmd_stat, ccb->ccb_err.scsi_stat));
 	}
 
+#ifndef CISS_NO_INTERRUPT_HACK
 	if ((wait & (XS_CTL_POLL|XS_CTL_NOSLEEP)) == (XS_CTL_POLL|XS_CTL_NOSLEEP))
 		bus_space_write_4(sc->sc_iot, sc->sc_ioh, CISS_IMR,
 		    bus_space_read_4(sc->sc_iot, sc->sc_ioh, CISS_IMR) & ~sc->iem);
+#endif
 
 	return (error);
 }
@@ -1299,12 +1303,12 @@ ciss_ioctl(device_t dev, u_long cmd, void *addr)
 		/* FALLTHROUGH */
 	case BIOCDISK:
 		bd = (struct bioc_disk *)addr;
-		if (bd->bd_volid > sc->maxunits) {
+		if (bd->bd_volid < 0 || bd->bd_volid > sc->maxunits) {
 			error = EINVAL;
 			break;
 		}
 		ldp = sc->sc_lds[0];
-		if (!ldp || (pd = bd->bd_diskid) > ldp->ndrives) {
+		if (!ldp || (pd = bd->bd_diskid) < 0 || pd > ldp->ndrives) {
 			error = EINVAL;
 			break;
 		}
@@ -1405,7 +1409,7 @@ ciss_ioctl_vol(struct ciss_softc *sc, struct bioc_vol *bv)
 	int error = 0;
 	u_int blks;
 
-	if (bv->bv_volid > sc->maxunits) {
+	if (bv->bv_volid < 0 || bv->bv_volid > sc->maxunits) {
 		return EINVAL;
 	}
 	ldp = sc->sc_lds[bv->bv_volid];

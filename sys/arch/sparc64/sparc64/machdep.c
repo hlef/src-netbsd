@@ -1,4 +1,4 @@
-/*	$NetBSD: machdep.c,v 1.285 2016/07/07 06:55:38 msaitoh Exp $ */
+/*	$NetBSD: machdep.c,v 1.288 2018/09/03 16:29:28 riastradh Exp $ */
 
 /*-
  * Copyright (c) 1996, 1997, 1998 The NetBSD Foundation, Inc.
@@ -71,7 +71,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.285 2016/07/07 06:55:38 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.288 2018/09/03 16:29:28 riastradh Exp $");
 
 #include "opt_ddb.h"
 #include "opt_multiprocessor.h"
@@ -1018,7 +1018,7 @@ _bus_dmamap_load(bus_dma_tag_t t, bus_dmamap_t map, void *sbuf,
 	while (sgsize > 0) {
 		paddr_t pa;
 	
-		incr = min(sgsize, incr);
+		incr = uimin(sgsize, incr);
 
 		(void) pmap_extract(pmap_kernel(), vaddr, &pa);
 		if (map->dm_segs[i].ds_len == 0)
@@ -1079,7 +1079,7 @@ _bus_dmamap_load_mbuf(bus_dma_tag_t t, bus_dmamap_t map, struct mbuf *m,
 			long incr;
 
 			incr = PAGE_SIZE - (vaddr & PGOFSET);
-			incr = min(buflen, incr);
+			incr = uimin(buflen, incr);
 
 			if (pmap_extract(pmap_kernel(), vaddr, &pa) == FALSE) {
 #ifdef DIAGNOSTIC
@@ -1207,7 +1207,7 @@ _bus_dmamap_load_uio(bus_dma_tag_t t, bus_dmamap_t map, struct uio *uio,
 			paddr_t pa;
 			long incr;
 
-			incr = min(buflen, PAGE_SIZE);
+			incr = uimin(buflen, PAGE_SIZE);
 			(void) pmap_extract(pm, vaddr, &pa);
 			buflen -= incr;
 			vaddr += incr;
@@ -2293,6 +2293,9 @@ sparc_bus_map(bus_space_tag_t t, bus_addr_t addr, bus_size_t size,
 	if (!(flags & BUS_SPACE_MAP_CACHEABLE))
 		pm_flags |= PMAP_NC;
 
+	if ((flags & BUS_SPACE_MAP_PREFETCHABLE))
+		pm_flags |= PMAP_WC;
+
 	if ((err = extent_alloc(io_space, size, PAGE_SIZE,
 		0, EX_NOWAIT|EX_BOUNDZERO, (u_long *)&v)))
 			panic("sparc_bus_map: cannot allocate io_space: %d", err);
@@ -2357,8 +2360,14 @@ paddr_t
 sparc_bus_mmap(bus_space_tag_t t, bus_addr_t paddr, off_t off, int prot,
 	int flags)
 {
+	paddr_t pa;
 	/* Devices are un-cached... although the driver should do that */
-	return ((paddr+off)|PMAP_NC);
+	pa = (paddr + off) | PMAP_NC;
+	if (flags & BUS_SPACE_MAP_LITTLE)
+		pa |= PMAP_LITTLE;
+	if (flags & BUS_SPACE_MAP_PREFETCHABLE)
+		pa |= PMAP_WC;	
+	return pa;
 }
 
 

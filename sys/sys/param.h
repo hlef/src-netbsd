@@ -1,4 +1,4 @@
-/*	$NetBSD: param.h,v 1.500 2016/07/11 16:10:10 matt Exp $	*/
+/*	$NetBSD: param.h,v 1.570 2018/09/03 16:55:17 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1982, 1986, 1989, 1993
@@ -67,7 +67,7 @@
  *	2.99.9		(299000900)
  */
 
-#define	__NetBSD_Version__	799003400	/* NetBSD 7.99.34 */
+#define	__NetBSD_Version__	899002500	/* NetBSD 8.99.25 */
 
 #define __NetBSD_Prereq__(M,m,p) (((((M) * 100000000) + \
     (m) * 1000000) + (p) * 100) <= __NetBSD_Version__)
@@ -361,7 +361,7 @@
  * This is the maximum individual filename component length enforced by
  * namei. Filesystems cannot exceed this limit. The upper bound for that
  * limit is NAME_MAX. We don't bump it for now, for compatibility with
- * old binaries during the time where MAXPATHLEN was 511 and NAME_MAX was
+ * old binaries during the time where MAXNAMLEN was 511 and NAME_MAX was
  * 255
  */
 #define	KERNEL_NAME_MAX	255
@@ -477,6 +477,8 @@
 	    ((t +0u) / hz) * 1000u : \
 	    ((t +0u) * 1000u) / hz)
 #endif
+
+#define	hz2bintime(t)	(ms2bintime(hztoms(t)))
 
 extern const int schedppq;
 extern size_t coherency_unit;

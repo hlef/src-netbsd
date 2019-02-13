@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -133,7 +133,7 @@ OptSearchToRoot (
      * not match, and we cannot use this optimization.
      */
     Path = &(((char *) TargetPath->Pointer)[
-        TargetPath->Length - ACPI_NAME_SIZE]),
+        TargetPath->Length - ACPI_NAME_SIZE]);
     ScopeInfo.Scope.Node = CurrentNode;
 
     /* Lookup the NameSeg using SEARCH_PARENT (search-to-root) */
@@ -167,7 +167,7 @@ OptSearchToRoot (
 
     /* We must allocate a new string for the name (TargetPath gets deleted) */
 
-    *NewPath = UtStringCacheCalloc (ACPI_NAME_SIZE + 1);
+    *NewPath = UtLocalCacheCalloc (ACPI_NAME_SIZE + 1);
     strcpy (*NewPath, Path);
 
     if (strncmp (*NewPath, "_T_", 3))
@@ -591,7 +591,7 @@ OptOptimizeNamePath (
 
     if (!(Flags & (AML_NAMED | AML_CREATE)))
     {
-        if (Op->Asl.CompileFlags & NODE_IS_NAME_DECLARATION)
+        if (Op->Asl.CompileFlags & OP_IS_NAME_DECLARATION)
         {
             /* We don't want to fuss with actual name declaration nodes here */
 
@@ -785,7 +785,7 @@ OptOptimizeNamePath (
             /* Name must appear as the last parameter */
 
             NextOp = Op->Asl.Child;
-            while (!(NextOp->Asl.CompileFlags & NODE_IS_NAME_DECLARATION))
+            while (!(NextOp->Asl.CompileFlags & OP_IS_NAME_DECLARATION))
             {
                 NextOp = NextOp->Asl.Next;
             }

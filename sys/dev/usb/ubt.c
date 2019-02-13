@@ -1,4 +1,4 @@
-/*	$NetBSD: ubt.c,v 1.56 2016/07/14 04:19:27 msaitoh Exp $	*/
+/*	$NetBSD: ubt.c,v 1.61 2018/04/18 15:01:03 maxv Exp $	*/
 
 /*-
  * Copyright (c) 2006 Itronix Inc.
@@ -67,7 +67,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ubt.c,v 1.56 2016/07/14 04:19:27 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ubt.c,v 1.61 2018/04/18 15:01:03 maxv Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -369,6 +373,14 @@ const struct ubt_devno {
 	{   /* Apple Bluetooth Host Controller MacBookAir 6,1 */
 	    USB_VENDOR_APPLE,
 	    USB_PRODUCT_APPLE_BLUETOOTH_HOST_7,
+	    -1,
+	    -1,
+	    -1,
+	    UMATCH_VENDOR_PRODUCT
+	},
+	{   /* Apple Bluetooth Host Controller MacBookPro 9,2 */
+	    USB_VENDOR_APPLE,
+	    USB_PRODUCT_APPLE_BLUETOOTH_HOST_8,
 	    -1,
 	    -1,
 	    -1,
@@ -988,10 +1000,6 @@ ubt_enable(device_t self)
 
 	/* Events */
 	sc->sc_evt_buf = kmem_alloc(UBT_BUFSIZ_EVENT, KM_SLEEP);
-	if (sc->sc_evt_buf == NULL) {
-		error = ENOMEM;
-		goto bad;
-	}
 	err = usbd_open_pipe_intr(sc->sc_iface0,
 				  sc->sc_evt_addr,
 				  USBD_SHORT_XFER_OK,
@@ -1008,8 +1016,8 @@ ubt_enable(device_t self)
 
 	/* Commands */
 	struct usbd_pipe *pipe0 = usbd_get_pipe0(sc->sc_udev);
-	error = usbd_create_xfer(pipe0, UBT_BUFSIZ_CMD, 0, 0,
-	    &sc->sc_cmd_xfer);
+	error = usbd_create_xfer(pipe0, UBT_BUFSIZ_CMD, USBD_FORCE_SHORT_XFER,
+	    0, &sc->sc_cmd_xfer);
 	if (error)
 		goto bad;
 	sc->sc_cmd_buf = usbd_get_buffer(sc->sc_cmd_xfer);
@@ -1023,7 +1031,7 @@ ubt_enable(device_t self)
 		goto bad;
 	}
 	error = usbd_create_xfer(sc->sc_aclrd_pipe, UBT_BUFSIZ_ACL,
-	    USBD_SHORT_XFER_OK, 0, &sc->sc_aclrd_xfer);
+	    0, 0, &sc->sc_aclrd_xfer);
 	if (error)
 		goto bad;
 	sc->sc_aclrd_buf = usbd_get_buffer(sc->sc_aclrd_xfer);
@@ -1056,7 +1064,7 @@ ubt_enable(device_t self)
 		for (i = 0 ; i < UBT_NXFERS ; i++) {
 		        error = usbd_create_xfer(sc->sc_scord_pipe,
 			    sc->sc_scord_size * UBT_NFRAMES,
-			    USBD_SHORT_XFER_OK, UBT_NFRAMES,
+			    0, UBT_NFRAMES,
 			    &sc->sc_scord[i].xfer);
 			if (error)
 				goto bad;
@@ -1520,7 +1528,7 @@ ubt_mbufload(uint8_t *buf, int count, uint8_t type)
 	m->m_pkthdr.len = m->m_len = MHLEN;
 	m_copyback(m, 1, count, buf);	// (extends if necessary)
 	if (m->m_pkthdr.len != MAX(MHLEN, count + 1)) {
-		m_free(m);
+		m_freem(m);
 		return NULL;
 	}
 

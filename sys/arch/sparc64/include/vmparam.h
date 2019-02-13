@@ -1,4 +1,4 @@
-/*	$NetBSD: vmparam.h,v 1.37 2016/03/26 11:49:10 martin Exp $ */
+/*	$NetBSD: vmparam.h,v 1.39 2018/09/03 16:29:28 riastradh Exp $ */
 
 /*
  * Copyright (c) 1992, 1993
@@ -58,6 +58,12 @@
 #define	PAGE_MASK	(PAGE_SIZE - 1)
 
 /*
+ * Default pager_map of 16MB is awfully small.  There is plenty
+ * of VA so use it.
+ */
+#define        PAGER_MAP_DEFAULT_SIZE (512 * 1024 * 1024)
+
+/*
  * The kernel itself is mapped by the boot loader with 4Mb locked VM pages,
  * so let's keep 4Mb definitions here as well.
  */
@@ -102,7 +108,7 @@
  * model.
  */
 #define VM_DEFAULT_ADDRESS_BOTTOMUP(da, sz) \
-    round_page((vaddr_t)(da) + (vsize_t)max(maxdmap,1UL*1024*1024*1024))
+    round_page((vaddr_t)(da) + (vsize_t)uimax(maxdmap,1UL*1024*1024*1024))
 #endif
 #ifndef	DFLSSIZ
 #define	DFLSSIZ		(2*1024*1024)		/* initial stack size limit */

@@ -1,4 +1,4 @@
-/*	$NetBSD: usbdivar.h,v 1.113 2016/04/23 10:15:32 skrll Exp $	*/
+/*	$NetBSD: usbdivar.h,v 1.117 2018/08/09 06:26:47 mrg Exp $	*/
 
 /*
  * Copyright (c) 1998, 2012 The NetBSD Foundation, Inc.
@@ -139,6 +139,9 @@ struct usbd_hub {
 };
 
 /*****/
+/* 0, root, and 1->127 */
+#define USB_ROOTHUB_INDEX	1
+#define USB_TOTAL_DEVICES	(USB_MAX_DEVICES + 1)
 
 struct usbd_bus {
 	/* Filled by HC driver */
@@ -150,7 +153,8 @@ struct usbd_bus {
 #define USBREV_1_1	3
 #define USBREV_2_0	4
 #define USBREV_3_0	5
-#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0", "3.0" }
+#define USBREV_3_1	6
+#define USBREV_STR { "unknown", "pre 1.0", "1.0", "1.1", "2.0", "3.0", "3.1" }
 
 	const struct usbd_bus_methods
 			       *ub_methods;
@@ -164,7 +168,7 @@ struct usbd_bus {
 	struct usbd_device     *ub_roothub;
 	uint8_t			ub_rhaddr;	/* roothub address */
 	uint8_t			ub_rhconf;	/* roothub configuration */
-	struct usbd_device     *ub_devices[USB_MAX_DEVICES];
+	struct usbd_device     *ub_devices[USB_TOTAL_DEVICES];
 	kcondvar_t              ub_needsexplore_cv;
 	char			ub_needsexplore;/* a hub a signalled a change */
 	char			ub_usepolling;
@@ -281,11 +285,8 @@ struct usbd_xfer {
 				ux_next;
 
 	void		       *ux_hcpriv;	/* private use by the HC driver */
-	uint8_t			ux_hcflags;	/* private use by the HC driver */
-#define UXFER_ABORTING	0x01	/* xfer is aborting. */
-#define UXFER_ABORTWAIT	0x02	/* abort completion is being awaited. */
-	kcondvar_t		ux_hccv;	/* private use by the HC driver */
 
+	struct usb_task		ux_aborttask;
 	struct callout		ux_callout;
 };
 
@@ -342,7 +343,7 @@ void		usb_needs_explore(struct usbd_device *);
 void		usb_needs_reattach(struct usbd_device *);
 void		usb_schedsoftintr(struct usbd_bus *);
 
-static inline int
+static __inline int
 usbd_xfer_isread(struct usbd_xfer *xfer)
 {
 	if (xfer->ux_rqflags & URQ_REQUEST)
@@ -350,6 +351,13 @@ usbd_xfer_isread(struct usbd_xfer *xfer)
 
 	return xfer->ux_pipe->up_endpoint->ue_edesc->bEndpointAddress &
 	   UE_DIR_IN;
+}
+
+static __inline size_t
+usb_addr2dindex(int addr)
+{
+
+	return USB_ROOTHUB_INDEX + addr;
 }
 
 /*

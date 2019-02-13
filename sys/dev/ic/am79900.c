@@ -1,4 +1,4 @@
-/*	$NetBSD: am79900.c,v 1.24 2015/04/13 16:33:24 riastradh Exp $	*/
+/*	$NetBSD: am79900.c,v 1.28 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 1997 The NetBSD Foundation, Inc.
@@ -103,7 +103,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: am79900.c,v 1.24 2015/04/13 16:33:24 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: am79900.c,v 1.28 2018/06/26 06:48:00 msaitoh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -120,9 +120,7 @@ __KERNEL_RCSID(0, "$NetBSD: am79900.c,v 1.24 2015/04/13 16:33:24 riastradh Exp $
 #include <net/if_dl.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
-
 #include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <dev/ic/lancereg.h>
 #include <dev/ic/lancevar.h>
@@ -152,6 +150,7 @@ am79900_config(struct am79900_softc *sc)
 	sc->lsc.sc_start = am79900_start;
 
 	lance_config(&sc->lsc);
+	if_deferred_start_init(&sc->lsc.sc_ethercom.ec_if, NULL);
 
 	mem = 0;
 	sc->lsc.sc_initaddr = mem;
@@ -387,7 +386,7 @@ am79900_tint(struct lance_softc *sc)
 
 	sc->sc_first_td = bix;
 
-	am79900_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	if (sc->sc_no_td == 0)
 		ifp->if_timer = 0;
@@ -512,7 +511,7 @@ am79900_start(struct ifnet *ifp)
 		 * If BPF is listening on this interface, let it see the packet
 		 * before we commit it to the wire.
 		 */
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		/*
 		 * Copy the mbuf chain into the transmit buffer.

@@ -1,4 +1,4 @@
-/*	$NetBSD: kernfs_vnops.c,v 1.155 2015/04/20 23:03:08 riastradh Exp $	*/
+/*	$NetBSD: kernfs_vnops.c,v 1.160 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -39,7 +39,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kernfs_vnops.c,v 1.155 2015/04/20 23:03:08 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kernfs_vnops.c,v 1.160 2018/09/03 16:29:35 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -381,7 +381,7 @@ kernfs_xread(struct kernfs_node *kfs, int off, char **bufp, size_t len, size_t *
 		 * deal with cases where the message buffer has
 		 * become corrupted.
 		 */
-		if (!msgbufenabled || msgbufp->msg_magic != MSG_MAGIC) {
+		if (!logenabled(msgbufp)) {
 			msgbufenabled = 0;
 			return (ENXIO);
 		}
@@ -402,7 +402,7 @@ kernfs_xread(struct kernfs_node *kfs, int off, char **bufp, size_t len, size_t *
 		n = msgbufp->msg_bufx + off;
 		if (n >= msgbufp->msg_bufs)
 			n -= msgbufp->msg_bufs;
-		len = min(msgbufp->msg_bufs - n, msgbufp->msg_bufs - off);
+		len = uimin(msgbufp->msg_bufs - n, msgbufp->msg_bufs - off);
 		*bufp = msgbufp->msg_bufc + n;
 		*wrlen = len;
 		return (0);
@@ -777,7 +777,7 @@ kernfs_default_xwrite(void *v)
 	if (uio->uio_offset != 0)
 		return (EINVAL);
 
-	xlen = min(uio->uio_resid, KSTRING-1);
+	xlen = uimin(uio->uio_resid, KSTRING-1);
 	if ((error = uiomove(strbuf, xlen, uio)) != 0)
 		return (error);
 
@@ -907,7 +907,7 @@ kernfs_readdir(void *v)
 			return (0);
 
 		if (ap->a_ncookies) {
-			ncookies = min(ncookies, (nkern_targets - i));
+			ncookies = uimin(ncookies, (nkern_targets - i));
 			cookies = malloc(ncookies * sizeof(off_t), M_TEMP,
 			    M_WAITOK);
 			*ap->a_cookies = cookies;
@@ -942,8 +942,7 @@ kernfs_readdir(void *v)
 				vrele(fvp);
 			}
 			if (kt->kt_tag == KFSmsgbuf) {
-				if (!msgbufenabled
-				    || msgbufp->msg_magic != MSG_MAGIC) {
+				if (!logenabled(msgbufp)) {
 					continue;
 				}
 			}
@@ -967,7 +966,7 @@ kernfs_readdir(void *v)
 			return 0;
 
 		if (ap->a_ncookies) {
-			ncookies = min(ncookies, (2 - i));
+			ncookies = uimin(ncookies, (2 - i));
 			cookies = malloc(ncookies * sizeof(off_t), M_TEMP,
 			    M_WAITOK);
 			*ap->a_cookies = cookies;
@@ -995,7 +994,7 @@ kernfs_readdir(void *v)
 			return (0);
 
 		if (ap->a_ncookies) {
-			ncookies = min(ncookies, (ks->ks_nentries - i));
+			ncookies = uimin(ncookies, (ks->ks_nentries - i));
 			cookies = malloc(ncookies * sizeof(off_t), M_TEMP,
 			    M_WAITOK);
 			*ap->a_cookies = cookies;
@@ -1061,28 +1060,28 @@ kernfs_readdir(void *v)
 int
 kernfs_inactive(void *v)
 {
-	struct vop_inactive_args /* {
+	struct vop_inactive_v2_args /* {
 		struct vnode *a_vp;
 		bool *a_recycle;
 	} */ *ap = v;
-	struct vnode *vp = ap->a_vp;
 
 	*ap->a_recycle = false;
-	VOP_UNLOCK(vp);
+
 	return (0);
 }
 
 int
 kernfs_reclaim(void *v)
 {
-	struct vop_reclaim_args /* {
+	struct vop_reclaim_v2_args /* {
 		struct vnode *a_vp;
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct kernfs_node *kfs = VTOKERN(vp);
 
+	VOP_UNLOCK(vp);
+
 	vp->v_data = NULL;
-	vcache_remove(vp->v_mount, &kfs->kfs_kt, sizeof(kfs->kfs_kt));
 	mutex_enter(&kfs_lock);
 	TAILQ_REMOVE(&VFSTOKERNFS(vp->v_mount)->nodelist, kfs, kfs_list);
 	mutex_exit(&kfs_lock);

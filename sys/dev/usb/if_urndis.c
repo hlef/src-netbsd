@@ -1,4 +1,4 @@
-/*	$NetBSD: if_urndis.c,v 1.13 2016/07/14 04:00:46 msaitoh Exp $ */
+/*	$NetBSD: if_urndis.c,v 1.18 2018/06/26 06:48:02 msaitoh Exp $ */
 /*	$OpenBSD: if_urndis.c,v 1.31 2011/07/03 15:47:17 matthew Exp $ */
 
 /*
@@ -21,7 +21,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_urndis.c,v 1.13 2016/07/14 04:00:46 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_urndis.c,v 1.18 2018/06/26 06:48:02 msaitoh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -168,11 +172,6 @@ urndis_ctrl_recv(struct urndis_softc *sc)
 	usbd_status		 err;
 
 	buf = kmem_alloc(URNDIS_RESPONSE_LEN, KM_SLEEP);
-	if (buf == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return NULL;
-	}
-
 	err = urndis_ctrl_msg(sc, UT_READ_CLASS_INTERFACE, UR_CLEAR_FEATURE,
 	    sc->sc_ifaceno_ctl, 0, buf, URNDIS_RESPONSE_LEN);
 
@@ -340,18 +339,14 @@ urndis_ctrl_handle_query(struct urndis_softc *sc,
 	}
 
 	if (buf && bufsz) {
-		*buf = kmem_alloc(le32toh(msg->rm_infobuflen), KM_SLEEP);
-		if (*buf == NULL) {
-			printf("%s: out of memory\n", DEVNAME(sc));
-			return RNDIS_STATUS_FAILURE;
-		} else {
-			const char *p;
-			*bufsz = le32toh(msg->rm_infobuflen);
+		const char *p;
 
-			p = (const char *)&msg->rm_rid;
-			p += le32toh(msg->rm_infobufoffset);
-			memcpy(*buf, p, le32toh(msg->rm_infobuflen));
-		}
+		*buf = kmem_alloc(le32toh(msg->rm_infobuflen), KM_SLEEP);
+		*bufsz = le32toh(msg->rm_infobuflen);
+
+		p = (const char *)&msg->rm_rid;
+		p += le32toh(msg->rm_infobufoffset);
+		memcpy(*buf, p, le32toh(msg->rm_infobuflen));
 	}
 
 	return le32toh(msg->rm_status);
@@ -404,11 +399,6 @@ urndis_ctrl_init(struct urndis_softc *sc)
 	struct urndis_comp_hdr	*hdr;
 
 	msg = kmem_alloc(sizeof(*msg), KM_SLEEP);
-	if (msg == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	msg->rm_type = htole32(REMOTE_NDIS_INITIALIZE_MSG);
 	msg->rm_len = htole32(sizeof(*msg));
 	msg->rm_rid = htole32(0);
@@ -451,11 +441,6 @@ urndis_ctrl_halt(struct urndis_softc *sc)
 	uint32_t		 rval;
 
 	msg = kmem_alloc(sizeof(*msg), KM_SLEEP);
-	if (msg == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	msg->rm_type = htole32(REMOTE_NDIS_HALT_MSG);
 	msg->rm_len = htole32(sizeof(*msg));
 	msg->rm_rid = 0;
@@ -486,11 +471,6 @@ urndis_ctrl_query(struct urndis_softc *sc, uint32_t oid,
 	struct urndis_comp_hdr	*hdr;
 
 	msg = kmem_alloc(sizeof(*msg) + qlen, KM_SLEEP);
-	if (msg == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	msg->rm_type = htole32(REMOTE_NDIS_QUERY_MSG);
 	msg->rm_len = htole32(sizeof(*msg) + qlen);
 	msg->rm_rid = 0; /* XXX */
@@ -539,11 +519,6 @@ urndis_ctrl_set(struct urndis_softc *sc, uint32_t oid, void *buf, size_t len)
 	struct urndis_comp_hdr	*hdr;
 
 	msg = kmem_alloc(sizeof(*msg) + len, KM_SLEEP);
-	if (msg == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	msg->rm_type = htole32(REMOTE_NDIS_SET_MSG);
 	msg->rm_len = htole32(sizeof(*msg) + len);
 	msg->rm_rid = 0; /* XXX */
@@ -604,11 +579,6 @@ urndis_ctrl_set_param(struct urndis_softc *sc,
 		namelen = 0;
 	tlen = sizeof(*param) + len + namelen;
 	param = kmem_alloc(tlen, KM_SLEEP);
-	if (param == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	param->rm_namelen = htole32(namelen);
 	param->rm_valuelen = htole32(len);
 	param->rm_type = htole32(type);
@@ -649,11 +619,6 @@ urndis_ctrl_reset(struct urndis_softc *sc)
 	struct urndis_comp_hdr		*hdr;
 
 	reset = kmem_alloc(sizeof(*reset), KM_SLEEP);
-	if (reset == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	reset->rm_type = htole32(REMOTE_NDIS_RESET_MSG);
 	reset->rm_len = htole32(sizeof(*reset));
 	reset->rm_rid = 0; /* XXX rm_rid == reserved ... remove ? */
@@ -689,11 +654,6 @@ urndis_ctrl_keepalive(struct urndis_softc *sc)
 	struct urndis_comp_hdr		*hdr;
 
 	keep = kmem_alloc(sizeof(*keep), KM_SLEEP);
-	if (keep == NULL) {
-		printf("%s: out of memory\n", DEVNAME(sc));
-		return RNDIS_STATUS_FAILURE;
-	}
-
 	keep->rm_type = htole32(REMOTE_NDIS_KEEPALIVE_MSG);
 	keep->rm_len = htole32(sizeof(*keep));
 	keep->rm_rid = 0; /* XXX rm_rid == reserved ... remove ? */
@@ -864,7 +824,6 @@ urndis_decap(struct urndis_softc *sc, struct urndis_chain *c, uint32_t len)
 		    le32toh(msg->rm_datalen));
 		m->m_pkthdr.len = m->m_len = le32toh(msg->rm_datalen);
 
-		ifp->if_ipackets++;
 		m_set_rcvif(m, ifp);
 
 		s = splnet();
@@ -872,9 +831,6 @@ urndis_decap(struct urndis_softc *sc, struct urndis_chain *c, uint32_t len)
 		if (urndis_newbuf(sc, c) == ENOBUFS) {
 			ifp->if_ierrors++;
 		} else {
-
-			bpf_mtap(ifp, m);
-
 			if_percpuq_enqueue(ifp->if_percpuq, m);
 		}
 		splx(s);
@@ -927,7 +883,7 @@ urndis_rx_list_init(struct urndis_softc *sc)
 
 		if (c->sc_xfer == NULL) {
 			int err = usbd_create_xfer(sc->sc_bulkin_pipe,
-			    RNDIS_BUFSZ, USBD_SHORT_XFER_OK, 0, &c->sc_xfer);
+			    RNDIS_BUFSZ, 0, 0, &c->sc_xfer);
 			if (err)
 				return err;
 			c->sc_buf = usbd_get_buffer(c->sc_xfer);
@@ -1180,7 +1136,7 @@ urndis_start(struct ifnet *ifp)
 	 * If there's a BPF listener, bounce a copy of this frame
 	 * to him.
 	 */
-	bpf_mtap(ifp, m_head);
+	bpf_mtap(ifp, m_head, BPF_D_OUT);
 
 	ifp->if_flags |= IFF_OACTIVE;
 
@@ -1546,4 +1502,3 @@ urndis_activate(device_t self, enum devact act)
 
 	return EOPNOTSUPP;
 }
-

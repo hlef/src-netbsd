@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -47,6 +47,9 @@
 #include "acnamesp.h"
 #include "acdispat.h"
 
+#ifdef ACPI_ASL_COMPILER
+    #include "acdisasm.h"
+#endif
 
 #define _COMPONENT          ACPI_NAMESPACE
         ACPI_MODULE_NAME    ("nsaccess")
@@ -299,6 +302,7 @@ AcpiNsLookup (
 {
     ACPI_STATUS             Status;
     char                    *Path = Pathname;
+    char                    *ExternalPath;
     ACPI_NAMESPACE_NODE     *PrefixNode;
     ACPI_NAMESPACE_NODE     *CurrentNode = NULL;
     ACPI_NAMESPACE_NODE     *ThisNode = NULL;
@@ -445,11 +449,21 @@ AcpiNsLookup (
                 ThisNode = ThisNode->Parent;
                 if (!ThisNode)
                 {
-                    /* Current scope has no parent scope */
+                    /*
+                     * Current scope has no parent scope. Externalize
+                     * the internal path for error message.
+                     */
+                    Status = AcpiNsExternalizeName (ACPI_UINT32_MAX, Pathname,
+                        NULL, &ExternalPath);
+                    if (ACPI_SUCCESS (Status))
+                    {
+                        ACPI_ERROR ((AE_INFO,
+                            "%s: Path has too many parent prefixes (^)",
+                            ExternalPath));
 
-                    ACPI_ERROR ((AE_INFO,
-                        "%s: Path has too many parent prefixes (^) "
-                        "- reached beyond root node", Pathname));
+                        ACPI_FREE (ExternalPath);
+                    }
+
                     return_ACPI_STATUS (AE_NOT_FOUND);
                 }
             }
@@ -505,7 +519,7 @@ AcpiNsLookup (
                 "Dual Pathname (2 segments, Flags=%X)\n", Flags));
             break;
 
-        case AML_MULTI_NAME_PREFIX_OP:
+        case AML_MULTI_NAME_PREFIX:
 
             /* More than one NameSeg, search rules do not apply */
 
@@ -601,6 +615,39 @@ AcpiNsLookup (
                     (char *) &SimpleName, (char *) &CurrentNode->Name,
                     CurrentNode));
             }
+
+#ifdef ACPI_EXEC_APP
+            if ((Status == AE_ALREADY_EXISTS) &&
+                (ThisNode->Flags & ANOBJ_NODE_EARLY_INIT))
+            {
+                ThisNode->Flags &= ~ANOBJ_NODE_EARLY_INIT;
+                Status = AE_OK;
+            }
+#endif
+
+#ifdef ACPI_ASL_COMPILER
+            /*
+             * If this ACPI name already exists within the namespace as an
+             * external declaration, then mark the external as a conflicting
+             * declaration and proceed to process the current node as if it did
+             * not exist in the namespace. If this node is not processed as
+             * normal, then it could cause improper namespace resolution
+             * by failing to open a new scope.
+             */
+            if (AcpiGbl_DisasmFlag &&
+                (Status == AE_ALREADY_EXISTS) &&
+                ((ThisNode->Flags & ANOBJ_IS_EXTERNAL) ||
+                    (WalkState && WalkState->Opcode == AML_EXTERNAL_OP)))
+            {
+                ThisNode->Flags &= ~ANOBJ_IS_EXTERNAL;
+                ThisNode->Type = (UINT8)ThisSearchType;
+                if (WalkState->Opcode != AML_EXTERNAL_OP)
+                {
+                    AcpiDmMarkExternalConflict (ThisNode);
+                }
+                break;
+            }
+#endif
 
             *ReturnNode = ThisNode;
             return_ACPI_STATUS (Status);
@@ -698,6 +745,13 @@ AcpiNsLookup (
             }
         }
     }
+
+#ifdef ACPI_EXEC_APP
+    if (Flags & ACPI_NS_EARLY_INIT)
+    {
+        ThisNode->Flags |= ANOBJ_NODE_EARLY_INIT;
+    }
+#endif
 
     *ReturnNode = ThisNode;
     return_ACPI_STATUS (AE_OK);

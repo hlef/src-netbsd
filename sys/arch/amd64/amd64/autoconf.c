@@ -1,4 +1,4 @@
-/*	$NetBSD: autoconf.c,v 1.25 2015/11/22 13:41:24 maxv Exp $	*/
+/*	$NetBSD: autoconf.c,v 1.28 2017/10/22 00:59:28 maya Exp $	*/
 
 /*-
  * Copyright (c) 1990 The Regents of the University of California.
@@ -46,7 +46,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: autoconf.c,v 1.25 2015/11/22 13:41:24 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: autoconf.c,v 1.28 2017/10/22 00:59:28 maya Exp $");
 
 #include "opt_multiprocessor.h"
 #include "opt_intrdebug.h"
@@ -78,6 +78,7 @@ __KERNEL_RCSID(0, "$NetBSD: autoconf.c,v 1.25 2015/11/22 13:41:24 maxv Exp $");
 extern void platform_init(void);
 #endif
 
+#include <x86/efi.h>
 #include <x86/x86/tsc.h>
 
 /*
@@ -89,11 +90,12 @@ cpu_configure(void)
 	startrtclock();
 
 #if NBIOS32 > 0
+	efi_init();
 	bios32_init();
 	platform_init();
+	/* identify hypervisor type from SMBIOS */
+	identify_hypervisor();
 #endif
-
-	x86_64_proc0_tss_ldt_init();
 
 	if (config_rootfound("mainbus", NULL) == NULL)
 		panic("configure: mainbus not configured");
