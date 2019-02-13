@@ -1,4 +1,4 @@
-/*	$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $ */
+/*	$NetBSD: if_xi.c,v 1.83 2018/09/03 16:29:33 riastradh Exp $ */
 /*	OpenBSD: if_xe.c,v 1.9 1999/09/16 11:28:42 niklas Exp 	*/
 
 /*
@@ -55,7 +55,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.83 2018/09/03 16:29:33 riastradh Exp $");
 
 #include "opt_inet.h"
 
@@ -74,6 +74,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $");
 #include <net/if_media.h>
 #include <net/if_types.h>
 #include <net/if_ether.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -82,9 +83,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_xi.c,v 1.77 2016/06/10 13:27:15 ozaki-r Exp $");
 #include <netinet/ip.h>
 #include <netinet/if_inarp.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 /*
  * Maximum number of bytes to read per interrupt.  Linux recommends
@@ -219,6 +217,7 @@ xi_attach(struct xi_softc *sc, u_int8_t *myea)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, myea);
 
 	/*
@@ -360,8 +359,7 @@ xi_intr(void *arg)
 	}
 
 	/* Try to start more packets transmitting. */
-	if (IFQ_IS_EMPTY(&ifp->if_snd) == 0)
-		xi_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	/* Detected excessive collisions? */
 	if ((tx_status & EXCESSIVE_COLL) && ifp->if_opackets > 0) {
@@ -448,7 +446,7 @@ xi_get(struct xi_softc *sc)
 			len -= newdata - m->m_data;
 			m->m_data = newdata;
 		}
-		len = min(pktlen, len);
+		len = uimin(pktlen, len);
 		data = mtod(m, u_int8_t *);
 		if (len > 1) {
 		        len &= ~1;
@@ -470,10 +468,6 @@ xi_get(struct xi_softc *sc)
 
 	/* Trim the CRC off the end of the packet. */
 	m_adj(top, -ETHER_CRC_LEN);
-
-	ifp->if_ipackets++;
-
-	bpf_mtap(ifp, top);
 
 	if_percpuq_enqueue(ifp->if_percpuq, top);
 	return (recvcount);
@@ -793,7 +787,7 @@ xi_start(struct ifnet *ifp)
 
 	IFQ_DEQUEUE(&ifp->if_snd, m0);
 
-	bpf_mtap(ifp, m0);
+	bpf_mtap(ifp, m0, BPF_D_OUT);
 
 	/*
 	 * Do the output at splhigh() so that an interrupt from another device
@@ -811,8 +805,7 @@ xi_start(struct ifnet *ifp)
 			bus_space_write_1(bst, bsh, EDP,
 			    *(mtod(m, u_int8_t *) + m->m_len - 1));
 		}
-		MFREE(m, m0);
-		m = m0;
+		m = m0 = m_free(m);
 	}
 	DPRINTF(XID_CONFIG, ("xi: len=%d pad=%d total=%d\n", len, pad, len+pad+4));
 	if (sc->sc_chipset >= XI_CHIPSET_MOHAWK)

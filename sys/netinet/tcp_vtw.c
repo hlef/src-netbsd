@@ -111,7 +111,6 @@
 #include <netinet6/ip6_var.h>
 #include <netinet6/in6_var.h>
 #include <netinet/icmp6.h>
-#include <netinet6/nd6.h>
 
 #include <netinet/tcp.h>
 #include <netinet/tcp_fsm.h>
@@ -119,11 +118,10 @@
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
 #include <netinet/tcp_private.h>
-#include <netinet/tcpip.h>
 
 #include <netinet/tcp_vtw.h>
 
-__KERNEL_RCSID(0, "$NetBSD: tcp_vtw.c,v 1.16 2016/07/28 07:54:31 martin Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tcp_vtw.c,v 1.19 2018/05/03 07:13:48 maxv Exp $");
 
 #define db_trace(__a, __b)	do { } while (/*CONSTCOND*/0)
 
@@ -2384,9 +2382,6 @@ vtw_sys(struct lwp *l, const void *_, register_t *retval)
 		return EINVAL;
 
 	buf = kmem_alloc(len, KM_SLEEP);
-	if (!buf)
-		return ENOMEM;
-
 	rc = copyin(SCARG(uap, req), buf, len);
 	if (!rc) {
 		rc = vtw_debug_process(buf);

@@ -1,4 +1,4 @@
-/*	$NetBSD: uhid.c,v 1.98 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: uhid.c,v 1.102 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1998, 2004, 2008, 2012 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.98 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.102 2018/09/03 16:29:34 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -64,8 +64,8 @@ __KERNEL_RCSID(0, "$NetBSD: uhid.c,v 1.98 2016/07/07 06:55:42 msaitoh Exp $");
 #include <dev/usb/usbdevs.h>
 #include <dev/usb/usbdi.h>
 #include <dev/usb/usbdi_util.h>
-#include <dev/usb/hid.h>
 #include <dev/usb/usb_quirks.h>
+#include <dev/hid/hid.h>
 
 #include <dev/usb/uhidev.h>
 
@@ -420,7 +420,7 @@ uhid_do_read(struct uhid_softc *sc, struct uio *uio, int flag)
 
 	/* Transfer as many chunks as possible. */
 	while (sc->sc_q.c_cc > 0 && uio->uio_resid > 0 && !error) {
-		length = min(sc->sc_q.c_cc, uio->uio_resid);
+		length = uimin(sc->sc_q.c_cc, uio->uio_resid);
 		if (length > sizeof(buffer))
 			length = sizeof(buffer);
 
@@ -576,7 +576,7 @@ uhid_do_ioctl(struct uhid_softc *sc, u_long cmd, void *addr,
 	case USB_GET_REPORT_DESC:
 		uhidev_get_report_desc(sc->sc_hdev.sc_parent, &desc, &size);
 		rd = (struct usb_ctl_report_desc *)addr;
-		size = min(size, sizeof(rd->ucrd_data));
+		size = uimin(size, sizeof(rd->ucrd_data));
 		rd->ucrd_size = size;
 		memcpy(rd->ucrd_data, desc, size);
 		break;
@@ -613,7 +613,7 @@ uhid_do_ioctl(struct uhid_softc *sc, u_long cmd, void *addr,
 		err = uhidev_get_report(&sc->sc_hdev, re->ucr_report,
 		    re->ucr_data, size + extra);
 		if (extra)
-			memcpy(re->ucr_data, re->ucr_data+1, size);
+			memmove(re->ucr_data, re->ucr_data+1, size);
 		if (err)
 			return EIO;
 		break;
@@ -750,11 +750,19 @@ filt_uhidread(struct knote *kn, long hint)
 	return kn->kn_data > 0;
 }
 
-static const struct filterops uhidread_filtops =
-	{ 1, NULL, filt_uhidrdetach, filt_uhidread };
+static const struct filterops uhidread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_uhidrdetach,
+	.f_event = filt_uhidread,
+};
 
-static const struct filterops uhid_seltrue_filtops =
-	{ 1, NULL, filt_uhidrdetach, filt_seltrue };
+static const struct filterops uhid_seltrue_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_uhidrdetach,
+	.f_event = filt_seltrue,
+};
 
 int
 uhidkqfilter(dev_t dev, struct knote *kn)

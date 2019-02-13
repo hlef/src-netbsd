@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -614,6 +614,8 @@ AcpiNsCheckPackageList (
 
         default: /* Should not get here, type was validated by caller */
 
+            ACPI_ERROR ((AE_INFO, "Invalid Package type: %X",
+                Package->RetInfo.Type));
             return (AE_AML_INTERNAL);
         }
 

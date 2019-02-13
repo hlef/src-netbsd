@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +42,6 @@
  */
 
 #include "acpisrc.h"
-#include "acapps.h"
 
 /* Local prototypes */
 
@@ -59,6 +58,11 @@ BOOLEAN
 AsDetectLoneLineFeeds (
     char                    *Filename,
     char                    *Buffer);
+
+static BOOLEAN
+AsCheckForNonPrintableChars (
+    char                    *FileBuffer,
+    UINT32                  FileSize);
 
 static ACPI_INLINE int
 AsMaxInt (int a, int b)
@@ -310,6 +314,7 @@ AsConvertFile (
     ACPI_IDENTIFIER_TABLE   *LineTable;
     ACPI_TYPED_IDENTIFIER_TABLE *StructTable;
     ACPI_IDENTIFIER_TABLE   *SpecialMacroTable;
+    char                    *SpdxHeader=NULL;
 
 
     switch (FileType)
@@ -322,7 +327,8 @@ AsConvertFile (
         ConditionalTable    = ConversionTable->SourceConditionalTable;
         StructTable         = ConversionTable->SourceStructTable;
         SpecialMacroTable   = ConversionTable->SourceSpecialMacroTable;
-       break;
+        SpdxHeader          = ConversionTable->SourceSpdxHeader;
+        break;
 
     case FILE_TYPE_HEADER:
 
@@ -332,6 +338,7 @@ AsConvertFile (
         ConditionalTable    = ConversionTable->HeaderConditionalTable;
         StructTable         = ConversionTable->HeaderStructTable;
         SpecialMacroTable   = ConversionTable->HeaderSpecialMacroTable;
+        SpdxHeader          = ConversionTable->HeaderSpdxHeader;
         break;
 
     case FILE_TYPE_PATCH:
@@ -527,6 +534,49 @@ AsConvertFile (
     {
         AsReplaceHeader (FileBuffer, ConversionTable->NewHeader);
     }
+    if (SpdxHeader)
+    {
+        AsDoSpdxHeader (FileBuffer, SpdxHeader);
+    }
+}
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AsCheckForNonPrintableChars
+ *
+ * PARAMETERS:  FileBuffer              - Buffer with contents of entire file
+ *              FileSize                - Size of the file and buffer
+ *
+ * RETURN:      TRUE if there are no non-printable characters
+ *
+ * DESCRIPTION: Scan a file for any non-printable ASCII bytes.
+ *
+ ******************************************************************************/
+
+static BOOLEAN
+AsCheckForNonPrintableChars (
+    char                    *FileBuffer,
+    UINT32                  FileSize)
+{
+    BOOLEAN                 Found = TRUE;
+    UINT8                   Byte;
+    UINT32                  i;
+
+
+    /* Scan entire file for any non-printable characters */
+
+    for (i = 0; i < FileSize; i++)
+    {
+        Byte = FileBuffer[i];
+        if (!isprint (Byte) && !isspace (Byte))
+        {
+            printf ( "Non-printable character (0x%2.2X) "
+                "at file offset: %8u (0x%X)\n", Byte, i, i);
+            Found = FALSE;
+        }
+    }
+
+    return (Found);
 }
 
 
@@ -573,11 +623,18 @@ AsProcessOneFile (
     }
 
     strcat (Pathname, Filename);
-
     if (AsGetFile (Pathname, &Gbl_FileBuffer, &Gbl_FileSize))
     {
         Status = -1;
         goto Exit1;
+    }
+
+    /* Exit now if simply checking the file for printable ascii chars */
+
+    if (Gbl_CheckAscii)
+    {
+        Status = 0;
+        goto Exit2;
     }
 
     Gbl_HeaderSize = 0;
@@ -766,6 +823,19 @@ AsGetFile (
     Buffer [Size] = 0;         /* Null terminate the buffer */
     fclose (File);
 
+    /* This option checks the entire file for non-printable chars */
+
+    if (Gbl_CheckAscii)
+    {
+        if (AsCheckForNonPrintableChars (Buffer, Size))
+        {
+            printf ("File contains only printable ASCII characters\n");
+        }
+
+        free (Buffer);
+        return (0);
+    }
+
     /* Check for unix contamination */
 
     Gbl_HasLoneLineFeeds = AsDetectLoneLineFeeds (Filename, Buffer);
@@ -784,7 +854,6 @@ ErrorFree:
     free (Buffer);
 
 ErrorExit:
-
     fclose (File);
     return (-1);
 }

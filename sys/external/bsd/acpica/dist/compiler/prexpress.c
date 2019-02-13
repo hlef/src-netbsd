@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,8 +42,6 @@
  */
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
-
 
 #define _COMPONENT          ASL_PREPROCESSOR
         ACPI_MODULE_NAME    ("prexpress")

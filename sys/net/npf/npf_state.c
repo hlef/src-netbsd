@@ -1,5 +1,3 @@
-/*	$NetBSD: npf_state.c,v 1.17 2014/07/20 00:37:41 rmind Exp $	*/
-
 /*-
  * Copyright (c) 2010-2012 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -33,13 +31,14 @@
  * NPF state engine to track connection.
  */
 
+#ifdef _KERNEL
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: npf_state.c,v 1.17 2014/07/20 00:37:41 rmind Exp $");
+__KERNEL_RCSID(0, "$NetBSD: npf_state.c,v 1.20 2018/10/26 23:35:06 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
-
 #include <sys/mutex.h>
+#endif
 
 #include "npf_impl.h"
 
@@ -77,7 +76,7 @@ static u_int npf_generic_timeout[] __read_mostly = {
 /*
  * State sampler for debugging.
  */
-#if defined(_NPF_TESTING)
+#if defined(_NPF_TESTING) || defined(_NPF_RUMP)
 static void (*npf_state_sample)(npf_state_t *, bool) = NULL;
 #define	NPF_STATE_SAMPLE(n, r) if (npf_state_sample) (*npf_state_sample)(n, r);
 #else
@@ -200,7 +199,7 @@ npf_state_dump(const npf_state_t *nst)
 #endif
 }
 
-#if defined(_NPF_TESTING)
+#if defined(_NPF_TESTING) || defined(_NPF_RUMP)
 void
 npf_state_setsampler(void (*func)(npf_state_t *, bool))
 {

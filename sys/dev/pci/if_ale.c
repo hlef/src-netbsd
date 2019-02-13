@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ale.c,v 1.20 2016/02/09 08:32:11 ozaki-r Exp $	*/
+/*	$NetBSD: if_ale.c,v 1.24 2018/06/26 06:48:01 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 2008, Pyun YongHyeon <yongari@FreeBSD.org>
@@ -32,7 +32,7 @@
 /* Driver for Atheros AR8121/AR8113/AR8114 PCIe Ethernet. */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ale.c,v 1.20 2016/02/09 08:32:11 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ale.c,v 1.24 2018/06/26 06:48:01 msaitoh Exp $");
 
 #include "vlan.h"
 
@@ -572,6 +572,7 @@ ale_attach(device_t parent, device_t self, void *aux)
 		ifmedia_set(&sc->sc_miibus.mii_media, IFM_ETHER | IFM_AUTO);
 
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->ale_eaddr);
 
 	if (pmf_device_register(self, NULL, NULL))
@@ -909,9 +910,6 @@ ale_encap(struct ale_softc *sc, struct mbuf **m_head)
 	bus_dmamap_t map;
 	uint32_t cflags, poff, vtag;
 	int error, i, nsegs, prod;
-#if NVLAN > 0
-	struct m_tag *mtag;
-#endif
 
 	m = *m_head;
 	cflags = vtag = 0;
@@ -996,8 +994,8 @@ ale_encap(struct ale_softc *sc, struct mbuf **m_head)
 
 #if NVLAN > 0
 	/* Configure VLAN hardware tag insertion. */
-	if ((mtag = VLAN_OUTPUT_TAG(&sc->sc_ec, m))) {
-		vtag = ALE_TX_VLAN_TAG(htons(VLAN_TAG_VALUE(mtag)));
+	if (vlan_has_tag(m)) {
+		vtag = ALE_TX_VLAN_TAG(htons(vlan_get_tag(m)));
 		vtag = ((vtag << ALE_TD_VLAN_SHIFT) & ALE_TD_VLAN_MASK);
 		cflags |= ALE_TD_INSERT_VLAN_TAG;
 	}
@@ -1073,7 +1071,7 @@ ale_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 	}
 
 	if (enq) {
@@ -1313,8 +1311,7 @@ ale_intr(void *xsc)
 		}
 
 		ale_txeof(sc);
-		if (!IFQ_IS_EMPTY(&ifp->if_snd))
-			ale_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 
 	/* Re-enable interrupts. */
@@ -1540,12 +1537,9 @@ ale_rxeof(struct ale_softc *sc)
 #if NVLAN > 0
 		if (status & ALE_RD_VLAN) {
 			uint32_t vtags = ALE_RX_VLAN(le32toh(rs->vtags));
-			VLAN_INPUT_TAG(ifp, m, ALE_RX_VLAN_TAG(vtags), );
+			vlan_set_tag(m, ALE_RX_VLAN_TAG(vtags));
 		}
 #endif
-
-
-		bpf_mtap(ifp, m);
 
 		/* Pass it to upper layer. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);

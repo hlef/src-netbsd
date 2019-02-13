@@ -1,4 +1,4 @@
-/* 	$NetBSD: wsfont.c,v 1.59 2015/05/09 16:40:37 mlelstv Exp $	*/
+/* 	$NetBSD: wsfont.c,v 1.63 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001, 2002 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: wsfont.c,v 1.59 2015/05/09 16:40:37 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: wsfont.c,v 1.63 2018/09/03 16:29:34 riastradh Exp $");
 
 #include "opt_wsfont.h"
 
@@ -141,6 +141,10 @@ __KERNEL_RCSID(0, "$NetBSD: wsfont.c,v 1.59 2015/05/09 16:40:37 mlelstv Exp $");
 #include <dev/wsfont/Droid_Sans_Mono_19x36.h>
 #endif
 
+#ifdef FONT_GO_MONO12x23
+#include <dev/wsfont/Go_Mono_12x23.h>
+#endif
+
 /* Make sure we always have at least one bitmap font. */
 #ifndef HAVE_FONT
 #define HAVE_FONT 1
@@ -238,6 +242,9 @@ static struct font builtin_fonts[] = {
 #endif
 #ifdef FONT_DROID_SANS_MONO19x36
 	{ { NULL, NULL }, &Droid_Sans_Mono_19x36, 0, 0, WSFONT_STATIC | WSFONT_BUILTIN },
+#endif
+#ifdef FONT_GO_MONO12x23
+	{ { NULL, NULL }, &Go_Mono_12x23, 0, 0, WSFONT_STATIC | WSFONT_BUILTIN },
 #endif
 	{ { NULL, NULL }, NULL, 0, 0, 0 },
 };
@@ -360,8 +367,6 @@ wsfont_rotate_cw_internal(struct wsdisplay_font *font)
 
 	/* Duplicate the existing font... */
 	newfont = malloc(sizeof(*font), M_DEVBUF, M_WAITOK);
-	if (newfont == NULL)
-		return (NULL);
 
 	*newfont = *font;
 
@@ -375,10 +380,6 @@ wsfont_rotate_cw_internal(struct wsdisplay_font *font)
 	newstride = (font->fontheight + 7) / 8;
 	newbits = malloc(newstride * font->fontwidth * font->numchars,
 	    M_DEVBUF, M_WAITOK|M_ZERO);
-	if (newbits == NULL) {
-		free(newfont, M_DEVBUF);
-		return (NULL);
-	}
 
 	/* Rotate the font a bit at a time. */
 	for (n = 0; n < font->numchars; n++) {
@@ -431,8 +432,6 @@ wsfont_rotate_ccw_internal(struct wsdisplay_font *font)
 
 	/* Duplicate the existing font... */
 	newfont = malloc(sizeof(*font), M_DEVBUF, M_WAITOK);
-	if (newfont == NULL)
-		return (NULL);
 
 	*newfont = *font;
 
@@ -446,10 +445,6 @@ wsfont_rotate_ccw_internal(struct wsdisplay_font *font)
 	newstride = (font->fontheight + 7) / 8;
 	newbits = malloc(newstride * font->fontwidth * font->numchars,
 	    M_DEVBUF, M_WAITOK|M_ZERO);
-	if (newbits == NULL) {
-		free(newfont, M_DEVBUF);
-		return (NULL);
-	}
 
 	/* Rotate the font a bit at a time. */
 	for (n = 0; n < font->numchars; n++) {
@@ -574,6 +569,8 @@ wsfont_matches(struct wsdisplay_font *font, const char *name,
 
 	/* first weed out fonts the caller doesn't claim support for */
 	if (FONT_IS_ALPHA(font)) {
+		if (flags & WSFONT_PREFER_ALPHA)
+			score++;
 		if ((flags & WSFONT_FIND_ALPHA) == 0)
 			return 0;
 	} else {
@@ -590,9 +587,9 @@ wsfont_matches(struct wsdisplay_font *font, const char *name,
 				return (0);
 		} else {
 			if (font->fontwidth > width)
-				score -= 10000 + min(font->fontwidth - width, 9999);
+				score -= 10000 + uimin(font->fontwidth - width, 9999);
 			else
-				score -= min(width - font->fontwidth, 9999);
+				score -= uimin(width - font->fontwidth, 9999);
 		}
 	}
 

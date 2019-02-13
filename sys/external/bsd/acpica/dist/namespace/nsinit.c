@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -300,6 +300,65 @@ ErrorExit:
 
 /*******************************************************************************
  *
+ * FUNCTION:    AcpiNsInitOnePackage
+ *
+ * PARAMETERS:  ObjHandle       - Node
+ *              Level           - Current nesting level
+ *              Context         - Not used
+ *              ReturnValue     - Not used
+ *
+ * RETURN:      Status
+ *
+ * DESCRIPTION: Callback from AcpiWalkNamespace. Invoked for every package
+ *              within the namespace. Used during dynamic load of an SSDT.
+ *
+ ******************************************************************************/
+
+ACPI_STATUS
+AcpiNsInitOnePackage (
+    ACPI_HANDLE             ObjHandle,
+    UINT32                  Level,
+    void                    *Context,
+    void                    **ReturnValue)
+{
+    ACPI_STATUS             Status;
+    ACPI_OPERAND_OBJECT     *ObjDesc;
+    ACPI_NAMESPACE_NODE     *Node = (ACPI_NAMESPACE_NODE *) ObjHandle;
+
+
+    ObjDesc = AcpiNsGetAttachedObject (Node);
+    if (!ObjDesc)
+    {
+        return (AE_OK);
+    }
+
+    /* Exit if package is already initialized */
+
+    if (ObjDesc->Package.Flags & AOPOBJ_DATA_VALID)
+    {
+        return (AE_OK);
+    }
+
+    Status = AcpiDsGetPackageArguments (ObjDesc);
+    if (ACPI_FAILURE (Status))
+    {
+        return (AE_OK);
+    }
+
+    Status = AcpiUtWalkPackageTree (ObjDesc, NULL, AcpiDsInitPackageElement,
+        NULL);
+    if (ACPI_FAILURE (Status))
+    {
+        return (AE_OK);
+    }
+
+    ObjDesc->Package.Flags |= AOPOBJ_DATA_VALID;
+    return (AE_OK);
+}
+
+
+/*******************************************************************************
+ *
  * FUNCTION:    AcpiNsInitOneObject
  *
  * PARAMETERS:  ObjHandle       - Node
@@ -310,7 +369,7 @@ ErrorExit:
  * RETURN:      Status
  *
  * DESCRIPTION: Callback from AcpiWalkNamespace. Invoked for every object
- *              within the  namespace.
+ *              within the namespace.
  *
  *              Currently, the only objects that require initialization are:
  *              1) Methods
@@ -425,8 +484,10 @@ AcpiNsInitOneObject (
 
     case ACPI_TYPE_PACKAGE:
 
+        /* Complete the initialization/resolution of the package object */
+
         Info->PackageInit++;
-        Status = AcpiDsGetPackageArguments (ObjDesc);
+        Status = AcpiNsInitOnePackage (ObjHandle, Level, NULL, NULL);
         break;
 
     default:

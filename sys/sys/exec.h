@@ -1,4 +1,4 @@
-/*	$NetBSD: exec.h,v 1.150 2016/01/23 14:03:48 christos Exp $	*/
+/*	$NetBSD: exec.h,v 1.153 2018/04/27 18:33:24 christos Exp $	*/
 
 /*-
  * Copyright (c) 1992, 1993
@@ -215,7 +215,6 @@ struct exec_package {
 	struct vnode *ep_emul_root;     /* base of emulation filesystem */
 	struct vnode *ep_interp;        /* vnode of (elf) interpeter */
 	uint32_t ep_pax_flags;		/* pax flags */
-	char	*ep_path;		/* absolute path of executable */
 	void	(*ep_emul_arg_free)(void *);
 					/* free ep_emul_arg */
 	uint32_t ep_osversion;		/* OS version */
@@ -250,6 +249,7 @@ struct exec_vmcmd {
  * funtions used either by execve() or the various CPU-dependent execve()
  * hooks.
  */
+vaddr_t	exec_vm_minaddr		(vaddr_t);
 void	kill_vmcmd		(struct exec_vmcmd **);
 int	exec_makecmds		(struct lwp *, struct exec_package *);
 int	exec_runcmds		(struct lwp *, struct exec_package *);
@@ -310,7 +310,9 @@ int	check_posix_spawn	(struct lwp *);
 void	posix_spawn_fa_free(struct posix_spawn_file_actions *, size_t);
 int	do_posix_spawn(struct lwp *, pid_t *, bool*, const char *,
     struct posix_spawn_file_actions *, struct posix_spawnattr *,
-    char *const *argv, char *const *, execve_fetch_element_t);
+    char *const *, char *const *, execve_fetch_element_t);
+int      exec_makepathbuf(struct lwp *, const char *, enum uio_seg,
+    struct pathbuf **, size_t *);
 
 extern int	maxexec;
 

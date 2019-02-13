@@ -1,4 +1,4 @@
-/*	$NetBSD: fp.S,v 1.46 2015/06/08 16:25:29 matt Exp $	*/
+/*	$NetBSD: fp.S,v 1.48 2017/02/27 06:57:45 chs Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -39,6 +39,8 @@
 #include <mips/asm.h>
 #include <mips/trap.h>
 #include <mips/cpuregs.h>
+
+#include <mips/locore.h>
 
 #include "assym.h"
 
@@ -143,7 +145,7 @@ NESTED(mips_emul_fp, CALLFRAME_SIZ, ra)
 #else
 	cfc1	a2, MIPS_FPU_CSR		# get exception register
 	PTR_L	a3, fmt_tbl(v0)			# switch on FUNC & FMT
-	and	a2, a2, ~MIPS_FPU_EXCEPTION_UNIMPL	# clear exception
+	and	a2, a2, ~MIPS_FPU_EXCEPTION_BITS	# clear exception
 	ctc1	a2, MIPS_FPU_CSR
 #endif
 	j	a3

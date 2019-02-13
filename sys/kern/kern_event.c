@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_event.c,v 1.88 2016/07/14 18:16:51 christos Exp $	*/
+/*	$NetBSD: kern_event.c,v 1.103 2018/01/12 17:58:51 christos Exp $	*/
 
 /*-
  * Copyright (c) 2008, 2009 The NetBSD Foundation, Inc.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_event.c,v 1.88 2016/07/14 18:16:51 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_event.c,v 1.103 2018/01/12 17:58:51 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -106,8 +106,12 @@ static void	filt_timerexpire(void *x);
 static int	filt_timerattach(struct knote *);
 static void	filt_timerdetach(struct knote *);
 static int	filt_timer(struct knote *, long hint);
+static int	filt_fsattach(struct knote *kn);
+static void	filt_fsdetach(struct knote *kn);
+static int	filt_fs(struct knote *kn, long hint);
 
 static const struct fileops kqueueops = {
+	.fo_name = "kqueue",
 	.fo_read = (void *)enxio,
 	.fo_write = (void *)enxio,
 	.fo_ioctl = kqueue_ioctl,
@@ -119,14 +123,40 @@ static const struct fileops kqueueops = {
 	.fo_restart = fnullop_restart,
 };
 
-static const struct filterops kqread_filtops =
-	{ 1, NULL, filt_kqdetach, filt_kqueue };
-static const struct filterops proc_filtops =
-	{ 0, filt_procattach, filt_procdetach, filt_proc };
-static const struct filterops file_filtops =
-	{ 1, filt_fileattach, NULL, NULL };
-static const struct filterops timer_filtops =
-	{ 0, filt_timerattach, filt_timerdetach, filt_timer };
+static const struct filterops kqread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_kqdetach,
+	.f_event = filt_kqueue,
+};
+
+static const struct filterops proc_filtops = {
+	.f_isfd = 0,
+	.f_attach = filt_procattach,
+	.f_detach = filt_procdetach,
+	.f_event = filt_proc,
+};
+
+static const struct filterops file_filtops = {
+	.f_isfd = 1,
+	.f_attach = filt_fileattach,
+	.f_detach = NULL,
+	.f_event = NULL,
+};
+
+static const struct filterops timer_filtops = {
+	.f_isfd = 0,
+	.f_attach = filt_timerattach,
+	.f_detach = filt_timerdetach,
+	.f_event = filt_timer,
+};
+
+static const struct filterops fs_filtops = {
+	.f_isfd = 0,
+	.f_attach = filt_fsattach,
+	.f_detach = filt_fsdetach,
+	.f_event = filt_fs,
+};
 
 static u_int	kq_ncallouts = 0;
 static int	kq_calloutmax = (4 * 1024);
@@ -141,7 +171,7 @@ extern const struct filterops sig_filtops;
  * These should be listed in the numeric order of the EVFILT_* defines.
  * If filtops is NULL, the filter isn't implemented in NetBSD.
  * End of list is when name is NULL.
- * 
+ *
  * Note that 'refcnt' is meaningless for built-in filters.
  */
 struct kfilter {
@@ -161,6 +191,7 @@ static struct kfilter sys_kfilters[] = {
 	{ "EVFILT_PROC",	EVFILT_PROC,	0, &proc_filtops, 0 },
 	{ "EVFILT_SIGNAL",	EVFILT_SIGNAL,	0, &sig_filtops, 0 },
 	{ "EVFILT_TIMER",	EVFILT_TIMER,	0, &timer_filtops, 0 },
+	{ "EVFILT_FS",		EVFILT_FS,	0, &fs_filtops, 0 },
 	{ NULL,			0,		0, NULL, 0 },
 };
 
@@ -170,7 +201,26 @@ static int		user_kfilterc;		/* current offset */
 static int		user_kfiltermaxc;	/* max size so far */
 static size_t		user_kfiltersz;		/* size of allocated memory */
 
-/* Locks */
+/*
+ * Global Locks.
+ *
+ * Lock order:
+ *
+ *	kqueue_filter_lock
+ *	-> kn_kq->kq_fdp->fd_lock
+ *	-> object lock (e.g., device driver lock, kqueue_misc_lock, &c.)
+ *	-> kn_kq->kq_lock
+ *
+ * Locking rules:
+ *
+ *	f_attach: fdp->fd_lock, KERNEL_LOCK
+ *	f_detach: fdp->fd_lock, KERNEL_LOCK
+ *	f_event(!NOTE_SUBMIT) via kevent: fdp->fd_lock, _no_ object lock
+ *	f_event via knote: whatever caller guarantees
+ *		Typically,	f_event(NOTE_SUBMIT) via knote: object lock
+ *				f_event(!NOTE_SUBMIT) via knote: nothing,
+ *					acquires/releases object lock inside.
+ */
 static krwlock_t	kqueue_filter_lock;	/* lock on filter lists */
 static kmutex_t		kqueue_misc_lock;	/* miscellaneous */
 
@@ -332,9 +382,7 @@ kfilter_register(const char *name, const struct filterops *filtops,
 	/* Adding new slot */
 	kfilter = &user_kfilters[user_kfilterc++];
 reuse:
-	kfilter->namelen = strlen(name) + 1;
-	kfilter->name = kmem_alloc(kfilter->namelen, KM_SLEEP);
-	memcpy(__UNCONST(kfilter->name), name, kfilter->namelen);
+	kfilter->name = kmem_strdupsize(name, &kfilter->namelen, KM_SLEEP);
 
 	kfilter->filter = (kfilter - user_kfilters) + EVFILT_SYSCOUNT;
 
@@ -662,6 +710,12 @@ static void
 filt_timerdetach(struct knote *kn)
 {
 	callout_t *calloutp;
+	struct kqueue *kq = kn->kn_kq;
+
+	mutex_spin_enter(&kq->kq_lock);
+	/* prevent rescheduling when we expire */
+	kn->kn_flags |= EV_ONESHOT;
+	mutex_spin_exit(&kq->kq_lock);
 
 	calloutp = (callout_t *)kn->kn_hook;
 	callout_halt(calloutp, NULL);
@@ -677,6 +731,45 @@ filt_timer(struct knote *kn, long hint)
 
 	mutex_enter(&kqueue_misc_lock);
 	rv = (kn->kn_data != 0);
+	mutex_exit(&kqueue_misc_lock);
+
+	return rv;
+}
+
+/*
+ * Filter event method for EVFILT_FS.
+ */
+struct klist fs_klist = SLIST_HEAD_INITIALIZER(&fs_klist);
+
+static int
+filt_fsattach(struct knote *kn)
+{
+
+	mutex_enter(&kqueue_misc_lock);
+	kn->kn_flags |= EV_CLEAR;
+	SLIST_INSERT_HEAD(&fs_klist, kn, kn_selnext);
+	mutex_exit(&kqueue_misc_lock);
+
+	return 0;
+}
+
+static void
+filt_fsdetach(struct knote *kn)
+{
+
+	mutex_enter(&kqueue_misc_lock);
+	SLIST_REMOVE(&fs_klist, kn, knote, kn_selnext);
+	mutex_exit(&kqueue_misc_lock);
+}
+
+static int
+filt_fs(struct knote *kn, long hint)
+{
+	int rv;
+
+	mutex_enter(&kqueue_misc_lock);
+	kn->kn_fflags |= hint;
+	rv = (kn->kn_fflags != 0);
 	mutex_exit(&kqueue_misc_lock);
 
 	return rv;
@@ -710,8 +803,12 @@ filt_seltruedetach(struct knote *kn)
 	/* Nothing to do */
 }
 
-const struct filterops seltrue_filtops =
-	{ 1, NULL, filt_seltruedetach, filt_seltrue };
+const struct filterops seltrue_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_seltruedetach,
+	.f_event = filt_seltrue,
+};
 
 int
 seltrue_kqfilter(dev_t dev, struct knote *kn)
@@ -868,21 +965,19 @@ kevent1(register_t *retval, int fd,
 			kevp->flags &= ~EV_SYSFLAGS;
 			/* register each knote */
 			error = kqueue_register(kq, kevp);
-			if (error || (kevp->flags & EV_RECEIPT)) {
-				if (nevents != 0) {
-					kevp->flags = EV_ERROR;
-					kevp->data = error;
-					error = (*keops->keo_put_events)
-					    (keops->keo_private, kevp,
-					    eventlist, nerrors, 1);
-					if (error)
-						goto done;
-					nevents--;
-					nerrors++;
-				} else {
-					goto done;
-				}
-			}
+			if (!error && !(kevp->flags & EV_RECEIPT))
+				continue;
+			if (nevents == 0)
+				goto done;
+			kevp->flags = EV_ERROR;
+			kevp->data = error;
+			error = (*keops->keo_put_events)
+				(keops->keo_private, kevp,
+				 eventlist, nerrors, 1);
+			if (error)
+				goto done;
+			nevents--;
+			nerrors++;
 		}
 		nchanges -= n;	/* update the results */
 		ichange += n;
@@ -944,6 +1039,10 @@ kqueue_register(struct kqueue *kq, struct kevent *kev)
 		}
 		mutex_enter(&fdp->fd_lock);
 		ff = fdp->fd_dt->dt_ff[fd];
+		if (ff->ff_refcnt & FR_CLOSING) {
+			error = EBADF;
+			goto doneunlock;
+		}
 		if (fd <= fdp->fd_lastkqfile) {
 			SLIST_FOREACH(kn, &ff->ff_knlist, kn_link) {
 				if (kq == kn->kn_kq &&
@@ -1021,10 +1120,14 @@ kqueue_register(struct kqueue *kq, struct kevent *kev)
 			error = (*kfilter->filtops->f_attach)(kn);
 			KERNEL_UNLOCK_ONE(NULL);	/* XXXSMP */
 			if (error != 0) {
-#ifdef DIAGNOSTIC
-				printf("%s: event not supported for file type"
-				    " %d\n", __func__, fp ? fp->f_type : -1);
+#ifdef DEBUG
+				const file_t *ft = kn->kn_obj;
+				uprintf("%s: event type %d not supported for "
+				    "file type %d/%s (error %d)\n", __func__,
+				    kn->kn_filter, ft ? ft->f_type : -1,
+				    ft ? ft->f_ops->fo_name : "?", error);
 #endif
+
 				/* knote_detach() drops fdp->fd_lock */
 				knote_detach(kn, fdp, false);
 				goto done;
@@ -1056,8 +1159,7 @@ kqueue_register(struct kqueue *kq, struct kevent *kev)
 	} else {
 		if (kn == NULL) {
 			error = ENOENT;
-		 	mutex_exit(&fdp->fd_lock);
-			goto done;
+			goto doneunlock;
 		}
 		if (kev->flags & EV_DELETE) {
 			/* knote_detach() drops fdp->fd_lock */
@@ -1078,6 +1180,7 @@ kqueue_register(struct kqueue *kq, struct kevent *kev)
 	if ((kev->flags & EV_ENABLE)) {
 		knote_enqueue(kn);
 	}
+doneunlock:
 	mutex_exit(&fdp->fd_lock);
  done:
 	rw_exit(&kqueue_filter_lock);
@@ -1089,12 +1192,16 @@ kqueue_register(struct kqueue *kq, struct kevent *kev)
 }
 
 #if defined(DEBUG)
+#define KN_FMT(buf, kn) \
+    (snprintb((buf), sizeof(buf), __KN_FLAG_BITS, (kn)->kn_status), buf)
+
 static void
-kq_check(struct kqueue *kq)
+kqueue_check(const char *func, size_t line, const struct kqueue *kq)
 {
 	const struct knote *kn;
 	int count;
 	int nmarker;
+	char buf[128];
 
 	KASSERT(mutex_owned(&kq->kq_lock));
 	KASSERT(kq->kq_count >= 0);
@@ -1103,16 +1210,18 @@ kq_check(struct kqueue *kq)
 	nmarker = 0;
 	TAILQ_FOREACH(kn, &kq->kq_head, kn_tqe) {
 		if ((kn->kn_status & (KN_MARKER | KN_QUEUED)) == 0) {
-			panic("%s: kq=%p kn=%p inconsist 1", __func__, kq, kn);
+			panic("%s,%zu: kq=%p kn=%p !(MARKER|QUEUED) %s",
+			    func, line, kq, kn, KN_FMT(buf, kn));
 		}
 		if ((kn->kn_status & KN_MARKER) == 0) {
 			if (kn->kn_kq != kq) {
-				panic("%s: kq=%p kn=%p inconsist 2",
-				    __func__, kq, kn);
+				panic("%s,%zu: kq=%p kn(%p) != kn->kq(%p): %s",
+				    func, line, kq, kn, kn->kn_kq,
+				    KN_FMT(buf, kn));
 			}
 			if ((kn->kn_status & KN_ACTIVE) == 0) {
-				panic("%s: kq=%p kn=%p: not active",
-				    __func__, kq, kn);
+				panic("%s,%zu: kq=%p kn=%p: !ACTIVE %s",
+				    func, line, kq, kn, KN_FMT(buf, kn));
 			}
 			count++;
 			if (count > kq->kq_count) {
@@ -1122,19 +1231,21 @@ kq_check(struct kqueue *kq)
 			nmarker++;
 #if 0
 			if (nmarker > 10000) {
-				panic("%s: kq=%p too many markers: %d != %d, "
-				    "nmarker=%d",
-				    __func__, kq, kq->kq_count, count, nmarker);
+				panic("%s,%zu: kq=%p too many markers: "
+				    "%d != %d, nmarker=%d",
+				    func, line, kq, kq->kq_count, count,
+				    nmarker);
 			}
 #endif
 		}
 	}
 	if (kq->kq_count != count) {
 bad:
-		panic("%s: kq=%p inconsist 3: %d != %d, nmarker=%d",
-		    __func__, kq, kq->kq_count, count, nmarker);
+		panic("%s,%zu: kq=%p kq->kq_count(%d) != count(%d), nmarker=%d",
+		    func, line, kq, kq->kq_count, count, nmarker);
 	}
 }
+#define kq_check(a) kqueue_check(__func__, __LINE__, (a))
 #else /* defined(DEBUG) */
 #define	kq_check(a)	/* nothing */
 #endif /* defined(DEBUG) */
@@ -1180,7 +1291,7 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 	} else {
 		/* no timeout, wait forever */
 		timeout = 0;
-	}	
+	}
 
 	memset(&morker, 0, sizeof(morker));
 	marker = &morker;
@@ -1204,9 +1315,18 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 					error = 0;
 			}
 		}
+		mutex_spin_exit(&kq->kq_lock);
 	} else {
 		/* mark end of knote list */
 		TAILQ_INSERT_TAIL(&kq->kq_head, marker, kn_tqe);
+
+		/*
+		 * Acquire the fdp->fd_lock interlock to avoid races with
+		 * file creation/destruction from other threads.
+		 */
+		mutex_spin_exit(&kq->kq_lock);
+		mutex_enter(&fdp->fd_lock);
+		mutex_spin_enter(&kq->kq_lock);
 
 		while (count != 0) {
 			kn = TAILQ_FIRST(&kq->kq_head);	/* get next knote */
@@ -1218,6 +1338,7 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 					    (timeout = gettimeleft(&ats,
 					    &sleepts)) <= 0))
 						goto done;
+					mutex_exit(&fdp->fd_lock);
 					goto retry;
 				}
 				/* someone else's marker. */
@@ -1239,6 +1360,7 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 				KASSERT(kn->kn_fop != NULL);
 				KASSERT(kn->kn_fop->f_event != NULL);
 				KERNEL_LOCK(1, NULL);		/* XXXSMP */
+				KASSERT(mutex_owned(&fdp->fd_lock));
 				rv = (*kn->kn_fop->f_event)(kn, 0);
 				KERNEL_UNLOCK_ONE(NULL);	/* XXXSMP */
 				mutex_spin_enter(&kq->kq_lock);
@@ -1261,10 +1383,10 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 			nkev++;
 			if (kn->kn_flags & EV_ONESHOT) {
 				/* delete ONESHOT events after retrieval */
-				mutex_spin_exit(&kq->kq_lock);
-				mutex_enter(&fdp->fd_lock);
 				kn->kn_status &= ~KN_BUSY;
+				mutex_spin_exit(&kq->kq_lock);
 				knote_detach(kn, fdp, true);
+				mutex_enter(&fdp->fd_lock);
 				mutex_spin_enter(&kq->kq_lock);
 			} else if (kn->kn_flags & EV_CLEAR) {
 				/* clear state after retrieval */
@@ -1286,9 +1408,11 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 			if (nkev == kevcnt) {
 				/* do copyouts in kevcnt chunks */
 				mutex_spin_exit(&kq->kq_lock);
+				mutex_exit(&fdp->fd_lock);
 				error = (*keops->keo_put_events)
 				    (keops->keo_private,
 				    kevbuf, ulistp, nevents, nkev);
+				mutex_enter(&fdp->fd_lock);
 				mutex_spin_enter(&kq->kq_lock);
 				nevents += nkev;
 				nkev = 0;
@@ -1301,9 +1425,10 @@ kqueue_scan(file_t *fp, size_t maxevents, struct kevent *ulistp,
 				break;
 			}
 		}
-	}
  done:
- 	mutex_spin_exit(&kq->kq_lock);
+		mutex_spin_exit(&kq->kq_lock);
+		mutex_exit(&fdp->fd_lock);
+	}
 	if (nkev != 0) {
 		/* copyout remaining events */
 		error = (*keops->keo_put_events)(keops->keo_private,
@@ -1599,7 +1724,7 @@ again:
 	mutex_spin_exit(&kq->kq_lock);
 
 	mutex_exit(&fdp->fd_lock);
-	if (kn->kn_fop->f_isfd)		
+	if (kn->kn_fop->f_isfd)
 		fd_putfile(kn->kn_id);
 	atomic_dec_uint(&kn->kn_kfilter->refcnt);
 	kmem_free(kn, sizeof(*kn));

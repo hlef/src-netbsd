@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap_tlb.c,v 1.18 2016/07/23 20:06:25 matt Exp $	*/
+/*	$NetBSD: pmap_tlb.c,v 1.28 2018/02/25 21:43:03 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2010 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
 
 #include <sys/cdefs.h>
 
-__KERNEL_RCSID(0, "$NetBSD: pmap_tlb.c,v 1.18 2016/07/23 20:06:25 matt Exp $");
+__KERNEL_RCSID(0, "$NetBSD: pmap_tlb.c,v 1.28 2018/02/25 21:43:03 jdolecek Exp $");
 
 /*
  * Manages address spaces in a TLB.
@@ -140,14 +140,34 @@ static kmutex_t pmap_tlb0_lock __cacheline_aligned;
 
 #define	IFCONSTANT(x)	(__builtin_constant_p((x)) ? (x) : 0)
 
+#if KERNEL_PID > 31
+#error "KERNEL_PID expected in range 0-31"
+#endif
+
+#define	TLBINFO_ASID_MARK_UNUSED(ti, asid) \
+	__BITMAP_CLR((asid), &(ti)->ti_asid_bitmap)
+#define	TLBINFO_ASID_MARK_USED(ti, asid) \
+	__BITMAP_SET((asid), &(ti)->ti_asid_bitmap)
+#define	TLBINFO_ASID_INUSE_P(ti, asid) \
+	__BITMAP_ISSET((asid), &(ti)->ti_asid_bitmap)
+#define	TLBINFO_ASID_RESET(ti) \
+	do {								\
+		__BITMAP_ZERO(&ti->ti_asid_bitmap);			\
+		for (tlb_asid_t asid = 0; asid <= KERNEL_PID; asid++) 	\
+			TLBINFO_ASID_MARK_USED(ti, asid);	 	\
+	} while (0)
+#define	TLBINFO_ASID_INITIAL_FREE(asid_max) \
+	(asid_max + 1 /* 0 */ - (1 + KERNEL_PID))
+
 struct pmap_tlb_info pmap_tlb0_info = {
 	.ti_name = "tlb0",
 	.ti_asid_hint = KERNEL_PID + 1,
 #ifdef PMAP_TLB_NUM_PIDS
 	.ti_asid_max = IFCONSTANT(PMAP_TLB_NUM_PIDS - 1),
-	.ti_asids_free = IFCONSTANT(PMAP_TLB_NUM_PIDS - (1 + KERNEL_PID)),
+	.ti_asids_free = IFCONSTANT(
+		TLBINFO_ASID_INITIAL_FREE(PMAP_TLB_NUM_PIDS - 1)),
 #endif
-	.ti_asid_bitmap[0] = (2 << KERNEL_PID) - 1,
+	.ti_asid_bitmap._b[0] = __BITS(0, KERNEL_PID),
 #ifdef PMAP_TLB_WIRED_UPAGES
 	.ti_wired = PMAP_TLB_WIRED_UPAGES,
 #endif
@@ -166,20 +186,6 @@ struct pmap_tlb_info *pmap_tlbs[PMAP_TLB_MAX] = {
 };
 u_int pmap_ntlbs = 1;
 #endif
-
-#define	__BITMAP_SET(bm, n) \
-	((bm)[(n) / (8*sizeof(bm[0]))] |= 1LU << ((n) % (8*sizeof(bm[0]))))
-#define	__BITMAP_CLR(bm, n) \
-	((bm)[(n) / (8*sizeof(bm[0]))] &= ~(1LU << ((n) % (8*sizeof(bm[0])))))
-#define	__BITMAP_ISSET_P(bm, n) \
-	(((bm)[(n) / (8*sizeof(bm[0]))] & (1LU << ((n) % (8*sizeof(bm[0]))))) != 0)
-
-#define	TLBINFO_ASID_MARK_UNUSED(ti, asid) \
-	__BITMAP_CLR((ti)->ti_asid_bitmap, (asid))
-#define	TLBINFO_ASID_MARK_USED(ti, asid) \
-	__BITMAP_SET((ti)->ti_asid_bitmap, (asid))
-#define	TLBINFO_ASID_INUSE_P(ti, asid) \
-	__BITMAP_ISSET_P((ti)->ti_asid_bitmap, (asid))
 
 #ifdef MULTIPROCESSOR
 __unused static inline bool
@@ -232,8 +238,8 @@ pmap_tlb_pai_reset(struct pmap_tlb_info *ti, struct pmap_asid_info *pai,
 	struct pmap *pm)
 {
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
-	UVMHIST_LOG(maphist, "(ti=%p, pai=%p, pm=%p): asid %u",
-	    ti, pai, pm, pai->pai_asid);
+	UVMHIST_LOG(maphist, "(ti=%#jx, pai=%#jx, pm=%#jx): asid %u",
+	    (uintptr_t)ti, (uintptr_t)pai, (uintptr_t)pm, pai->pai_asid);
 
 	/*
 	 * We must have an ASID but it must not be onproc (on a processor).
@@ -296,7 +302,7 @@ pmap_tlb_pai_reset(struct pmap_tlb_info *ti, struct pmap_asid_info *pai,
 void
 pmap_tlb_info_evcnt_attach(struct pmap_tlb_info *ti)
 {
-#if defined(MULTIPROCESSOR)
+#if defined(MULTIPROCESSOR) && !defined(PMAP_TLB_NO_SYNCI_EVCNT)
 	evcnt_attach_dynamic_nozero(&ti->ti_evcnt_synci_desired,
 	    EVCNT_TYPE_MISC, NULL,
 	    ti->ti_name, "icache syncs desired");
@@ -315,7 +321,7 @@ pmap_tlb_info_evcnt_attach(struct pmap_tlb_info *ti)
 	evcnt_attach_dynamic_nozero(&ti->ti_evcnt_synci_deferred,
 	    EVCNT_TYPE_MISC, &ti->ti_evcnt_synci_desired,
 	    ti->ti_name, "icache pages deferred");
-#endif /* MULTIPROCESSOR */
+#endif /* MULTIPROCESSOR && !PMAP_TLB_NO_SYNCI_EVCNT */
 	evcnt_attach_dynamic_nozero(&ti->ti_evcnt_asid_reinits,
 	    EVCNT_TYPE_MISC, NULL,
 	    ti->ti_name, "asid pool reinit");
@@ -334,11 +340,11 @@ pmap_tlb_info_init(struct pmap_tlb_info *ti)
 		KASSERT(pmap_tlbs[pmap_ntlbs] == NULL);
 
 		ti->ti_lock = mutex_obj_alloc(MUTEX_DEFAULT, IPL_SCHED);
-		ti->ti_asid_bitmap[0] = (2 << KERNEL_PID) - 1;
+		TLBINFO_ASID_RESET(ti);
 		ti->ti_asid_hint = KERNEL_PID + 1;
 		ti->ti_asid_max = pmap_tlbs[0]->ti_asid_max;
-		ti->ti_asids_free = ti->ti_asid_max - KERNEL_PID;
-		ti->ti_tlbinvop = TLBINV_NOBODY,
+		ti->ti_asids_free = TLBINFO_ASID_INITIAL_FREE(ti->ti_asid_max);
+		ti->ti_tlbinvop = TLBINV_NOBODY;
 		ti->ti_victim = NULL;
 		kcpuset_create(&ti->ti_kcpuset, true);
 		ti->ti_index = pmap_ntlbs++;
@@ -347,6 +353,8 @@ pmap_tlb_info_init(struct pmap_tlb_info *ti)
 		snprintf(ti->ti_name, sizeof(ti->ti_name), "tlb%u",
 		    ti->ti_index);
 		pmap_tlb_info_evcnt_attach(ti);
+
+		KASSERT(ti->ti_asid_max < PMAP_TLB_BITMAP_LENGTH);
 		return;
 	}
 #endif
@@ -362,10 +370,10 @@ pmap_tlb_info_init(struct pmap_tlb_info *ti)
 	//printf("asid ");
 	if (ti->ti_asid_max == 0) {
 		ti->ti_asid_max = pmap_md_tlb_asid_max();
-		ti->ti_asids_free = ti->ti_asid_max - KERNEL_PID;
+		ti->ti_asids_free = TLBINFO_ASID_INITIAL_FREE(ti->ti_asid_max);
 	}
 
-	KASSERT(ti->ti_asid_max < sizeof(ti->ti_asid_bitmap)*8);
+	KASSERT(ti->ti_asid_max < PMAP_TLB_BITMAP_LENGTH);
 }
 
 #if defined(MULTIPROCESSOR)
@@ -401,7 +409,8 @@ pmap_tlb_asid_count(struct pmap_tlb_info *ti)
 {
 	size_t count = 0;
 	for (tlb_asid_t asid = 1; asid <= ti->ti_asid_max; asid++) {
-		count += TLBINFO_ASID_INUSE_P(ti, asid);
+		if (TLBINFO_ASID_INUSE_P(ti, asid))
+			count++;
 	}
 	return count;
 }
@@ -410,11 +419,8 @@ pmap_tlb_asid_count(struct pmap_tlb_info *ti)
 static void
 pmap_tlb_asid_reinitialize(struct pmap_tlb_info *ti, enum tlb_invalidate_op op)
 {
-	const size_t asid_bitmap_words =
-	    ti->ti_asid_max / (8 * sizeof(ti->ti_asid_bitmap[0]));
-
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
-	UVMHIST_LOG(maphist, "(ti=%p, op=%u)", ti, op, 0, 0);
+	UVMHIST_LOG(maphist, "(ti=%#jx, op=%ju)", (uintptr_t)ti, op, 0, 0);
 
 	pmap_tlb_pai_check(ti, true);
 
@@ -424,12 +430,9 @@ pmap_tlb_asid_reinitialize(struct pmap_tlb_info *ti, enum tlb_invalidate_op op)
 	 * First, clear the ASID bitmap (except for ASID 0 which belongs
 	 * to the kernel).
 	 */
-	ti->ti_asids_free = ti->ti_asid_max - KERNEL_PID;
+	ti->ti_asids_free = TLBINFO_ASID_INITIAL_FREE(ti->ti_asid_max);
 	ti->ti_asid_hint = KERNEL_PID + 1;
-	ti->ti_asid_bitmap[0] = (2 << KERNEL_PID) - 1;
-	for (size_t word = 1; word <= asid_bitmap_words; word++) {
-		ti->ti_asid_bitmap[word] = 0;
-	}
+	TLBINFO_ASID_RESET(ti);
 
 	switch (op) {
 #if defined(MULTIPROCESSOR) && defined(PMAP_TLB_NEED_SHOOTDOWN)
@@ -452,10 +455,14 @@ pmap_tlb_asid_reinitialize(struct pmap_tlb_info *ti, enum tlb_invalidate_op op)
 		 */
 #if !defined(MULTIPROCESSOR) || defined(PMAP_TLB_NEED_SHOOTDOWN)
 		pmap_tlb_asid_check();
-		const u_int asids_found = tlb_record_asids(ti->ti_asid_bitmap,
-		    ti->ti_asid_max);
+		const u_int asids_found = tlb_record_asids(
+		    ti->ti_asid_bitmap._b, ti->ti_asid_max);
 		pmap_tlb_asid_check();
-		KASSERT(asids_found == pmap_tlb_asid_count(ti));
+#ifdef DIAGNOSTIC
+		const u_int asids_count = pmap_tlb_asid_count(ti);
+#endif
+		KASSERTMSG(asids_found == asids_count,
+		    "found %u != count %u", asids_found, asids_count);
 		if (__predict_false(asids_found >= ti->ti_asid_max / 2)) {
 			tlb_invalidate_asids(KERNEL_PID + 1, ti->ti_asid_max);
 #else /* MULTIPROCESSOR && !PMAP_TLB_NEED_SHOOTDOWN */
@@ -470,13 +477,9 @@ pmap_tlb_asid_reinitialize(struct pmap_tlb_info *ti, enum tlb_invalidate_op op)
 			 */
 			tlb_invalidate_all();
 #endif /* MULTIPROCESSOR && !PMAP_TLB_NEED_SHOOTDOWN */
-			ti->ti_asid_bitmap[0] = (2 << KERNEL_PID) - 1;
-			for (size_t word = 1;
-			     word <= asid_bitmap_words;
-			     word++) {
-				ti->ti_asid_bitmap[word] = 0;
-			}
-			ti->ti_asids_free = ti->ti_asid_max - KERNEL_PID;
+			TLBINFO_ASID_RESET(ti);
+			ti->ti_asids_free = TLBINFO_ASID_INITIAL_FREE(
+				ti->ti_asid_max);
 #if !defined(MULTIPROCESSOR) || defined(PMAP_TLB_NEED_SHOOTDOWN)
 		} else {
 			ti->ti_asids_free -= asids_found;
@@ -715,13 +718,13 @@ pmap_tlb_shootdown_bystanders(pmap_t pm)
 
 	kcpuset_destroy(pm_active);
 
-	UVMHIST_LOG(maphist, " <-- done (ipi_sent=%d)", ipi_sent, 0, 0, 0);
+	UVMHIST_LOG(maphist, " <-- done (ipi_sent=%jd)", ipi_sent, 0, 0, 0);
 
 	return ipi_sent;
 }
 #endif /* MULTIPROCESSOR && PMAP_TLB_NEED_SHOOTDOWN */
 
-#ifndef PMAP_TLB_HWPAGEWALKER
+#ifndef PMAP_HWPAGEWALKER
 int
 pmap_tlb_update_addr(pmap_t pm, vaddr_t va, pt_entry_t pte, u_int flags)
 {
@@ -731,8 +734,8 @@ pmap_tlb_update_addr(pmap_t pm, vaddr_t va, pt_entry_t pte, u_int flags)
 
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
 	UVMHIST_LOG(maphist,
-	    " (pm=%p va=%#"PRIxVADDR", pte=%#"PRIxPTE" flags=%#x)",
-	    pm, va, pte_value(pte), flags);
+	    " (pm=%#jx va=%#j, pte=%#jx flags=%#jx)",
+	    (uintptr_t)pm, va, pte_value(pte), flags);
 
 	KASSERT(kpreempt_disabled());
 
@@ -746,7 +749,7 @@ pmap_tlb_update_addr(pmap_t pm, vaddr_t va, pt_entry_t pte, u_int flags)
 		    (flags & PMAP_TLB_INSERT) != 0);
 		pmap_tlb_asid_check();
 		UVMHIST_LOG(maphist,
-		     "   %d <-- tlb_update_addr(%#"PRIxVADDR", %#x, %#"PRIxPTE", ...)",
+		     "   %jd <-- tlb_update_addr(%#jx, %#jx, %#jx, ...)",
 		     rv, va, pai->pai_asid, pte_value(pte));
 		KASSERTMSG((flags & PMAP_TLB_INSERT) == 0 || rv == 1,
 		    "pmap %p (asid %u) va %#"PRIxVADDR" pte %#"PRIxPTE" rv %d",
@@ -758,11 +761,11 @@ pmap_tlb_update_addr(pmap_t pm, vaddr_t va, pt_entry_t pte, u_int flags)
 #endif
 	TLBINFO_UNLOCK(ti);
 
-	UVMHIST_LOG(maphist, "   <-- done (rv=%d)", rv, 0, 0, 0);
+	UVMHIST_LOG(maphist, "   <-- done (rv=%jd)", rv, 0, 0, 0);
 
 	return rv;
 }
-#endif /* !PMAP_TLB_HWPAGEWALKER */
+#endif /* !PMAP_HWPAGEWALKER */
 
 void
 pmap_tlb_invalidate_addr(pmap_t pm, vaddr_t va)
@@ -771,15 +774,15 @@ pmap_tlb_invalidate_addr(pmap_t pm, vaddr_t va)
 	struct pmap_asid_info * const pai = PMAP_PAI(pm, ti);
 
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
-	UVMHIST_LOG(maphist, " (pm=%p va=%#"PRIxVADDR") ti=%p asid=%#x",
-	    pm, va, ti, pai->pai_asid);
+	UVMHIST_LOG(maphist, " (pm=%#jx va=%#jx) ti=%#jx asid=%#jx",
+	    (uintptr_t)pm, va, (uintptr_t)ti, pai->pai_asid);
 
 	KASSERT(kpreempt_disabled());
 
 	TLBINFO_LOCK(ti);
 	if (pm == pmap_kernel() || PMAP_PAI_ASIDVALID_P(pai, ti)) {
 		pmap_tlb_asid_check();
-		UVMHIST_LOG(maphist, " invalidating %#"PRIxVADDR" asid %#x",
+		UVMHIST_LOG(maphist, " invalidating %#jx asid %#jx",
 		    va, pai->pai_asid, 0, 0);
 		tlb_invalidate_addr(va, pai->pai_asid);
 		pmap_tlb_asid_check();
@@ -826,11 +829,11 @@ pmap_tlb_asid_alloc(struct pmap_tlb_info *ti, pmap_t pm,
 	 * a new one.
 	 */
 	if (__predict_true(TLBINFO_ASID_INUSE_P(ti, ti->ti_asid_hint))) {
-		const size_t nbpw __diagused = 8*sizeof(ti->ti_asid_bitmap[0]);
+		const size_t nbpw = NBBY * sizeof(ti->ti_asid_bitmap._b[0]);
 		size_t i;
 		u_long bits;
-		for (i = 0; (bits = ~ti->ti_asid_bitmap[i]) == 0; i++) {
-			KASSERT(i < __arraycount(ti->ti_asid_bitmap) - 1);
+		for (i = 0; (bits = ~ti->ti_asid_bitmap._b[i]) == 0; i++) {
+			KASSERT(i < __arraycount(ti->ti_asid_bitmap._b) - 1);
 		}
 		/*
 		 * ffs wants to find the first bit set while we want
@@ -847,9 +850,9 @@ pmap_tlb_asid_alloc(struct pmap_tlb_info *ti, pmap_t pm,
 	KASSERT(ti->ti_asid_hint <= ti->ti_asid_max);
 	KASSERTMSG(PMAP_TLB_FLUSH_ASID_ON_RESET
 	    || TLBINFO_ASID_INUSE_P(ti, ti->ti_asid_hint - 1),
-	    "hint %u bitmap %p", ti->ti_asid_hint, ti->ti_asid_bitmap);
+	    "hint %u bitmap %p", ti->ti_asid_hint, &ti->ti_asid_bitmap);
 	KASSERTMSG(!TLBINFO_ASID_INUSE_P(ti, ti->ti_asid_hint),
-	    "hint %u bitmap %p", ti->ti_asid_hint, ti->ti_asid_bitmap);
+	    "hint %u bitmap %p", ti->ti_asid_hint, &ti->ti_asid_bitmap);
 
 	/*
 	 * The hint contains our next ASID so take it and advance the hint.
@@ -896,7 +899,8 @@ pmap_tlb_asid_acquire(pmap_t pm, struct lwp *l)
 	struct pmap_asid_info * const pai = PMAP_PAI(pm, ti);
 
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
-	UVMHIST_LOG(maphist, "(pm=%p, l=%p, ti=%p)", pm, l, ti, 0);
+	UVMHIST_LOG(maphist, "(pm=%#jx, l=%#jx, ti=%#jx)", (uintptr_t)pm,
+	    (uintptr_t)l, (uintptr_t)ti, 0);
 
 	KASSERT(kpreempt_disabled());
 
@@ -927,7 +931,8 @@ pmap_tlb_asid_acquire(pmap_t pm, struct lwp *l)
 		 * Get an ASID.
 		 */
 		pmap_tlb_asid_alloc(ti, pm, pai);
-		UVMHIST_LOG(maphist, "allocated asid %#x", pai->pai_asid, 0, 0, 0);
+		UVMHIST_LOG(maphist, "allocated asid %#jx", pai->pai_asid,
+		    0, 0, 0);
 	}
 	pmap_tlb_pai_check(ti, true);
 #if defined(MULTIPROCESSOR)
@@ -945,7 +950,8 @@ pmap_tlb_asid_acquire(pmap_t pm, struct lwp *l)
 		kcpuset_atomic_set(pm->pm_onproc, cpu_index(ci));
 #endif
 		ci->ci_pmap_asid_cur = pai->pai_asid;
-		UVMHIST_LOG(maphist, "setting asid to %#x", pai->pai_asid, 0, 0, 0);
+		UVMHIST_LOG(maphist, "setting asid to %#jx", pai->pai_asid,
+		    0, 0, 0);
 		tlb_set_asid(pai->pai_asid);
 		pmap_tlb_asid_check();
 	} else {
@@ -983,7 +989,7 @@ pmap_tlb_asid_deactivate(pmap_t pm)
 	}
 #endif
 	curcpu()->ci_pmap_asid_cur = KERNEL_PID;
-	UVMHIST_LOG(maphist, " <-- done (pm=%p)", pm, 0, 0, 0);
+	UVMHIST_LOG(maphist, " <-- done (pm=%#jx)", (uintptr_t)pm, 0, 0, 0);
 	tlb_set_asid(KERNEL_PID);
 	pmap_tlb_pai_check(cpu_tlb_info(curcpu()), false);
 #if defined(DEBUG)
@@ -995,7 +1001,7 @@ void
 pmap_tlb_asid_release_all(struct pmap *pm)
 {
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
-	UVMHIST_LOG(maphist, "(pm=%p)", pm, 0, 0, 0);
+	UVMHIST_LOG(maphist, "(pm=%#jx)", (uintptr_t)pm, 0, 0, 0);
 
 	KASSERT(pm != pmap_kernel());
 #if defined(MULTIPROCESSOR)

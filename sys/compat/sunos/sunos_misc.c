@@ -1,4 +1,4 @@
-/*	$NetBSD: sunos_misc.c,v 1.170 2015/10/23 19:40:11 maxv Exp $	*/
+/*	$NetBSD: sunos_misc.c,v 1.172 2018/09/03 16:29:30 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -50,7 +50,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sunos_misc.c,v 1.170 2015/10/23 19:40:11 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sunos_misc.c,v 1.172 2018/09/03 16:29:30 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -383,7 +383,7 @@ sunos_sys_getdents(struct lwp *l, const struct sunos_sys_getdents_args *uap, reg
 		goto out1;
 	}
 
-	buflen = min(MAXBSIZE, SCARG(uap, nbytes));
+	buflen = uimin(MAXBSIZE, SCARG(uap, nbytes));
 	buf = malloc(buflen, M_TEMP, M_WAITOK);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	off = fp->f_offset;
@@ -414,8 +414,10 @@ again:
 	for (cookie = cookiebuf; len > 0; len -= reclen) {
 		bdp = (struct dirent *)inp;
 		reclen = bdp->d_reclen;
-		if (reclen & 3)
-			panic("sunos_getdents");
+		if (reclen & 3) {
+			error = EIO;
+			goto out;
+		}
 		if ((*cookie >> 32) != 0) {
 			compat_offseterr(vp, "sunos_getdents");
 			error = EINVAL;

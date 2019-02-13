@@ -1,4 +1,4 @@
-/*	$NetBSD: pcf8583.c,v 1.16 2014/11/20 16:34:26 christos Exp $	*/
+/*	$NetBSD: pcf8583.c,v 1.18 2018/06/16 21:22:13 thorpej Exp $	*/
 
 /*
  * Copyright (c) 2003 Wasabi Systems, Inc.
@@ -43,7 +43,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: pcf8583.c,v 1.16 2014/11/20 16:34:26 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: pcf8583.c,v 1.18 2018/06/16 21:22:13 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -60,6 +60,8 @@ __KERNEL_RCSID(0, "$NetBSD: pcf8583.c,v 1.16 2014/11/20 16:34:26 christos Exp $"
 #include <dev/i2c/pcf8583reg.h>
 #include <dev/i2c/pcf8583var.h>
 
+#include "ioconf.h"
+
 struct pcfrtc_softc {
 	device_t sc_dev;
 	i2c_tag_t sc_tag;
@@ -73,7 +75,6 @@ static void pcfrtc_attach(device_t, device_t, void *);
 
 CFATTACH_DECL_NEW(pcfrtc, sizeof(struct pcfrtc_softc),
 	pcfrtc_match, pcfrtc_attach, NULL, NULL);
-extern struct cfdriver pcfrtc_cd;
 
 dev_type_open(pcfrtc_open);
 dev_type_close(pcfrtc_close);
@@ -108,7 +109,7 @@ pcfrtc_match(device_t parent, cfdata_t cf, void *aux)
 	struct i2c_attach_args *ia = aux;
 
 	if ((ia->ia_addr & PCF8583_ADDRMASK) == PCF8583_ADDR)
-		return (1);
+		return (I2C_MATCH_ADDRESS_ONLY);
 
 	return (0);
 }

@@ -1,4 +1,4 @@
-/* $NetBSD: dkvar.h,v 1.25 2015/12/21 12:33:12 mlelstv Exp $ */
+/* $NetBSD: dkvar.h,v 1.30 2017/11/01 19:15:31 mlelstv Exp $ */
 
 /*-
  * Copyright (c) 2002 The NetBSD Foundation, Inc.
@@ -29,6 +29,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef _DEV_DKVAR_H_
+#define _DEV_DKVAR_H_
+
 #include <sys/rndsource.h>
 
 struct pathbuf; /* from namei.h */
@@ -50,7 +53,7 @@ struct dk_softc {
 	struct bufq_state	*sc_bufq;	/* buffer queue */
 	int			 sc_dtype;	/* disk type */
 	struct buf		*sc_deferred;	/* retry after start failed */
-	bool			 sc_busy;	/* processing buffers */
+	int			 sc_busy;	/* processing buffers */
 	krndsource_t		 sc_rnd_source;	/* entropy source */
 };
 
@@ -68,6 +71,7 @@ struct dk_softc {
 #define DKF_KLABEL      0x00400000 /* keep label on close */
 #define DKF_VLABEL      0x00800000 /* label is valid */
 #define DKF_SLEEP       0x80000000 /* dk_start/dk_done may sleep */
+#define DKF_NO_RND	0x01000000 /* do not attach as rnd source */
 
 /* Mask of flags that dksubr.c understands, other flags are fair game */
 #define DK_FLAGMASK	0xffff0000
@@ -107,3 +111,5 @@ void	dk_getdisklabel(struct dk_softc *, dev_t);
 void	dk_getdefaultlabel(struct dk_softc *, struct disklabel *);
 
 int	dk_lookup(struct pathbuf *, struct lwp *, struct vnode **);
+
+#endif /* ! _DEV_DKVAR_H_ */   

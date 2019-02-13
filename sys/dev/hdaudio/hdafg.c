@@ -1,4 +1,4 @@
-/* $NetBSD: hdafg.c,v 1.9 2015/11/15 23:03:50 jmcneill Exp $ */
+/* $NetBSD: hdafg.c,v 1.16 2018/09/27 01:18:11 manu Exp $ */
 
 /*
  * Copyright (c) 2009 Precedence Technologies Ltd <support@precedence.co.uk>
@@ -60,7 +60,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: hdafg.c,v 1.9 2015/11/15 23:03:50 jmcneill Exp $");
+__KERNEL_RCSID(0, "$NetBSD: hdafg.c,v 1.16 2018/09/27 01:18:11 manu Exp $");
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -797,8 +797,6 @@ hdafg_assoc_count_channels(struct hdafg_softc *sc,
 		return 0;
 
 	dacmap = kmem_zalloc(dacmapsz, KM_SLEEP);
-	if (dacmap == NULL)
-		return 0;
 
 	for (i = 0; i < HDAUDIO_MAXPINS; i++)
 		if (as->as_dacs[i])
@@ -881,15 +879,19 @@ hdafg_assoc_dump_dd(struct hdafg_softc *sc, struct hdaudio_assoc *as, int pin,
 			res = (*cmd)(sc->sc_codec, as->as_pins[pin],
 			    CORB_GET_HDMI_ELD_DATA, i);
 			if (!(res & COP_ELD_VALID)) {
+#ifdef HDAFG_HDMI_DEBUG
 				hda_error(sc, "bad ELD size (%u/%u)\n",
 				    i, elddatalen);
+#endif
 				break;
 			}
 			elddata[i] = COP_ELD_DATA(res);
 		}
 
 		if (hdafg_dd_parse_info(elddata, elddatalen, &hdi) != 0) {
+#ifdef HDAFG_HDMI_DEBUG
 			hda_error(sc, "failed to parse ELD data\n");
+#endif
 			return;
 		}
 
@@ -1263,10 +1265,6 @@ hdafg_control_parse(struct hdafg_softc *sc)
 
 	cnt = 0;
 	for (i = sc->sc_startnode; cnt < maxctls && i < sc->sc_endnode; i++) {
-		if (cnt >= maxctls) {
-			hda_error(sc, "ctl overflow\n");
-			break;
-		}
 		w = hdafg_widget_lookup(sc, i);
 		if (w == NULL || w->w_enable == false)
 			continue;
@@ -1468,7 +1466,6 @@ hdafg_disable_useless(struct hdafg_softc *sc)
 	do {
 		done = 1;
 		/* Disable and mute controls for disabled widgets */
-		i = 0;
 		for (i = 0; i < sc->sc_nctls; i++) {
 			ctl = &sc->sc_ctls[i];
 			if (ctl->ctl_enable == false)
@@ -2105,25 +2102,25 @@ hdafg_disable_unassoc(struct hdafg_softc *sc)
 	struct hdaudio_control *ctl;
 	int i, j, k;
 
-	/* Disable unassociated widgets */
 	for (i = sc->sc_startnode; i < sc->sc_endnode; i++) {
 		w = hdafg_widget_lookup(sc, i);
 		if (w == NULL || w->w_enable == false)
 			continue;
-		if (w->w_bindas == -1) {
-			w->w_enable = 0;
-			hda_trace(sc, "disable %02X [unassociated]\n",
-			    w->w_nid);
+		
+		/* Disable unassociated widgets */
+		if (w->w_type != COP_AWCAP_TYPE_PIN_COMPLEX) {
+			if (w->w_bindas == -1) {
+				w->w_enable = 0;
+				hda_trace(sc, "disable %02X [unassociated]\n",
+				    w->w_nid);
+			}
+			continue;
 		}
-	}
 
-	/* Disable input connections on input pin and output on output */
-	for (i = sc->sc_startnode; i < sc->sc_endnode; i++) {
-		w = hdafg_widget_lookup(sc, i);
-		if (w == NULL || w->w_enable == false)
-			continue;
-		if (w->w_type != COP_AWCAP_TYPE_PIN_COMPLEX)
-			continue;
+		/*
+		 * Disable input connections on input pin
+		 * and output on output pin
+		 */
 		if (w->w_bindas < 0)
 			continue;
 		if (as[w->w_bindas].as_dir == HDAUDIO_PINDIR_IN) {
@@ -2790,7 +2787,6 @@ hdafg_assign_mixers(struct hdafg_softc *sc)
 		}
 	}
 	/* Treat unrequired as possible */
-	i = 0;
 	for (i = 0; i < sc->sc_nctls; i++) {
 		ctl = &sc->sc_ctls[i];
 		if (ctl->ctl_audiomask == 0)
@@ -3424,13 +3420,13 @@ hdafg_configure_encodings(struct hdafg_softc *sc)
 
 	sc->sc_pchan = sc->sc_rchan = 0;
 
-	for (nchan = 0, i = 0; i < sc->sc_nassocs; i++) {
+	for (i = 0; i < sc->sc_nassocs; i++) {
 		nchan = hdafg_assoc_count_channels(sc, &as[i],
 		    HDAUDIO_PINDIR_OUT);
 		if (nchan > sc->sc_pchan)
 			sc->sc_pchan = nchan;
 	}
-	for (nchan = 0, i = 0; i < sc->sc_nassocs; i++) {
+	for (i = 0; i < sc->sc_nassocs; i++) {
 		nchan = hdafg_assoc_count_channels(sc, &as[i],
 		    HDAUDIO_PINDIR_IN);
 		if (nchan > sc->sc_rchan)
@@ -3663,7 +3659,7 @@ hdafg_attach(device_t parent, device_t self, void *opaque)
 	struct hdafg_softc *sc = device_private(self);
 	audio_params_t defparams;
 	prop_dictionary_t args = opaque;
-	char vendor[16], product[16];
+	char vendor[MAX_AUDIO_DEV_LEN], product[MAX_AUDIO_DEV_LEN];
 	uint64_t fgptr = 0;
 	uint32_t astype = 0;
 	uint8_t nid = 0;
@@ -4058,7 +4054,7 @@ hdafg_getdev(void *opaque, struct audio_device *audiodev)
 	    sc->sc_vendor);
 	hdaudio_findproduct(audiodev->version, sizeof(audiodev->version),
 	    sc->sc_vendor, sc->sc_product);
-	snprintf(audiodev->config, sizeof(audiodev->config) - 1,
+	snprintf(audiodev->config, sizeof(audiodev->config),
 	    "%02Xh", sc->sc_nid);
 
 	return 0;
@@ -4346,7 +4342,9 @@ hdafg_unsol(device_t self, uint8_t tag)
 
 	switch (tag) {
 	case HDAUDIO_UNSOLTAG_EVENT_DD:
+#ifdef HDAFG_HDMI_DEBUG
 		hda_print(sc, "unsol: display device hotplug\n");
+#endif
 		for (i = 0; i < sc->sc_nassocs; i++) {
 			if (as[i].as_displaydev == false)
 				continue;
@@ -4358,7 +4356,9 @@ hdafg_unsol(device_t self, uint8_t tag)
 		}
 		break;
 	default:
+#ifdef HDAFG_HDMI_DEBUG
 		hda_print(sc, "unsol: tag=%u\n", tag);
+#endif
 		break;
 	}
 

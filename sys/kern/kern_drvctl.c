@@ -1,4 +1,4 @@
-/* $NetBSD: kern_drvctl.c,v 1.41 2015/12/07 20:01:43 christos Exp $ */
+/* $NetBSD: kern_drvctl.c,v 1.44 2018/09/18 01:25:09 mrg Exp $ */
 
 /*
  * Copyright (c) 2004
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_drvctl.c,v 1.41 2015/12/07 20:01:43 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_drvctl.c,v 1.44 2018/09/18 01:25:09 mrg Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -93,6 +93,7 @@ static int	drvctl_stat(struct file *, struct stat *);
 static int	drvctl_close(struct file *);
 
 static const struct fileops drvctl_fileops = {
+	.fo_name = "drvctl",
 	.fo_read = drvctl_read,
 	.fo_write = drvctl_write,
 	.fo_ioctl = drvctl_ioctl,
@@ -106,7 +107,6 @@ static const struct fileops drvctl_fileops = {
 
 #define MAXLOCATORS 100
 
-extern int (*devmon_insert_vec)(const char *, prop_dictionary_t);
 static int (*saved_insert_vec)(const char *, prop_dictionary_t) = NULL;
 
 static int drvctl_command(struct lwp *, struct plistref *, u_long, int);
@@ -151,12 +151,6 @@ devmon_insert(const char *event, prop_dictionary_t ev)
 	}
 
 	dce = kmem_alloc(sizeof(*dce), KM_SLEEP);
-	if (dce == NULL) {
-		prop_object_release(ev);
-		mutex_exit(&drvctl_lock);
-		return 0;
-	}
-
 	dce->dce_event = ev;
 
 	if (drvctl_eventcnt == DRVCTL_EVENTQ_DEPTH) {

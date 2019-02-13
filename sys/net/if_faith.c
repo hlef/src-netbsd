@@ -1,4 +1,4 @@
-/*	$NetBSD: if_faith.c,v 1.53 2016/06/10 13:27:16 ozaki-r Exp $	*/
+/*	$NetBSD: if_faith.c,v 1.59 2018/06/26 06:48:02 msaitoh Exp $	*/
 /*	$KAME: if_faith.c,v 1.21 2001/02/20 07:59:26 itojun Exp $	*/
 
 /*
@@ -40,9 +40,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_faith.c,v 1.53 2016/06/10 13:27:16 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_faith.c,v 1.59 2018/06/26 06:48:02 msaitoh Exp $");
 
+#ifdef _KERNEL_OPT
 #include "opt_inet.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -53,6 +55,9 @@ __KERNEL_RCSID(0, "$NetBSD: if_faith.c,v 1.53 2016/06/10 13:27:16 ozaki-r Exp $"
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <sys/queue.h>
+#include <sys/device.h>
+#include <sys/module.h>
+#include <sys/atomic.h>
 
 #include <sys/cpu.h>
 
@@ -79,9 +84,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_faith.c,v 1.53 2016/06/10 13:27:16 ozaki-r Exp $"
 #include <netinet6/ip6_var.h>
 #endif
 
-
-#include <net/net_osdep.h>
-
 #include "ioconf.h"
 
 static int	faithioctl(struct ifnet *, u_long, void *);
@@ -98,18 +100,44 @@ static struct if_clone faith_cloner =
 
 #define	FAITHMTU	1500
 
+static u_int faith_count;
+
 /* ARGSUSED */
 void
 faithattach(int count)
 {
 
+	/*
+	 * Nothing to do here, initialization is handled by the
+	 * module initialization code in faithinit() below).
+	 */
+}
+
+static void
+faithinit(void)
+{
 	if_clone_attach(&faith_cloner);
+}
+
+static int
+faithdetach(void)
+{
+	int error = 0;
+
+	if (faith_count != 0)
+		error = EBUSY;
+
+	if (error == 0)
+		if_clone_detach(&faith_cloner);
+
+	return error;
 }
 
 static int
 faith_clone_create(struct if_clone *ifc, int unit)
 {
 	struct ifnet *ifp;
+	int rv;
 
 	ifp = if_alloc(IFT_FAITH);
 
@@ -124,9 +152,14 @@ faith_clone_create(struct if_clone *ifc, int unit)
 	ifp->if_hdrlen = 0;
 	ifp->if_addrlen = 0;
 	ifp->if_dlt = DLT_NULL;
-	if_attach(ifp);
+	rv = if_attach(ifp);
+	if (rv != 0) {
+		if_free(ifp);
+		return rv;
+	}
 	if_alloc_sadl(ifp);
 	bpf_attach(ifp, DLT_NULL, sizeof(u_int));
+	atomic_inc_uint(&faith_count);
 	return (0);
 }
 
@@ -138,6 +171,7 @@ faith_clone_destroy(struct ifnet *ifp)
 	if_detach(ifp);
 	if_free(ifp);
 
+	atomic_dec_uint(&faith_count);
 	return (0);
 }
 
@@ -159,7 +193,7 @@ faithoutput(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
 		m_adj(m, sizeof(int));
 	}
 
-	bpf_mtap_af(ifp, af, m);
+	bpf_mtap_af(ifp, af, m, BPF_D_OUT);
 
 	if (rt && rt->rt_flags & (RTF_REJECT|RTF_BLACKHOLE)) {
 		m_freem(m);
@@ -226,9 +260,9 @@ faithioctl(struct ifnet *ifp, u_long cmd, void *data)
 	switch (cmd) {
 
 	case SIOCINITIFADDR:
-		ifp->if_flags |= IFF_UP | IFF_RUNNING;
 		ifa = (struct ifaddr *)data;
 		ifa->ifa_rtrequest = faithrtrequest;
+		ifp->if_flags |= IFF_UP | IFF_RUNNING;
 		/*
 		 * Everything else is done at a higher level.
 		 */
@@ -290,7 +324,14 @@ faithprefix(struct in6_addr *in6)
 	else
 		ret = 0;
 	if (rt)
-		rtfree(rt);
+		rt_unref(rt);
 	return ret;
 }
 #endif
+
+/*
+ * Module infrastructure
+ */
+#include "if_module.h"
+
+IF_MODULE(MODULE_CLASS_DRIVER, faith, "")

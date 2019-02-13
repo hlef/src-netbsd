@@ -1,4 +1,4 @@
-/*	$NetBSD: locore_subr.S,v 1.54 2014/07/30 23:27:55 matt Exp $	*/
+/*	$NetBSD: locore_subr.S,v 1.56 2018/05/04 17:13:08 macallan Exp $	*/
 
 /*
  * Copyright (c) 2001 Wasabi Systems, Inc.
@@ -288,6 +288,7 @@ switchto_restore:
  */
 	ldreg	%r31,CFRAME_R31(%r1)	/* restore saved registers */
 	ldreg	%r30,CFRAME_R30(%r1)
+	stwcx.	%r1,0,%r1		/* clear reservation */
 #if 1
 	addi	%r1,%r1,CALLFRAMELEN
 #else
@@ -328,6 +329,7 @@ _ENTRY(softint_cleanup)
 	mtmsr	%r0
 	isync
 #endif
+	stwcx.	%r1,0,%r1		/* clear reservation */
 	addi	%r1, %r1, CALLFRAMELEN
 	ldreg	%r0, CFRAME_LR(%r1)
 	mtlr	%r0
@@ -478,6 +480,7 @@ _ENTRY(softint_fast_dispatch)
 	ldreg	%r29,SFRAME_R29(%r1)	/* R29 */
 	ldreg	%r31,SFRAMELEN+CFRAME_R31(%r1)	/* restore saved registers */
 	ldreg	%r30,SFRAMELEN+CFRAME_R30(%r1)
+	stwcx.	%r1,0,%r1		/* clear reservation */
 	addi	%r1,%r1,SFRAMELEN+2*CALLFRAMELEN /* remove switch & callframes */
 #endif
 	ldreg	%r0,CFRAME_LR(%r1)
@@ -523,6 +526,18 @@ _ENTRY(cpu_lwp_bootstrap)
 ENTRY(cpu_spinup_trampoline)
 	li	%r0,0
 	mtmsr	%r0
+
+	lis	%r5,oeacpufeat@ha
+	lwz	%r5,oeacpufeat@l(%r5)
+	andi.	%r5,%r5,OEACPU_64_BRIDGE
+	beq	6f
+	sync
+	slbia
+	sync
+	isync
+	clrldi	%r0,%r0,32
+	mtmsrd	%r0
+6:
 	isync
 
 	lis	%r4,_C_LABEL(cpu_hatch_stack)@ha

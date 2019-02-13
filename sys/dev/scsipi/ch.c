@@ -1,4 +1,4 @@
-/*	$NetBSD: ch.c,v 1.90 2014/07/25 08:10:38 dholland Exp $	*/
+/*	$NetBSD: ch.c,v 1.92 2017/10/25 08:12:39 maya Exp $	*/
 
 /*-
  * Copyright (c) 1996, 1997, 1998, 1999, 2004 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ch.c,v 1.90 2014/07/25 08:10:38 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ch.c,v 1.92 2017/10/25 08:12:39 maya Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -132,7 +132,7 @@ const struct cdevsw ch_cdevsw = {
 	.d_mmap = nommap,
 	.d_kqfilter = chkqfilter,
 	.d_discard = nodiscard,
-	.d_flag = D_OTHER
+	.d_flag = D_OTHER | D_MPSAFE
 };
 
 /* SCSI glue */
@@ -487,11 +487,19 @@ filt_chread(struct knote *kn, long hint)
 	return (1);
 }
 
-static const struct filterops chread_filtops =
-	{ 1, NULL, filt_chdetach, filt_chread };
+static const struct filterops chread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_chdetach,
+	.f_event = filt_chread,
+};
 
-static const struct filterops chwrite_filtops =
-	{ 1, NULL, filt_chdetach, filt_seltrue };
+static const struct filterops chwrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_chdetach,
+	.f_event = filt_seltrue,
+};
 
 static int
 chkqfilter(dev_t dev, struct knote *kn)

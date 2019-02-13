@@ -1,4 +1,4 @@
-/*	$NetBSD: dtrace_isa.c,v 1.5 2016/05/14 21:19:05 chs Exp $	*/
+/*	$NetBSD: dtrace_isa.c,v 1.10 2018/08/16 14:14:51 christos Exp $	*/
 
 /*
  * CDDL HEADER START
@@ -21,7 +21,7 @@
  *
  * CDDL HEADER END
  *
- * $FreeBSD: src/sys/cddl/dev/dtrace/amd64/dtrace_isa.c,v 1.2.2.1 2009/08/03 08:13:06 kensmith Exp $
+ * $FreeBSD: head/sys/cddl/dev/dtrace/amd64/dtrace_isa.c 298171 2016-04-17 23:08:47Z markj $
  */
 /*
  * Copyright 2005 Sun Microsystems, Inc.  All rights reserved.
@@ -38,22 +38,23 @@
 
 #include <machine/vmparam.h>
 
+#include "regset.h"
+
 uint8_t dtrace_fuword8_nocheck(void *);
 uint16_t dtrace_fuword16_nocheck(void *);
 uint32_t dtrace_fuword32_nocheck(void *);
 uint64_t dtrace_fuword64_nocheck(void *);
 
-uintptr_t kernelbase = (uintptr_t)KERN_BASE;
+#define INKERNEL(va) ((intptr_t)(va) < 0) /* XXX horror */
 
-#define INKERNEL(va) ((intptr_t)(va) < 0)
-
-struct amd64_frame {     
+struct amd64_frame {
 	struct amd64_frame	*f_frame;
-	uintptr_t		 f_retaddr; 
-	uintptr_t		 f_arg0;
+	uintptr_t		 f_retaddr;
 };
 
 typedef unsigned long vm_offset_t;
+
+int	dtrace_ustackdepth_max = 2048;
 
 void
 dtrace_getpcstack(pc_t *pcstack, int pcstack_limit, int aframes,
@@ -108,14 +109,25 @@ static int
 dtrace_getustack_common(uint64_t *pcstack, int pcstack_limit, uintptr_t pc,
     uintptr_t sp)
 {
+	uintptr_t oldsp;
 	volatile uint16_t *flags =
 	    (volatile uint16_t *)&cpu_core[cpu_number()].cpuc_dtrace_flags;
 	int ret = 0;
 
 	ASSERT(pcstack == NULL || pcstack_limit > 0);
+	ASSERT(dtrace_ustackdepth_max > 0);
 
 	while (pc != 0) {
-		ret++;
+		/*
+		 * We limit the number of times we can go around this
+		 * loop to account for a circular stack.
+		 */
+		if (ret++ >= dtrace_ustackdepth_max) {
+			*flags |= CPU_DTRACE_BADSTACK;
+			cpu_core[cpu_number()].cpuc_dtrace_illval = sp;
+			break;
+		}
+
 		if (pcstack != NULL) {
 			*pcstack++ = (uint64_t)pc;
 			pcstack_limit--;
@@ -126,9 +138,17 @@ dtrace_getustack_common(uint64_t *pcstack, int pcstack_limit, uintptr_t pc,
 		if (sp == 0)
 			break;
 
+		oldsp = sp;
+
 		pc = dtrace_fuword64((void *)(sp +
 			offsetof(struct amd64_frame, f_retaddr)));
 		sp = dtrace_fuword64((void *)sp);
+
+		if (sp == oldsp) {
+			*flags |= CPU_DTRACE_BADSTACK;
+			cpu_core[cpu_number()].cpuc_dtrace_illval = sp;
+			break;
+		}
 
 		/*
 		 * This is totally bogus:  if we faulted, we're going to clear
@@ -355,7 +375,8 @@ dtrace_getarg(int arg, int aframes)
 	for (i = 1; i <= aframes; i++) {
 		fp = fp->f_frame;
 
-		if (fp->f_retaddr == (long)dtrace_invop_callsite) {
+		if (P2ROUNDUP(fp->f_retaddr, 16) ==
+		    (long)dtrace_invop_callsite) {
 			/*
 			 * In the case of amd64, we will use the pointer to the
 			 * regs structure that was pushed when we took the
@@ -369,13 +390,36 @@ dtrace_getarg(int arg, int aframes)
 			 * we're seeking is passed in registers, we can just
 			 * load it directly.
 			 */
-			struct reg *rp = (struct reg *)((uintptr_t)&fp[1] +
-			    sizeof (uintptr_t));
+			struct trapframe *tf = (struct trapframe *)&fp[1];
 
 			if (arg <= inreg) {
-				stack = (uintptr_t *)&rp->regs[_REG_RDI];
+				switch (arg) {
+				case 0:
+					stack = (uintptr_t *)&tf->tf_rdi;
+					break;
+				case 1:
+					stack = (uintptr_t *)&tf->tf_rsi;
+					break;
+				case 2:
+					stack = (uintptr_t *)&tf->tf_rdx;
+					break;
+				case 3:
+					stack = (uintptr_t *)&tf->tf_rcx;
+					break;
+				case 4:
+					stack = (uintptr_t *)&tf->tf_r8;
+					break;
+				case 5:
+					stack = (uintptr_t *)&tf->tf_r9;
+					break;
+				default:
+					KASSERT(0);
+					stack = NULL;
+					break;
+				}
+				arg = 0;
 			} else {
-				stack = (uintptr_t *)(rp->regs[_REG_RSP]);
+				stack = (uintptr_t *)(tf->tf_rsp);
 				arg -= inreg;
 			}
 			goto load;
@@ -444,11 +488,9 @@ dtrace_getstackdepth(int aframes)
 		return depth - aframes;
 }
 
-#ifdef notyet
 ulong_t
-dtrace_getreg(struct regs *rp, uint_t reg)
+dtrace_getreg(struct trapframe *rp, uint_t reg)
 {
-#if defined(__amd64)
 	int regmap[] = {
 		REG_GS,		/* GS */
 		REG_FS,		/* FS */
@@ -484,72 +526,62 @@ dtrace_getreg(struct regs *rp, uint_t reg)
 
 	switch (reg) {
 	case REG_RDI:
-		return (rp->r_rdi);
+		return (rp->tf_rdi);
 	case REG_RSI:
-		return (rp->r_rsi);
+		return (rp->tf_rsi);
 	case REG_RDX:
-		return (rp->r_rdx);
+		return (rp->tf_rdx);
 	case REG_RCX:
-		return (rp->r_rcx);
+		return (rp->tf_rcx);
 	case REG_R8:
-		return (rp->r_r8);
+		return (rp->tf_r8);
 	case REG_R9:
-		return (rp->r_r9);
+		return (rp->tf_r9);
 	case REG_RAX:
-		return (rp->r_rax);
+		return (rp->tf_rax);
 	case REG_RBX:
-		return (rp->r_rbx);
+		return (rp->tf_rbx);
 	case REG_RBP:
-		return (rp->r_rbp);
+		return (rp->tf_rbp);
 	case REG_R10:
-		return (rp->r_r10);
+		return (rp->tf_r10);
 	case REG_R11:
-		return (rp->r_r11);
+		return (rp->tf_r11);
 	case REG_R12:
-		return (rp->r_r12);
+		return (rp->tf_r12);
 	case REG_R13:
-		return (rp->r_r13);
+		return (rp->tf_r13);
 	case REG_R14:
-		return (rp->r_r14);
+		return (rp->tf_r14);
 	case REG_R15:
-		return (rp->r_r15);
+		return (rp->tf_r15);
 	case REG_DS:
-		return (rp->r_ds);
+		return (rp->tf_ds);
 	case REG_ES:
-		return (rp->r_es);
+		return (rp->tf_es);
 	case REG_FS:
-		return (rp->r_fs);
+		return (rp->tf_fs);
 	case REG_GS:
-		return (rp->r_gs);
+		return (rp->tf_gs);
 	case REG_TRAPNO:
-		return (rp->r_trapno);
+		return (rp->tf_trapno);
 	case REG_ERR:
-		return (rp->r_err);
+		return (rp->tf_err);
 	case REG_RIP:
-		return (rp->r_rip);
+		return (rp->tf_rip);
 	case REG_CS:
-		return (rp->r_cs);
+		return (rp->tf_cs);
 	case REG_SS:
-		return (rp->r_ss);
+		return (rp->tf_ss);
 	case REG_RFL:
-		return (rp->r_rfl);
+		return (rp->tf_rflags);
 	case REG_RSP:
-		return (rp->r_rsp);
+		return (rp->tf_rsp);
 	default:
 		DTRACE_CPUFLAG_SET(CPU_DTRACE_ILLOP);
 		return (0);
 	}
-
-#else
-	if (reg > SS) {
-		DTRACE_CPUFLAG_SET(CPU_DTRACE_ILLOP);
-		return (0);
-	}
-
-	return ((&rp->r_gs)[reg]);
-#endif
 }
-#endif
 
 static int
 dtrace_copycheck(uintptr_t uaddr, uintptr_t kaddr, size_t size)

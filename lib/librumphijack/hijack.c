@@ -1,4 +1,4 @@
-/*      $NetBSD: hijack.c,v 1.119 2015/08/25 13:50:19 pooka Exp $	*/
+/*      $NetBSD: hijack.c,v 1.125 2018/06/28 06:20:36 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 2011 Antti Kantee.  All Rights Reserved.
@@ -34,7 +34,7 @@
 #include <rump/rumpuser_port.h>
 
 #if !defined(lint)
-__RCSID("$NetBSD: hijack.c,v 1.119 2015/08/25 13:50:19 pooka Exp $");
+__RCSID("$NetBSD: hijack.c,v 1.125 2018/06/28 06:20:36 ozaki-r Exp $");
 #endif
 
 #include <sys/param.h>
@@ -89,7 +89,8 @@ __RCSID("$NetBSD: hijack.c,v 1.119 2015/08/25 13:50:19 pooka Exp $");
 enum dualcall {
 	DUALCALL_WRITE, DUALCALL_WRITEV, DUALCALL_PWRITE, DUALCALL_PWRITEV,
 	DUALCALL_IOCTL, DUALCALL_FCNTL,
-	DUALCALL_SOCKET, DUALCALL_ACCEPT, DUALCALL_BIND, DUALCALL_CONNECT,
+	DUALCALL_SOCKET, DUALCALL_ACCEPT, DUALCALL_PACCEPT,
+	DUALCALL_BIND, DUALCALL_CONNECT,
 	DUALCALL_GETPEERNAME, DUALCALL_GETSOCKNAME, DUALCALL_LISTEN,
 	DUALCALL_RECVFROM, DUALCALL_RECVMSG,
 	DUALCALL_SENDTO, DUALCALL_SENDMSG,
@@ -161,6 +162,9 @@ enum dualcall {
 
 #ifdef HAVE___QUOTACTL
 	DUALCALL_QUOTACTL,
+#endif
+#ifdef __NetBSD__
+	DUALCALL_LINKAT,
 #endif
 	DUALCALL__NUM
 };
@@ -267,6 +271,7 @@ struct sysnames {
 } syscnames[] = {
 	{ DUALCALL_SOCKET,	S(REALSOCKET),	RSYS_NAME(SOCKET)	},
 	{ DUALCALL_ACCEPT,	"accept",	RSYS_NAME(ACCEPT)	},
+	{ DUALCALL_PACCEPT,	"paccept",	RSYS_NAME(PACCEPT)	},
 	{ DUALCALL_BIND,	"bind",		RSYS_NAME(BIND)		},
 	{ DUALCALL_CONNECT,	"connect",	RSYS_NAME(CONNECT)	},
 	{ DUALCALL_GETPEERNAME,	"getpeername",	RSYS_NAME(GETPEERNAME)	},
@@ -377,6 +382,9 @@ struct sysnames {
 	{ DUALCALL_QUOTACTL,	"__quotactl",	RSYS_NAME(__QUOTACTL)	},
 #endif /* HAVE___QUOTACTL */
 
+#ifdef __NetBSD__
+	{ DUALCALL_LINKAT,	"linkat",	RSYS_NAME(LINKAT)	},
+#endif
 };
 #undef S
 
@@ -987,7 +995,6 @@ fd_rump2host_withdup(int fd)
 static int
 fd_host2rump(int fd)
 {
-
 	if (!isdup2d(fd))
 		return fd - hijack_fdoff;
 	else
@@ -1064,6 +1071,10 @@ dodup(int oldd, int minfd)
 			minfd -= hijack_fdoff;
 		isrump = 1;
 	} else {
+		if (minfd >= hijack_fdoff) {
+			errno = EINVAL;
+			return -1;
+		}
 		op_fcntl = GETSYSCALL(host, FCNTL);
 		isrump = 0;
 	}
@@ -1266,6 +1277,19 @@ moveish(const char *from, const char *to,
 	return op(from, to);
 }
 
+#ifdef __NetBSD__
+int
+linkat(int fromfd, const char *from, int tofd, const char *to, int flags)
+{
+	if (fromfd != AT_FDCWD || tofd != AT_FDCWD
+	    || flags != AT_SYMLINK_FOLLOW)
+		return ENOSYS;
+
+	return moveish(from, to,
+	    GETSYSCALL(rump, LINK), GETSYSCALL(host, LINK));
+}
+#endif
+
 int
 link(const char *from, const char *to)
 {
@@ -1331,6 +1355,35 @@ accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 	return fd;
 }
 
+int
+paccept(int s, struct sockaddr *addr, socklen_t *addrlen,
+    const sigset_t * restrict sigmask, int flags)
+{
+	int (*op_paccept)(int, struct sockaddr *, socklen_t *,
+	    const sigset_t * restrict, int);
+	int fd;
+	bool isrump;
+
+	isrump = fd_isrump(s);
+
+	DPRINTF(("paccept -> %d", s));
+	if (isrump) {
+		op_paccept = GETSYSCALL(rump, PACCEPT);
+		s = fd_host2rump(s);
+	} else {
+		op_paccept = GETSYSCALL(host, PACCEPT);
+	}
+	fd = op_paccept(s, addr, addrlen, sigmask, flags);
+	if (fd != -1 && isrump)
+		fd = fd_rump2host(fd);
+	else
+		fd = fd_host2host(fd);
+
+	DPRINTF((" <- %d\n", fd));
+
+	return fd;
+}
+
 /*
  * ioctl() and fcntl() are varargs calls and need special treatment.
  */
@@ -1353,7 +1406,7 @@ ioctl(int fd, unsigned long cmd, ...)
 	va_list ap;
 	int rv;
 
-	DPRINTF(("ioctl -> %d\n", fd));
+	DPRINTF(("ioctl -> %d (%s)\n", fd, whichfd(fd)));
 	if (fd_isrump(fd)) {
 		fd = fd_host2rump(fd);
 		op_ioctl = GETSYSCALL(rump, IOCTL);
@@ -1364,6 +1417,7 @@ ioctl(int fd, unsigned long cmd, ...)
 	va_start(ap, cmd);
 	rv = op_ioctl(fd, cmd, va_arg(ap, void *));
 	va_end(ap);
+	DPRINTF(("ioctl <- %d\n", rv));
 	return rv;
 }
 
@@ -1377,6 +1431,7 @@ fcntl(int fd, int cmd, ...)
 	DPRINTF(("fcntl -> %d (cmd %d)\n", fd, cmd));
 
 	switch (cmd) {
+	case F_DUPFD_CLOEXEC:	/* Ignore CLOEXEC bit for now */
 	case F_DUPFD:
 		va_start(ap, cmd);
 		minfd = va_arg(ap, int);
@@ -1532,7 +1587,7 @@ write(int fd, const void *buf, size_t blen)
  */
 
 static int
-msg_convert(struct msghdr *msg, int (*func)(int))
+_msg_convert_fds(struct msghdr *msg, int (*func)(int), bool dryrun)
 {
 	struct cmsghdr *cmsg;
 
@@ -1552,12 +1607,27 @@ msg_convert(struct msghdr *msg, int (*func)(int))
 				if (newval < 0) {
 					return ENOTSUP;
 				}
-				*fdp = newval;
+				if (!dryrun)
+					*fdp = newval;
 				fdp++;
 			}
 		}
 	}
 	return 0;
+}
+
+static int
+msg_convert_fds(struct msghdr *msg, int (*func)(int))
+{
+
+	return _msg_convert_fds(msg, func, false);
+}
+
+static int
+msg_check_fds(struct msghdr *msg, int (*func)(int))
+{
+
+	return _msg_convert_fds(msg, func, true);
 }
 
 ssize_t
@@ -1581,9 +1651,9 @@ recvmsg(int fd, struct msghdr *msg, int flags)
 	 * convert descriptors in the message.
 	 */
 	if (isrump) {
-		msg_convert(msg, fd_rump2host);
+		msg_convert_fds(msg, fd_rump2host);
 	} else {
-		msg_convert(msg, fd_host2host);
+		msg_convert_fds(msg, fd_host2host);
 	}
 	return ret;
 }
@@ -1626,7 +1696,7 @@ sendmsg(int fd, const struct msghdr *msg, int flags)
 	/*
 	 * reject descriptors from a different kernel.
 	 */
-	error = msg_convert(__UNCONST(msg),
+	error = msg_check_fds(__UNCONST(msg),
 	    isrump ? fd_check_rump: fd_check_host);
 	if (error != 0) {
 		errno = error;
@@ -1645,7 +1715,7 @@ sendmsg(int fd, const struct msghdr *msg, int flags)
 		 *
 		 * it's safer to copy and modify instead.
 		 */
-		msg_convert(__UNCONST(msg), fd_host2rump);
+		msg_convert_fds(__UNCONST(msg), fd_host2rump);
 		op_sendmsg = GETSYSCALL(rump, SENDMSG);
 	} else {
 		op_sendmsg = GETSYSCALL(host, SENDMSG);

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -289,7 +289,7 @@ OpcSetOptimalIntegerSize (
         Op->Asl.AmlOpcode = AML_DWORD_OP;
         return (4);
     }
-    else
+    else /* 64-bit integer */
     {
         if (AcpiGbl_IntegerByteWidth == 4)
         {
@@ -299,8 +299,12 @@ OpcSetOptimalIntegerSize (
             if (!Gbl_IgnoreErrors)
             {
                 /* Truncate the integer to 32-bit */
-                Op->Asl.AmlOpcode = AML_DWORD_OP;
-                return (4);
+
+                Op->Asl.Value.Integer &= ACPI_UINT32_MAX;
+
+                /* Now set the optimal integer size */
+
+                return (OpcSetOptimalIntegerSize (Op));
             }
         }
 
@@ -438,7 +442,7 @@ OpcDoConnection (
      */
     BufferOp->Asl.ParseOpcode = PARSEOP_BUFFER;
     BufferOp->Asl.AmlOpcode = AML_BUFFER_OP;
-    BufferOp->Asl.CompileFlags = NODE_AML_PACKAGE | NODE_IS_RESOURCE_DESC;
+    BufferOp->Asl.CompileFlags = OP_AML_PACKAGE | OP_IS_RESOURCE_DESC;
     UtSetParseOpName (BufferOp);
 
     BufferLengthOp->Asl.ParseOpcode = PARSEOP_INTEGER;
@@ -486,7 +490,7 @@ OpcDoUnicode (
 
     /* Change op into a buffer object */
 
-    Op->Asl.CompileFlags &= ~NODE_COMPILE_TIME_CONST;
+    Op->Asl.CompileFlags &= ~OP_COMPILE_TIME_CONST;
     Op->Asl.ParseOpcode = PARSEOP_BUFFER;
     UtSetParseOpName (Op);
 
@@ -644,7 +648,7 @@ OpcDoEisaId (
      */
     Op->Asl.Value.Integer = EisaId;
 
-    Op->Asl.CompileFlags &= ~NODE_COMPILE_TIME_CONST;
+    Op->Asl.CompileFlags &= ~OP_COMPILE_TIME_CONST;
     Op->Asl.ParseOpcode = PARSEOP_INTEGER;
     (void) OpcSetOptimalIntegerSize (Op);
 
@@ -696,12 +700,12 @@ OpcDoUuId (
 
     /* Disable further optimization */
 
-    Op->Asl.CompileFlags &= ~NODE_COMPILE_TIME_CONST;
+    Op->Asl.CompileFlags &= ~OP_COMPILE_TIME_CONST;
     UtSetParseOpName (Op);
 
     /* Child node is the buffer length */
 
-    NewOp = TrAllocateNode (PARSEOP_INTEGER);
+    NewOp = TrAllocateOp (PARSEOP_INTEGER);
 
     NewOp->Asl.AmlOpcode = AML_BYTE_OP;
     NewOp->Asl.Value.Integer = 16;
@@ -712,7 +716,7 @@ OpcDoUuId (
 
     /* Peer to the child is the raw buffer data */
 
-    NewOp = TrAllocateNode (PARSEOP_RAW_DATA);
+    NewOp = TrAllocateOp (PARSEOP_RAW_DATA);
     NewOp->Asl.AmlOpcode = AML_RAW_DATA_BUFFER;
     NewOp->Asl.AmlLength = 16;
     NewOp->Asl.Value.String = ACPI_CAST_PTR (char, Buffer);

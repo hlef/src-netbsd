@@ -1,4 +1,4 @@
-/* $NetBSD: wsdisplayvar.h,v 1.51 2014/01/21 00:08:27 mlelstv Exp $ */
+/* $NetBSD: wsdisplayvar.h,v 1.53 2018/09/26 09:04:12 bouyer Exp $ */
 
 /*
  * Copyright (c) 1996, 1997 Christopher G. Demetriou.  All rights reserved.
@@ -98,6 +98,9 @@ struct wsscreen_descr {
 #define WSSCREEN_HILIT		4	/* can highlight (however) */
 #define WSSCREEN_BLINK		8	/* can blink */
 #define WSSCREEN_UNDERLINE	16	/* can underline */
+#define WSSCREEN_RESIZE		32	/* can resize */
+#define WSSCREEN_FREE		64	/* free() this struct when deleting
+					 * internal only, do not set */
 	void *modecookie;
 };
 
@@ -204,6 +207,8 @@ int wsdisplay_stat_ioctl(struct wsdisplay_softc *, u_long, void *,
 
 int wsdisplay_cfg_ioctl(struct wsdisplay_softc *, u_long, void *,
 			int, struct lwp *);
+
+bool wsdisplay_isconsole(struct wsdisplay_softc *);
 
 struct wsdisplayio_edid_info;
 int wsdisplayio_get_edid(device_t, struct wsdisplayio_edid_info *);

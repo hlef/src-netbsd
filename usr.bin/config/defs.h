@@ -1,4 +1,4 @@
-/*	$NetBSD: defs.h,v 1.95 2016/03/18 15:05:49 christos Exp $	*/
+/*	$NetBSD: defs.h,v 1.104 2018/08/27 16:04:45 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -107,7 +107,7 @@ extern const char *progname;
  * The next two lines define the current version of the config(1) binary,
  * and the minimum version of the configuration files it supports.
  */
-#define CONFIG_VERSION		20151112
+#define CONFIG_VERSION		20180827
 #define CONFIG_MINVERSION	0
 
 /*
@@ -190,7 +190,8 @@ struct attr {
 #define	a_weight	a_m.m_weight
 
 	/* "interface attribute" */
-	int	a_iattr;		/* true => allows children */
+	uint8_t	a_iattr;		/* true => allows children */
+	uint8_t a_deselected;		/* deselected */	
 	struct	loclist *a_locs;	/* locators required */
 	int	a_loclen;		/* length of above list */
 	struct	nvlist *a_devs;		/* children */
@@ -235,6 +236,7 @@ struct pspec {
 	struct	nvlist *p_devs;		/* children using it */
 	int	p_inst;			/* parent spec instance */
 	int	p_active;		/* parent spec is actively used */
+	int	p_ref;			/* refcount */
 };
 
 /*
@@ -263,6 +265,8 @@ struct pspec {
 struct devbase {
 	const char *d_name;		/* e.g., "sd" */
 	TAILQ_ENTRY(devbase) d_next;
+	int 	d_level;
+	struct devbase *d_levelparent;
 	int	d_isdef;		/* set once properly defined */
 	int	d_ispseudo;		/* is a pseudo-device */
 	devmajor_t d_major;		/* used for "root on sd0", e.g. */
@@ -273,6 +277,8 @@ struct devbase {
 	struct	deva *d_ahead;		/* first attachment, if any */
 	struct	deva **d_app;		/* used for tacking on attachments */
 	struct	attr *d_classattr;	/* device class attribute (if any) */
+	const char *d_srcfile;		/* file name where we are defined */
+	u_short	d_srcline;		/* line number where we are defined */
 };
 
 struct deva {
@@ -285,6 +291,8 @@ struct deva {
 	struct	attrlist *d_attrs;	/* attributes, if any */
 	struct	devi *d_ihead;		/* first instance, if any */
 	struct	devi **d_ipp;		/* used for tacking on more instances */
+	const char *d_srcfile;		/* file name where we are defined */
+	u_short	d_srcline;		/* line number where we are defined */
 };
 
 /*
@@ -569,9 +577,9 @@ void	deffilesystem(struct nvlist *, struct nvlist *);
 void	defoption(const char *, struct defoptlist *, struct nvlist *);
 void	defflag(const char *, struct defoptlist *, struct nvlist *, int);
 void	defparam(const char *, struct defoptlist *, struct nvlist *, int);
-void	deloption(const char *);
-void	delfsoption(const char *);
-void	delmkoption(const char *);
+void	deloption(const char *, int);
+void	delfsoption(const char *, int);
+void	delmkoption(const char *, int);
 int	devbase_has_instances(struct devbase *, int);
 int	is_declared_option(const char *);
 int	deva_has_instances(struct deva *, int);

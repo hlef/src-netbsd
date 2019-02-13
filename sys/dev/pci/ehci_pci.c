@@ -1,4 +1,4 @@
-/*	$NetBSD: ehci_pci.c,v 1.63 2016/04/23 10:15:31 skrll Exp $	*/
+/*	$NetBSD: ehci_pci.c,v 1.68 2018/10/25 21:07:58 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 2001, 2002 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ehci_pci.c,v 1.63 2016/04/23 10:15:31 skrll Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ehci_pci.c,v 1.68 2018/10/25 21:07:58 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -83,6 +83,7 @@ struct ehci_pci_softc {
 	ehci_softc_t		sc;
 	pci_chipset_tag_t	sc_pc;
 	pcitag_t		sc_tag;
+	pci_intr_handle_t	*sc_pihp;
 	void 			*sc_ih;		/* interrupt vectoring */
 };
 
@@ -117,7 +118,6 @@ ehci_pci_attach(device_t parent, device_t self, void *aux)
 	pci_chipset_tag_t pc = pa->pa_pc;
 	pcitag_t tag = pa->pa_tag;
 	char const *intrstr;
-	pci_intr_handle_t ih;
 	pcireg_t csr;
 	int ncomp;
 	struct usb_pci *up;
@@ -161,13 +161,17 @@ ehci_pci_attach(device_t parent, device_t self, void *aux)
 		break;
 	}
 
+	pcireg_t intr = pci_conf_read(pc, tag, PCI_INTERRUPT_REG);
+	int pin = PCI_INTERRUPT_PIN(intr);
+
 	/* Enable the device. */
 	csr = pci_conf_read(pc, tag, PCI_COMMAND_STATUS_REG);
-	pci_conf_write(pc, tag, PCI_COMMAND_STATUS_REG,
-		       csr | PCI_COMMAND_MASTER_ENABLE);
+	csr |= PCI_COMMAND_MASTER_ENABLE;
+	csr &= ~(pin ? PCI_COMMAND_INTERRUPT_DISABLE : 0);
+	pci_conf_write(pc, tag, PCI_COMMAND_STATUS_REG, csr);
 
 	/* Map and establish the interrupt. */
-	if (pci_intr_map(pa, &ih)) {
+	if (pci_intr_alloc(pa, &sc->sc_pihp, NULL, 0) != 0) {
 		aprint_error_dev(self, "couldn't map interrupt\n");
 		goto fail;
 	}
@@ -175,9 +179,13 @@ ehci_pci_attach(device_t parent, device_t self, void *aux)
 	/*
 	 * Allocate IRQ
 	 */
-	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sc_ih = pci_intr_establish(pc, ih, IPL_USB, ehci_intr, sc);
+	intrstr = pci_intr_string(pc, sc->sc_pihp[0], intrbuf, sizeof(intrbuf));
+	sc->sc_ih = pci_intr_establish_xname(pc, sc->sc_pihp[0], IPL_USB,
+	    ehci_intr, sc, device_xname(self));
 	if (sc->sc_ih == NULL) {
+		pci_intr_release(sc->sc_pc, sc->sc_pihp, 1);
+		sc->sc_pihp = NULL;
+
 		aprint_error_dev(self, "couldn't establish interrupt");
 		if (intrstr != NULL)
 			aprint_error(" at %s", intrstr);
@@ -186,7 +194,7 @@ ehci_pci_attach(device_t parent, device_t self, void *aux)
 	}
 	aprint_normal_dev(self, "interrupting at %s\n", intrstr);
 
-	switch(pci_conf_read(pc, tag, PCI_USBREV) & PCI_USBREV_MASK) {
+	switch (pci_conf_read(pc, tag, PCI_USBREV) & PCI_USBREV_MASK) {
 	case PCI_USBREV_PRE_1_0:
 	case PCI_USBREV_1_0:
 	case PCI_USBREV_1_1:
@@ -201,12 +209,8 @@ ehci_pci_attach(device_t parent, device_t self, void *aux)
 		break;
 	}
 
-	/* Figure out vendor for root hub descriptor. */
-	sc->sc.sc_id_vendor = PCI_VENDOR(pa->pa_id);
-	pci_findvendor(sc->sc.sc_vendor,
-	    sizeof(sc->sc.sc_vendor), sc->sc.sc_id_vendor);
 	/* Enable workaround for dropped interrupts as required */
-	switch (sc->sc.sc_id_vendor) {
+	switch (PCI_VENDOR(pa->pa_id)) {
 	case PCI_VENDOR_ATI:
 	case PCI_VENDOR_VIATECH:
 		sc->sc.sc_flags |= EHCIF_DROPPED_INTR_WORKAROUND;
@@ -287,6 +291,12 @@ ehci_pci_detach(device_t self, int flags)
 		pci_intr_disestablish(sc->sc_pc, sc->sc_ih);
 		sc->sc_ih = NULL;
 	}
+
+	if (sc->sc_pihp != NULL) {
+		pci_intr_release(sc->sc_pc, sc->sc_pihp, 1);
+		sc->sc_pihp = NULL;
+	}
+
 	if (sc->sc.sc_size) {
 		ehci_release_ownership(&sc->sc, sc->sc_pc, sc->sc_tag);
 		bus_space_unmap(sc->sc.iot, sc->sc.ioh, sc->sc.sc_size);

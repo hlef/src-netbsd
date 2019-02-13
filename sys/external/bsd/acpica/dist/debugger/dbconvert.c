@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -321,8 +321,7 @@ AcpiDbConvertToObject (
     default:
 
         Object->Type = ACPI_TYPE_INTEGER;
-        Status = AcpiUtStrtoul64 (String, 16, AcpiGbl_IntegerByteWidth,
-            &Object->Integer.Value);
+        Status = AcpiUtStrtoul64 (String, &Object->Integer.Value);
         break;
     }
 

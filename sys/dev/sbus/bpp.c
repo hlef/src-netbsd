@@ -1,4 +1,4 @@
-/*	$NetBSD: bpp.c,v 1.41 2014/07/25 08:10:38 dholland Exp $ */
+/*	$NetBSD: bpp.c,v 1.43 2018/09/03 16:29:33 riastradh Exp $ */
 
 /*-
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: bpp.c,v 1.41 2014/07/25 08:10:38 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: bpp.c,v 1.43 2018/09/03 16:29:33 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/ioctl.h>
@@ -345,7 +345,7 @@ bppwrite(dev_t dev, struct uio *uio, int flags)
 	 */
 	while (uio->uio_resid > 0) {
 		uint8_t *bp = sc->sc_buf;
-		size_t len = min(sc->sc_bufsz, uio->uio_resid);
+		size_t len = uimin(sc->sc_bufsz, uio->uio_resid);
 
 		if ((error = uiomove(bp, len, uio)) != 0)
 			break;
@@ -520,8 +520,12 @@ filt_bppread(struct knote *kn, long hint)
 	return 0;
 }
 
-static const struct filterops bppread_filtops =
-	{ 1, NULL, filt_bpprdetach, filt_bppread };
+static const struct filterops bppread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_bpprdetach,
+	.f_event = filt_bppread,
+};
 
 static void
 filt_bppwdetach(struct knote *kn)
@@ -546,8 +550,12 @@ filt_bpfwrite(struct knote *kn, long hint)
 	return 1;
 }
 
-static const struct filterops bppwrite_filtops =
-	{ 1, NULL, filt_bppwdetach, filt_bpfwrite };
+static const struct filterops bppwrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_bppwdetach,
+	.f_event = filt_bpfwrite,
+};
 
 int
 bppkqfilter(dev_t dev, struct knote *kn)

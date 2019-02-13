@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,7 +43,6 @@
  */
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
 
 #define _COMPONENT          ASL_PREPROCESSOR
         ACPI_MODULE_NAME    ("prparser")
@@ -184,11 +183,11 @@ Expression
 
       /* Default base for a non-prefixed integer is 10 */
 
-    | EXPOP_NUMBER                                  { AcpiUtStrtoul64 (PrParsertext, 10, ACPI_MAX64_BYTE_WIDTH, &$$);}
+    | EXPOP_NUMBER                                  { AcpiUtStrtoul64 (PrParsertext, &$$);}
 
       /* Standard hex number (0x1234) */
 
-    | EXPOP_HEX_NUMBER                              { AcpiUtStrtoul64 (PrParsertext, 16, ACPI_MAX64_BYTE_WIDTH, &$$);}
+    | EXPOP_HEX_NUMBER                              { AcpiUtStrtoul64 (PrParsertext, &$$);}
     ;
 %%
 

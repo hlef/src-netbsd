@@ -1,4 +1,4 @@
-/*	$NetBSD: fdesc_vnops.c,v 1.126 2015/04/20 23:03:08 riastradh Exp $	*/
+/*	$NetBSD: fdesc_vnops.c,v 1.130 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -41,7 +41,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: fdesc_vnops.c,v 1.126 2015/04/20 23:03:08 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: fdesc_vnops.c,v 1.130 2018/09/03 16:29:35 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -589,7 +589,7 @@ fdesc_readdir(void *v)
 			return 0;
 
 		if (ap->a_ncookies) {
-			ncookies = min(ncookies, (nfdesc_targets - i));
+			ncookies = uimin(ncookies, (nfdesc_targets - i));
 			cookies = malloc(ncookies * sizeof(off_t),
 			    M_TEMP, M_WAITOK);
 			*ap->a_cookies = cookies;
@@ -630,7 +630,7 @@ fdesc_readdir(void *v)
 	} else {
 		membar_consumer();
 		if (ap->a_ncookies) {
-			ncookies = min(ncookies, dt->dt_nfiles + 2);
+			ncookies = uimin(ncookies, dt->dt_nfiles + 2);
 			cookies = malloc(ncookies * sizeof(off_t),
 			    M_TEMP, M_WAITOK);
 			*ap->a_cookies = cookies;
@@ -836,7 +836,7 @@ fdesc_kqfilter(void *v)
 int
 fdesc_inactive(void *v)
 {
-	struct vop_inactive_args /* {
+	struct vop_inactive_v2_args /* {
 		struct vnode *a_vp;
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
@@ -848,21 +848,22 @@ fdesc_inactive(void *v)
 	 */
 	if (fd->fd_type == Fctty || fd->fd_type == Fdesc)
 		vp->v_type = VNON;
-	VOP_UNLOCK(vp);
+
 	return (0);
 }
 
 int
 fdesc_reclaim(void *v)
 {
-	struct vop_reclaim_args /* {
+	struct vop_reclaim_v2_args /* {
 		struct vnode *a_vp;
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
 	struct fdescnode *fd = VTOFDESC(vp);
 
+	VOP_UNLOCK(vp);
+
 	vp->v_data = NULL;
-	vcache_remove(vp->v_mount, &fd->fd_ix, sizeof(fd->fd_ix));
 	kmem_free(fd, sizeof(struct fdescnode));
 
 	return (0);

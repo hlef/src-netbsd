@@ -1,4 +1,4 @@
-/*	$NetBSD: ppi.c,v 1.22 2014/07/25 08:10:36 dholland Exp $	*/
+/*	$NetBSD: ppi.c,v 1.24 2018/09/03 16:29:30 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1996-2003 The NetBSD Foundation, Inc.
@@ -65,7 +65,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ppi.c,v 1.22 2014/07/25 08:10:36 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ppi.c,v 1.24 2018/09/03 16:29:30 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -79,6 +79,8 @@ __KERNEL_RCSID(0, "$NetBSD: ppi.c,v 1.22 2014/07/25 08:10:36 dholland Exp $");
 #include <dev/gpib/gpibvar.h>
 
 #include <dev/gpib/ppiio.h>
+
+#include "ioconf.h"
 
 struct	ppi_softc {
 	device_t sc_dev;
@@ -108,8 +110,6 @@ void	ppiattach(device_t, device_t, void *);
 
 CFATTACH_DECL_NEW(ppi, sizeof(struct ppi_softc),
 	ppimatch, ppiattach, NULL, NULL);
-
-extern struct cfdriver ppi_cd;
 
 void	ppicallback(void *, int);
 void	ppistart(void *);
@@ -303,7 +303,7 @@ ppirw(dev_t dev, struct uio *uio)
 	    dev, uio, uio->uio_rw == UIO_READ ? 'R' : 'W',
 	    sc->sc_burst, sc->sc_timo, uio->uio_resid));
 
-	buflen = min(sc->sc_burst, uio->uio_resid);
+	buflen = uimin(sc->sc_burst, uio->uio_resid);
 	buf = (char *)malloc(buflen, M_DEVBUF, M_WAITOK);
 	sc->sc_flags |= PPIF_UIO;
 	if (sc->sc_timo > 0) {
@@ -312,7 +312,7 @@ ppirw(dev_t dev, struct uio *uio)
 	}
 	len = cnt = 0;
 	while (uio->uio_resid > 0) {
-		len = min(buflen, uio->uio_resid);
+		len = uimin(buflen, uio->uio_resid);
 		cp = buf;
 		if (uio->uio_rw == UIO_WRITE) {
 			error = uiomove(cp, len, uio);

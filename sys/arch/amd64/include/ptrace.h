@@ -1,4 +1,4 @@
-/*	$NetBSD: ptrace.h,v 1.6 2015/09/25 16:05:17 christos Exp $	*/
+/*	$NetBSD: ptrace.h,v 1.12 2017/04/12 18:17:59 kamil Exp $	*/
 
 /*
  * Copyright (c) 1993 Christopher G. Demetriou
@@ -36,18 +36,26 @@
 /*
  * i386-dependent ptrace definitions
  */
-#define	PT_STEP		(PT_FIRSTMACH + 0)
-#define	PT_GETREGS	(PT_FIRSTMACH + 1)
-#define	PT_SETREGS	(PT_FIRSTMACH + 2)
-#define	PT_GETFPREGS	(PT_FIRSTMACH + 3)
-#define	PT_SETFPREGS	(PT_FIRSTMACH + 4)
+#define	PT_STEP			(PT_FIRSTMACH + 0)
+#define	PT_GETREGS		(PT_FIRSTMACH + 1)
+#define	PT_SETREGS		(PT_FIRSTMACH + 2)
+#define	PT_GETFPREGS		(PT_FIRSTMACH + 3)
+#define	PT_SETFPREGS		(PT_FIRSTMACH + 4)
+#define	PT_GETDBREGS		(PT_FIRSTMACH + 5)
+#define	PT_SETDBREGS		(PT_FIRSTMACH + 6)
+#define	PT_SETSTEP		(PT_FIRSTMACH + 7)
+#define	PT_CLEARSTEP		(PT_FIRSTMACH + 8)
 
 #define PT_MACHDEP_STRINGS \
 	"PT_STEP", \
 	"PT_GETREGS", \
 	"PT_SETREGS", \
 	"PT_GETFPREGS", \
-	"PT_SETFPREGS",
+	"PT_SETFPREGS", \
+	"PT_GETDBREGS", \
+	"PT_SETDBREGS", \
+	"PT_SETSTEP", \
+	"PT_CLEARSTEP",
 
 #include <machine/reg.h>
 #define PTRACE_REG_PC(r)	(r)->regs[_REG_RIP]
@@ -56,6 +64,7 @@
 #define PTRACE_REG_INTRV(r)	(r)->regs[_REG_RAX]
 
 #define PTRACE_BREAKPOINT	((const uint8_t[]) { 0xcc })
+#define PTRACE_BREAKPOINT_ASM	__asm __volatile ("int3" : : : "memory")
 #define PTRACE_BREAKPOINT_SIZE	1
 #define PTRACE_BREAKPOINT_ADJ	1
 
@@ -67,9 +76,15 @@
 
 #define process_read_regs32	netbsd32_process_read_regs
 #define process_read_fpregs32	netbsd32_process_read_fpregs
+#define process_read_dbregs32	netbsd32_process_read_dbregs
+
+#define process_write_regs32	netbsd32_process_write_regs
+#define process_write_fpregs32	netbsd32_process_write_fpregs
+#define process_write_dbregs32	netbsd32_process_write_dbregs
 
 #define process_reg32		struct reg32
 #define process_fpreg32		struct fpreg32
+#define process_dbreg32		struct dbreg32
 #endif	/* COMPAT_NETBSD32 */
 #endif	/* _KERNEL_OPT */
 

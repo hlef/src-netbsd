@@ -1,4 +1,4 @@
-/*	$NetBSD: asm.h,v 1.49 2016/07/11 16:15:35 matt Exp $	*/
+/*	$NetBSD: asm.h,v 1.55 2018/09/04 00:01:41 mrg Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -76,7 +76,7 @@
 	lw	t9,4(sp);					\
 	addiu	sp,sp,8;					\
 	addiu	t9,t9,40;					\
-	.set	pop;					
+	.set	pop;
 
 #ifdef GPROF
 #define	MCOUNT _KERN_MCOUNT
@@ -169,8 +169,9 @@ _C_LABEL(x):
  *	No profilable local nested routine.
  */
 #define	STATIC_NESTED_NOPROFILE(x, fsize, retpc)	\
-	.ent	_C_LABEL(x);			\
-_C_LABEL(x): ;					\
+	.ent	_C_LABEL(x);				\
+	.type	_C_LABEL(x), @function;			\
+_C_LABEL(x): ;						\
 	.frame	sp, fsize, retpc
 
 /*
@@ -504,6 +505,19 @@ _C_LABEL(x):
 #define	REG_SCALESHIFT	3
 #endif
 
+#if (MIPS1 + MIPS2) > 0
+#define	NOP_L		nop
+#else
+#define	NOP_L		/* nothing */
+#endif
+
+/* CPU dependent hook for cp0 load delays */
+#if defined(MIPS1) || defined(MIPS2) || defined(MIPS3)
+#define MFC0_HAZARD	sll $0,$0,1	/* super scalar nop */
+#else
+#define MFC0_HAZARD	/* nothing */
+#endif
+
 #if _MIPS_ISA == _MIPS_ISA_MIPS1 || _MIPS_ISA == _MIPS_ISA_MIPS2 || \
     _MIPS_ISA == _MIPS_ISA_MIPS32
 #define	MFC0		mfc0
@@ -517,7 +531,7 @@ _C_LABEL(x):
 
 #if defined(__mips_o32) || defined(__mips_o64)
 
-#ifdef __ABICALLS__
+#ifdef __mips_abicalls
 #define	CPRESTORE(r)	.cprestore r
 #define	CPLOAD(r)	.cpload r
 #else

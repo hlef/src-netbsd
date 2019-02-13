@@ -1,4 +1,4 @@
-/*	$NetBSD: ugen.c,v 1.134 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: ugen.c,v 1.140 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1998, 2004 The NetBSD Foundation, Inc.
@@ -37,7 +37,7 @@
 
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ugen.c,v 1.134 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ugen.c,v 1.140 2018/09/03 16:29:34 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -170,7 +170,7 @@ Static int ugen_do_read(struct ugen_softc *, int, struct uio *, int);
 Static int ugen_do_write(struct ugen_softc *, int, struct uio *, int);
 Static int ugen_do_ioctl(struct ugen_softc *, int, u_long,
 			 void *, int, struct lwp *);
-Static int ugen_set_config(struct ugen_softc *, int);
+Static int ugen_set_config(struct ugen_softc *, int, int);
 Static usb_config_descriptor_t *ugen_get_cdesc(struct ugen_softc *,
 					       int, int *);
 Static usbd_status ugen_set_interface(struct ugen_softc *, int, int);
@@ -181,13 +181,17 @@ Static void ugen_clear_endpoints(struct ugen_softc *);
 #define UGENENDPOINT(n) (minor(n) & 0xf)
 #define UGENDEV(u, e) (makedev(0, ((u) << 4) | (e)))
 
+int	ugenif_match(device_t, cfdata_t, void *);
+void	ugenif_attach(device_t, device_t, void *);
 int	ugen_match(device_t, cfdata_t, void *);
 void	ugen_attach(device_t, device_t, void *);
 int	ugen_detach(device_t, int);
 int	ugen_activate(device_t, enum devact);
 extern struct cfdriver ugen_cd;
-CFATTACH_DECL_NEW(ugen, sizeof(struct ugen_softc), ugen_match, ugen_attach,
-    ugen_detach, ugen_activate);
+CFATTACH_DECL_NEW(ugen, sizeof(struct ugen_softc), ugen_match,
+    ugen_attach, ugen_detach, ugen_activate);
+CFATTACH_DECL_NEW(ugenif, sizeof(struct ugen_softc), ugenif_match,
+    ugenif_attach, ugen_detach, ugen_activate);
 
 /* toggle to control attach priority. -1 means "let autoconf decide" */
 int ugen_override = -1;
@@ -211,11 +215,36 @@ ugen_match(device_t parent, cfdata_t match, void *aux)
 		return UMATCH_NONE;
 }
 
+int
+ugenif_match(device_t parent, cfdata_t match, void *aux)
+{
+	/* Assume that they knew what they configured! (see ugenif(4)) */
+	return UMATCH_HIGHEST;
+}
+
 void
 ugen_attach(device_t parent, device_t self, void *aux)
 {
-	struct ugen_softc *sc = device_private(self);
 	struct usb_attach_arg *uaa = aux;
+	struct usbif_attach_arg uiaa;
+
+	memset(&uiaa, 0, sizeof uiaa);
+	uiaa.uiaa_port = uaa->uaa_port;
+	uiaa.uiaa_vendor = uaa->uaa_vendor;
+	uiaa.uiaa_product = uaa->uaa_product;
+	uiaa.uiaa_release = uaa->uaa_release;
+	uiaa.uiaa_device = uaa->uaa_device;
+	uiaa.uiaa_configno = -1;
+	uiaa.uiaa_ifaceno = -1;
+
+	ugenif_attach(parent, self, &uiaa);
+}
+
+void
+ugenif_attach(device_t parent, device_t self, void *aux)
+{
+	struct ugen_softc *sc = device_private(self);
+	struct usbif_attach_arg *uiaa = aux;
 	struct usbd_device *udev;
 	char *devinfop;
 	usbd_status err;
@@ -227,12 +256,12 @@ ugen_attach(device_t parent, device_t self, void *aux)
 	mutex_init(&sc->sc_lock, MUTEX_DEFAULT, IPL_SOFTUSB);
 	cv_init(&sc->sc_detach_cv, "ugendet");
 
-	devinfop = usbd_devinfo_alloc(uaa->uaa_device, 0);
+	devinfop = usbd_devinfo_alloc(uiaa->uiaa_device, 0);
 	aprint_normal_dev(self, "%s\n", devinfop);
 	usbd_devinfo_free(devinfop);
 
 	sc->sc_dev = self;
-	sc->sc_udev = udev = uaa->uaa_device;
+	sc->sc_udev = udev = uiaa->uiaa_device;
 
 	for (i = 0; i < USB_MAX_ENDPOINTS; i++) {
 		for (dir = OUT; dir <= IN; dir++) {
@@ -244,18 +273,25 @@ ugen_attach(device_t parent, device_t self, void *aux)
 		}
 	}
 
-	/* First set configuration index 0, the default one for ugen. */
-	err = usbd_set_config_index(udev, 0, 0);
-	if (err) {
-		aprint_error_dev(self,
-		    "setting configuration index 0 failed\n");
-		sc->sc_dying = 1;
-		return;
+	if (uiaa->uiaa_ifaceno < 0) {
+		/*
+		 * If we attach the whole device,
+		 * set configuration index 0, the default one.
+		 */
+		err = usbd_set_config_index(udev, 0, 0);
+		if (err) {
+			aprint_error_dev(self,
+			    "setting configuration index 0 failed\n");
+			sc->sc_dying = 1;
+			return;
+		}
 	}
+
+	/* Get current configuration */
 	conf = usbd_get_config_descriptor(udev)->bConfigurationValue;
 
 	/* Set up all the local state for this configuration. */
-	err = ugen_set_config(sc, conf);
+	err = ugen_set_config(sc, conf, uiaa->uiaa_ifaceno < 0);
 	if (err) {
 		aprint_error_dev(self, "setting configuration %d failed\n",
 		    conf);
@@ -268,7 +304,6 @@ ugen_attach(device_t parent, device_t self, void *aux)
 	if (!pmf_device_register(self, NULL, NULL))
 		aprint_error_dev(self, "couldn't establish power handler\n");
 
-	return;
 }
 
 Static void
@@ -285,7 +320,7 @@ ugen_clear_endpoints(struct ugen_softc *sc)
 }
 
 Static int
-ugen_set_config(struct ugen_softc *sc, int configno)
+ugen_set_config(struct ugen_softc *sc, int configno, int chkopen)
 {
 	struct usbd_device *dev = sc->sc_udev;
 	usb_config_descriptor_t *cdesc;
@@ -300,17 +335,19 @@ ugen_set_config(struct ugen_softc *sc, int configno)
 	DPRINTFN(1,("ugen_set_config: %s to configno %d, sc=%p\n",
 		    device_xname(sc->sc_dev), configno, sc));
 
-	/*
-	 * We start at 1, not 0, because we don't care whether the
-	 * control endpoint is open or not. It is always present.
-	 */
-	for (endptno = 1; endptno < USB_MAX_ENDPOINTS; endptno++)
-		if (sc->sc_is_open[endptno]) {
-			DPRINTFN(1,
-			     ("ugen_set_config: %s - endpoint %d is open\n",
-			      device_xname(sc->sc_dev), endptno));
-			return USBD_IN_USE;
-		}
+	if (chkopen) {
+		/*
+		 * We start at 1, not 0, because we don't care whether the
+		 * control endpoint is open or not. It is always present.
+		 */
+		for (endptno = 1; endptno < USB_MAX_ENDPOINTS; endptno++)
+			if (sc->sc_is_open[endptno]) {
+				DPRINTFN(1,
+				     ("ugen_set_config: %s - endpoint %d is open\n",
+				      device_xname(sc->sc_dev), endptno));
+				return USBD_IN_USE;
+			}
+	}
 
 	/* Avoid setting the current value. */
 	cdesc = usbd_get_config_descriptor(dev);
@@ -320,11 +357,11 @@ ugen_set_config(struct ugen_softc *sc, int configno)
 			return err;
 	}
 
+	ugen_clear_endpoints(sc);
+
 	err = usbd_interface_count(dev, &niface);
 	if (err)
 		return err;
-
-	ugen_clear_endpoints(sc);
 
 	for (ifaceno = 0; ifaceno < niface; ifaceno++) {
 		DPRINTFN(1,("ugen_set_config: ifaceno %d\n", ifaceno));
@@ -366,14 +403,11 @@ ugenopen(dev_t dev, int flag, int mode, struct lwp *l)
 	int i, j;
 
 	sc = device_lookup_private(&ugen_cd, unit);
-	if (sc == NULL)
+	if (sc == NULL || sc->sc_dying)
 		return ENXIO;
 
 	DPRINTFN(5, ("ugenopen: flag=%d, mode=%d, unit=%d endpt=%d\n",
 		     flag, mode, unit, endpt));
-
-	if (sc == NULL || sc->sc_dying)
-		return ENXIO;
 
 	/* The control endpoint allows multiple opens. */
 	if (endpt == USB_CONTROL_ENDPOINT) {
@@ -513,7 +547,7 @@ ugenclose(dev_t dev, int flag, int mode, struct lwp *l)
 	int i;
 
 	sc = device_lookup_private(& ugen_cd, UGENUNIT(dev));
-	if (sc == NULL)
+	if (sc == NULL || sc->sc_dying)
 		return ENXIO;
 
 	DPRINTFN(5, ("ugenclose: flag=%d, mode=%d, unit=%d, endpt=%d\n",
@@ -589,9 +623,6 @@ ugen_do_read(struct ugen_softc *sc, int endpt, struct uio *uio, int flag)
 
 	DPRINTFN(5, ("%s: ugenread: %d\n", device_xname(sc->sc_dev), endpt));
 
-	if (sc->sc_dying)
-		return EIO;
-
 	if (endpt == USB_CONTROL_ENDPOINT)
 		return ENODEV;
 
@@ -632,7 +663,7 @@ ugen_do_read(struct ugen_softc *sc, int endpt, struct uio *uio, int flag)
 
 		/* Transfer as many chunks as possible. */
 		while (sce->q.c_cc > 0 && uio->uio_resid > 0 && !error) {
-			n = min(sce->q.c_cc, uio->uio_resid);
+			n = uimin(sce->q.c_cc, uio->uio_resid);
 			if (n > sizeof(sc->sc_buffer))
 				n = sizeof(sc->sc_buffer);
 
@@ -680,9 +711,9 @@ ugen_do_read(struct ugen_softc *sc, int endpt, struct uio *uio, int flag)
 				/* Copy data to the process. */
 				while (uio->uio_resid > 0
 				       && sce->ra_wb_used > 0) {
-					n = min(uio->uio_resid,
+					n = uimin(uio->uio_resid,
 						sce->ra_wb_used);
-					n = min(n, sce->limit - sce->cur);
+					n = uimin(n, sce->limit - sce->cur);
 					error = uiomove(sce->cur, n, uio);
 					if (error)
 						break;
@@ -701,7 +732,7 @@ ugen_do_read(struct ugen_softc *sc, int endpt, struct uio *uio, int flag)
 					n = (sce->limit - sce->ibuf)
 					    - sce->ra_wb_used;
 					usbd_setup_xfer(xfer, sce, NULL,
-					    min(n, sce->ra_wb_xferlen),
+					    uimin(n, sce->ra_wb_xferlen),
 					    0, USBD_NO_TIMEOUT,
 					    ugen_bulkra_intr);
 					sce->state &= ~UGEN_RA_WB_STOP;
@@ -720,11 +751,10 @@ ugen_do_read(struct ugen_softc *sc, int endpt, struct uio *uio, int flag)
 			break;
 		}
 		error = usbd_create_xfer(sce->pipeh, UGEN_BBSIZE,
-		    sce->state & UGEN_SHORT_OK ? USBD_SHORT_XFER_OK : 0,
-		    0, &xfer);
+		    0, 0, &xfer);
 		if (error)
 			return error;
-		while ((n = min(UGEN_BBSIZE, uio->uio_resid)) != 0) {
+		while ((n = uimin(UGEN_BBSIZE, uio->uio_resid)) != 0) {
 			DPRINTFN(1, ("ugenread: start transfer %d bytes\n",n));
 			tn = n;
 			err = usbd_bulk_transfer(xfer, sce->pipeh,
@@ -769,9 +799,9 @@ ugen_do_read(struct ugen_softc *sc, int endpt, struct uio *uio, int flag)
 
 		while (sce->cur != sce->fill && uio->uio_resid > 0 && !error) {
 			if(sce->fill > sce->cur)
-				n = min(sce->fill - sce->cur, uio->uio_resid);
+				n = uimin(sce->fill - sce->cur, uio->uio_resid);
 			else
-				n = min(sce->limit - sce->cur, uio->uio_resid);
+				n = uimin(sce->limit - sce->cur, uio->uio_resid);
 
 			DPRINTFN(5, ("ugenread: isoc got %d chars\n", n));
 
@@ -801,7 +831,7 @@ ugenread(dev_t dev, struct uio *uio, int flag)
 	int error;
 
 	sc = device_lookup_private(& ugen_cd, UGENUNIT(dev));
-	if (sc == NULL)
+	if (sc == NULL || sc->sc_dying)
 		return ENXIO;
 
 	mutex_enter(&sc->sc_lock);
@@ -831,9 +861,6 @@ ugen_do_write(struct ugen_softc *sc, int endpt, struct uio *uio,
 	usbd_status err;
 
 	DPRINTFN(5, ("%s: ugenwrite: %d\n", device_xname(sc->sc_dev), endpt));
-
-	if (sc->sc_dying)
-		return EIO;
 
 	if (endpt == USB_CONTROL_ENDPOINT)
 		return ENODEV;
@@ -886,10 +913,10 @@ ugen_do_write(struct ugen_softc *sc, int endpt, struct uio *uio,
 				/* Copy data from the process. */
 				while (uio->uio_resid > 0 &&
 				    sce->ra_wb_used < sce->limit - sce->ibuf) {
-					n = min(uio->uio_resid,
+					n = uimin(uio->uio_resid,
 						(sce->limit - sce->ibuf)
 						 - sce->ra_wb_used);
-					n = min(n, sce->limit - sce->fill);
+					n = uimin(n, sce->limit - sce->fill);
 					error = uiomove(sce->fill, n, uio);
 					if (error)
 						break;
@@ -906,9 +933,9 @@ ugen_do_write(struct ugen_softc *sc, int endpt, struct uio *uio,
 				if (sce->state & UGEN_RA_WB_STOP &&
 				    sce->ra_wb_used > 0) {
 					dbuf = (char *)usbd_get_buffer(xfer);
-					n = min(sce->ra_wb_used,
+					n = uimin(sce->ra_wb_used,
 						sce->ra_wb_xferlen);
-					tn = min(n, sce->limit - sce->cur);
+					tn = uimin(n, sce->limit - sce->cur);
 					memcpy(dbuf, sce->cur, tn);
 					dbuf += tn;
 					if (n - tn > 0)
@@ -933,11 +960,10 @@ ugen_do_write(struct ugen_softc *sc, int endpt, struct uio *uio,
 			break;
 		}
 		error = usbd_create_xfer(sce->pipeh, UGEN_BBSIZE,
-		    sce->state & UGEN_SHORT_OK ? USBD_SHORT_XFER_OK : 0,
-		    0, &xfer);
+		    0, 0, &xfer);
 		if (error)
 			return error;
-		while ((n = min(UGEN_BBSIZE, uio->uio_resid)) != 0) {
+		while ((n = uimin(UGEN_BBSIZE, uio->uio_resid)) != 0) {
 			error = uiomove(sc->sc_buffer, n, uio);
 			if (error)
 				break;
@@ -961,7 +987,7 @@ ugen_do_write(struct ugen_softc *sc, int endpt, struct uio *uio,
 		    UGETW(sce->edesc->wMaxPacketSize), 0, 0, &xfer);
 		if (error)
 			return error;
-		while ((n = min(UGETW(sce->edesc->wMaxPacketSize),
+		while ((n = uimin(UGETW(sce->edesc->wMaxPacketSize),
 		    uio->uio_resid)) != 0) {
 			error = uiomove(sc->sc_buffer, n, uio);
 			if (error)
@@ -995,7 +1021,7 @@ ugenwrite(dev_t dev, struct uio *uio, int flag)
 	int error;
 
 	sc = device_lookup_private(& ugen_cd, UGENUNIT(dev));
-	if (sc == NULL)
+	if (sc == NULL || sc->sc_dying)
 		return ENXIO;
 
 	mutex_enter(&sc->sc_lock);
@@ -1152,7 +1178,7 @@ ugen_isoc_rintr(struct usbd_xfer *xfer, void *addr,
 
 		/* copy data to buffer */
 		while (actlen > 0) {
-			n = min(actlen, sce->limit - sce->fill);
+			n = uimin(actlen, sce->limit - sce->fill);
 			memcpy(sce->fill, tbuf, n);
 
 			tbuf += n;
@@ -1209,7 +1235,7 @@ ugen_bulkra_intr(struct usbd_xfer *xfer, void *addr,
 
 	/* Copy data to buffer. */
 	tbuf = (char const *)usbd_get_buffer(sce->ra_wb_xfer);
-	n = min(count, sce->limit - sce->fill);
+	n = uimin(count, sce->limit - sce->fill);
 	memcpy(sce->fill, tbuf, n);
 	tbuf += n;
 	count -= n;
@@ -1224,7 +1250,7 @@ ugen_bulkra_intr(struct usbd_xfer *xfer, void *addr,
 	/* Set up the next request if necessary. */
 	n = (sce->limit - sce->ibuf) - sce->ra_wb_used;
 	if (n > 0) {
-		usbd_setup_xfer(xfer, sce, NULL, min(n, sce->ra_wb_xferlen), 0,
+		usbd_setup_xfer(xfer, sce, NULL, uimin(n, sce->ra_wb_xferlen), 0,
 		    USBD_NO_TIMEOUT, ugen_bulkra_intr);
 		err = usbd_transfer(xfer);
 		if (err != USBD_IN_PROGRESS) {
@@ -1285,8 +1311,8 @@ ugen_bulkwb_intr(struct usbd_xfer *xfer, void *addr,
 	if (sce->ra_wb_used > 0) {
 		/* copy data from buffer */
 		tbuf = (char *)usbd_get_buffer(sce->ra_wb_xfer);
-		count = min(sce->ra_wb_used, sce->ra_wb_xferlen);
-		n = min(count, sce->limit - sce->cur);
+		count = uimin(sce->ra_wb_used, sce->ra_wb_xferlen);
+		n = uimin(count, sce->limit - sce->cur);
 		memcpy(tbuf, sce->cur, n);
 		tbuf += n;
 		if (count - n > 0)
@@ -1492,7 +1518,7 @@ ugen_do_ioctl(struct ugen_softc *sc, int endpt, u_long cmd,
 			sce->state &= ~UGEN_RA_WB_STOP;
 			/* Now start reading. */
 			usbd_setup_xfer(sce->ra_wb_xfer, sce, NULL,
-			    min(sce->ra_wb_xferlen, sce->ra_wb_bufsize),
+			    uimin(sce->ra_wb_xferlen, sce->ra_wb_bufsize),
 			     0, USBD_NO_TIMEOUT, ugen_bulkra_intr);
 			err = usbd_transfer(sce->ra_wb_xfer);
 			if (err != USBD_IN_PROGRESS) {
@@ -1612,7 +1638,7 @@ ugen_do_ioctl(struct ugen_softc *sc, int endpt, u_long cmd,
 	case USB_SET_CONFIG:
 		if (!(flag & FWRITE))
 			return EPERM;
-		err = ugen_set_config(sc, *(int *)addr);
+		err = ugen_set_config(sc, *(int *)addr, 1);
 		switch (err) {
 		case USBD_NORMAL_COMPLETION:
 			break;
@@ -1794,7 +1820,7 @@ ugen_do_ioctl(struct ugen_softc *sc, int endpt, u_long cmd,
 		}
 		if (len != 0) {
 			if (uio.uio_rw == UIO_READ) {
-				size_t alen = min(len, ur->ucr_actlen);
+				size_t alen = uimin(len, ur->ucr_actlen);
 				error = uiomove(ptr, alen, &uio);
 				if (error)
 					goto ret;
@@ -1830,7 +1856,7 @@ ugenioctl(dev_t dev, u_long cmd, void *addr, int flag, struct lwp *l)
 	int error;
 
 	sc = device_lookup_private(& ugen_cd, UGENUNIT(dev));
-	if (sc == NULL)
+	if (sc == NULL || sc->sc_dying)
 		return ENXIO;
 
 	sc->sc_refcnt++;
@@ -1954,6 +1980,10 @@ static int
 filt_ugenread_intr(struct knote *kn, long hint)
 {
 	struct ugen_endpoint *sce = kn->kn_hook;
+	struct ugen_softc *sc = sce->sc;
+
+	if (sc->sc_dying)
+		return 0;
 
 	kn->kn_data = sce->q.c_cc;
 	return kn->kn_data > 0;
@@ -1963,6 +1993,10 @@ static int
 filt_ugenread_isoc(struct knote *kn, long hint)
 {
 	struct ugen_endpoint *sce = kn->kn_hook;
+	struct ugen_softc *sc = sce->sc;
+
+	if (sc->sc_dying)
+		return 0;
 
 	if (sce->cur == sce->fill)
 		return 0;
@@ -1980,6 +2014,10 @@ static int
 filt_ugenread_bulk(struct knote *kn, long hint)
 {
 	struct ugen_endpoint *sce = kn->kn_hook;
+	struct ugen_softc *sc = sce->sc;
+
+	if (sc->sc_dying)
+		return 0;
 
 	if (!(sce->state & UGEN_BULK_RA))
 		/*
@@ -2001,6 +2039,10 @@ static int
 filt_ugenwrite_bulk(struct knote *kn, long hint)
 {
 	struct ugen_endpoint *sce = kn->kn_hook;
+	struct ugen_softc *sc = sce->sc;
+
+	if (sc->sc_dying)
+		return 0;
 
 	if (!(sce->state & UGEN_BULK_WB))
 		/*
@@ -2018,17 +2060,33 @@ filt_ugenwrite_bulk(struct knote *kn, long hint)
 	return 1;
 }
 
-static const struct filterops ugenread_intr_filtops =
-	{ 1, NULL, filt_ugenrdetach, filt_ugenread_intr };
+static const struct filterops ugenread_intr_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_ugenrdetach,
+	.f_event = filt_ugenread_intr,
+};
 
-static const struct filterops ugenread_isoc_filtops =
-	{ 1, NULL, filt_ugenrdetach, filt_ugenread_isoc };
+static const struct filterops ugenread_isoc_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_ugenrdetach,
+	.f_event = filt_ugenread_isoc,
+};
 
-static const struct filterops ugenread_bulk_filtops =
-	{ 1, NULL, filt_ugenrdetach, filt_ugenread_bulk };
+static const struct filterops ugenread_bulk_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_ugenrdetach,
+	.f_event = filt_ugenread_bulk,
+};
 
-static const struct filterops ugenwrite_bulk_filtops =
-	{ 1, NULL, filt_ugenrdetach, filt_ugenwrite_bulk };
+static const struct filterops ugenwrite_bulk_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_ugenrdetach,
+	.f_event = filt_ugenwrite_bulk,
+};
 
 int
 ugenkqfilter(dev_t dev, struct knote *kn)
@@ -2038,10 +2096,7 @@ ugenkqfilter(dev_t dev, struct knote *kn)
 	struct klist *klist;
 
 	sc = device_lookup_private(&ugen_cd, UGENUNIT(dev));
-	if (sc == NULL)
-		return ENXIO;
-
-	if (sc->sc_dying)
+	if (sc == NULL || sc->sc_dying)
 		return ENXIO;
 
 	if (UGENENDPOINT(dev) == USB_CONTROL_ENDPOINT)

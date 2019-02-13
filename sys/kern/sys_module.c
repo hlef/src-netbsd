@@ -1,4 +1,4 @@
-/*	$NetBSD: sys_module.c,v 1.21 2015/12/12 14:47:37 maxv Exp $	*/
+/*	$NetBSD: sys_module.c,v 1.25 2018/09/04 14:31:18 maxv Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sys_module.c,v 1.21 2015/12/12 14:47:37 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sys_module.c,v 1.25 2018/09/04 14:31:18 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_modular.h"
@@ -81,11 +81,6 @@ handle_modctl_load(const char *ml_filename, int ml_flags, const char *ml_props,
 		propslen = ml_propslen + 1;
 
 		props = kmem_alloc(propslen, KM_SLEEP);
-		if (props == NULL) {
-			error = ENOMEM;
-			goto out1;
-		}
-
 		error = copyinstr(ml_props, props, propslen, NULL);
 		if (error != 0)
 			goto out2;
@@ -125,14 +120,16 @@ handle_modctl_stat(struct iovec *iov, void *arg)
 	size_t size;
 	size_t mslen;
 	int error;
+	bool stataddr;
+
+	/* If not privileged, don't expose kernel addresses. */
+	error = kauth_authorize_process(kauth_cred_get(), KAUTH_PROCESS_CANSEE,
+	    curproc, KAUTH_ARG(KAUTH_REQ_PROCESS_CANSEE_KPTR), NULL, NULL);
+	stataddr = (error == 0);
 
 	kernconfig_lock();
 	mslen = (module_count+module_builtinlist+1) * sizeof(modstat_t);
 	mso = kmem_zalloc(mslen, KM_SLEEP);
-	if (mso == NULL) {
-		kernconfig_unlock();
-		return ENOMEM;
-	}
 	ms = mso;
 	TAILQ_FOREACH(mod, &module_list, mod_chain) {
 		mi = mod->mod_info;
@@ -141,7 +138,7 @@ handle_modctl_stat(struct iovec *iov, void *arg)
 			strlcpy(ms->ms_required, mi->mi_required,
 			    sizeof(ms->ms_required));
 		}
-		if (mod->mod_kobj != NULL) {
+		if (mod->mod_kobj != NULL && stataddr) {
 			kobj_stat(mod->mod_kobj, &addr, &size);
 			ms->ms_addr = addr;
 			ms->ms_size = size;
@@ -159,7 +156,7 @@ handle_modctl_stat(struct iovec *iov, void *arg)
 			strlcpy(ms->ms_required, mi->mi_required,
 			    sizeof(ms->ms_required));
 		}
-		if (mod->mod_kobj != NULL) {
+		if (mod->mod_kobj != NULL && stataddr) {
 			kobj_stat(mod->mod_kobj, &addr, &size);
 			ms->ms_addr = addr;
 			ms->ms_size = size;
@@ -172,7 +169,7 @@ handle_modctl_stat(struct iovec *iov, void *arg)
 	}
 	kernconfig_unlock();
 	error = copyout(mso, iov->iov_base,
-	    min(mslen - sizeof(modstat_t), iov->iov_len));
+	    uimin(mslen - sizeof(modstat_t), iov->iov_len));
 	kmem_free(mso, mslen);
 	if (error == 0) {
 		iov->iov_len = mslen - sizeof(modstat_t);

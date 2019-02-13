@@ -1,4 +1,4 @@
-/*	$NetBSD: rrunner.c,v 1.81 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: rrunner.c,v 1.88 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1997, 1998 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rrunner.c,v 1.81 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: rrunner.c,v 1.88 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "opt_inet.h"
 
@@ -62,6 +62,7 @@ __KERNEL_RCSID(0, "$NetBSD: rrunner.c,v 1.81 2016/06/10 13:27:13 ozaki-r Exp $")
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/route.h>
+#include <net/bpf.h>
 
 #include <net/if_hippi.h>
 #include <net/if_media.h>
@@ -74,10 +75,6 @@ __KERNEL_RCSID(0, "$NetBSD: rrunner.c,v 1.81 2016/06/10 13:27:13 ozaki-r Exp $")
 #include <netinet/if_inarp.h>
 #endif
 
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
-
 #include <sys/cpu.h>
 #include <sys/bus.h>
 #include <sys/intr.h>
@@ -85,12 +82,11 @@ __KERNEL_RCSID(0, "$NetBSD: rrunner.c,v 1.81 2016/06/10 13:27:13 ozaki-r Exp $")
 #include <dev/ic/rrunnerreg.h>
 #include <dev/ic/rrunnervar.h>
 
+#include "ioconf.h"
+
 /*
 #define ESH_PRINTF
 */
-
-/* Autoconfig definition of driver back-end */
-extern struct cfdriver esh_cd;
 
 struct esh_softc *esh_softc_debug[22];  /* for gdb */
 
@@ -786,8 +782,6 @@ esh_fpopen(dev_t dev, int oflags, int devtype,
 
 	recv = (struct esh_fp_ring_ctl *)
 	    malloc(sizeof(*recv), M_DEVBUF, M_WAITOK|M_ZERO);
-	if (recv == NULL)
-		return(ENOMEM);
 	TAILQ_INIT(&recv->ec_queue);
 
 	size = RR_FP_RECV_RING_SIZE * sizeof(struct rr_descr);
@@ -1933,7 +1927,7 @@ eshstart(struct ifnet *ifp)
 			m->m_len -= 8;
 			m->m_data += 8;
 			m->m_pkthdr.len -= 8;
-			bpf_mtap(ifp, m);
+			bpf_mtap(ifp, m, BPF_D_OUT);
 			m->m_len += 8;
 			m->m_data -= 8;
 			m->m_pkthdr.len += 8;
@@ -2222,7 +2216,7 @@ esh_adjust_mbufs(struct esh_softc *sc, struct mbuf *m)
 
 	for (n0 = n = m; n; n = n->m_next) {
 		while (n && n->m_len == 0) {
-			MFREE(n, m0);
+			m0 = m_free(n);
 			if (n == m)
 				n = n0 = m = m0;
 			else
@@ -2243,7 +2237,7 @@ esh_adjust_mbufs(struct esh_softc *sc, struct mbuf *m)
 
 			MCLGET(o, M_DONTWAIT);
 			if (!(o->m_flags & M_EXT)) {
-				MFREE(o, m0);
+				m0 = m_free(o);
 				goto bogosity;
 			}
 
@@ -2256,7 +2250,7 @@ esh_adjust_mbufs(struct esh_softc *sc, struct mbuf *m)
 			 *      to do this kind of funky copy.
 			 */
 
-			len = min(MCLBYTES, write_len);
+			len = uimin(MCLBYTES, write_len);
 #ifdef DIAGNOSTIC
 			assert(n->m_len <= len);
 			assert(len <= MCLBYTES);
@@ -2360,18 +2354,6 @@ esh_read_snap_ring(struct esh_softc *sc, u_int16_t consumer, int error)
 		if (control & RR_CT_PACKET_END) { /* XXX: RR2_ matches */
 			m = recv->ec_cur_pkt;
 			if (!error && !recv->ec_error) {
-				/*
-				 * We have a complete packet, send it up
-				 * the stack...
-				 */
-				ifp->if_ipackets++;
-
-				/*
-				 * Check if there's a BPF listener on this
-				 * interface.  If so, hand off the raw packet
-				 * to BPF.
-				 */
-				bpf_mtap(ifp, m);
 				if ((ifp->if_flags & IFF_RUNNING) == 0) {
 					m_freem(m);
 				} else {

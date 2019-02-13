@@ -1,4 +1,4 @@
-/*	$NetBSD: v7fs_extern.c,v 1.4 2014/12/29 15:29:38 hannken Exp $	*/
+/*	$NetBSD: v7fs_extern.c,v 1.6 2018/05/28 21:04:38 chs Exp $	*/
 
 /*-
  * Copyright (c) 2004, 2011 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: v7fs_extern.c,v 1.4 2014/12/29 15:29:38 hannken Exp $");
+__KERNEL_RCSID(0, "$NetBSD: v7fs_extern.c,v 1.6 2018/05/28 21:04:38 chs Exp $");
 
 #if defined _KERNEL_OPT
 #include "opt_v7fs.h"
@@ -222,6 +222,7 @@ const struct genfs_ops v7fs_genfsops = {
 	.gop_size = genfs_size,
 	.gop_alloc = v7fs_gop_alloc,
 	.gop_write = genfs_gop_write,
+	.gop_putrange = genfs_gop_putrange,
 };
 
 struct vfsops v7fs_vfsops = {
@@ -244,7 +245,7 @@ struct vfsops v7fs_vfsops = {
 	.vfs_mountroot = v7fs_mountroot,
 	.vfs_snapshot = (void *)eopnotsupp,
 	.vfs_extattrctl = vfs_stdextattrctl,
-	.vfs_suspendctl = (void *)eopnotsupp,
+	.vfs_suspendctl = genfs_suspendctl,
 	.vfs_renamelock_enter = genfs_renamelock_enter,
 	.vfs_renamelock_exit = genfs_renamelock_exit,
 	.vfs_fsync = (void *)eopnotsupp,

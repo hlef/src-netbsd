@@ -1,4 +1,4 @@
-/*	$NetBSD: vnode.h,v 1.263 2016/06/03 15:15:49 dholland Exp $	*/
+/*	$NetBSD: vnode.h,v 1.280 2018/04/19 21:19:07 christos Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -74,7 +74,6 @@
 #include <uvm/uvm_object.h>	/* XXX */
 #include <uvm/uvm_extern.h>	/* XXX */
 
-struct namecache;
 struct uvm_ractx;
 #endif
 
@@ -103,7 +102,7 @@ enum vtagtype	{
 	VT_AFS, VT_ISOFS, VT_UNION, VT_ADOSFS, VT_EXT2FS, VT_CODA,
 	VT_FILECORE, VT_NTFS, VT_VFS, VT_OVERLAY, VT_SMBFS, VT_PTYFS,
 	VT_TMPFS, VT_UDF, VT_SYSVBFS, VT_PUFFS, VT_HFS, VT_EFS, VT_ZFS,
-	VT_RUMP, VT_NILFS, VT_V7FS, VT_CHFS
+	VT_RUMP, VT_NILFS, VT_V7FS, VT_CHFS, VT_AUTOFS
 };
 
 #define	VNODE_TAGS \
@@ -112,14 +111,13 @@ enum vtagtype	{
     "VT_AFS", "VT_ISOFS", "VT_UNION", "VT_ADOSFS", "VT_EXT2FS", "VT_CODA", \
     "VT_FILECORE", "VT_NTFS", "VT_VFS", "VT_OVERLAY", "VT_SMBFS", "VT_PTYFS", \
     "VT_TMPFS", "VT_UDF", "VT_SYSVBFS", "VT_PUFFS", "VT_HFS", "VT_EFS", \
-    "VT_ZFS", "VT_RUMP", "VT_NILFS", "VT_V7FS", "VT_CHFS"
+    "VT_ZFS", "VT_RUMP", "VT_NILFS", "VT_V7FS", "VT_CHFS", "VT_AUTOFS"
 
 #if defined(_KERNEL) || defined(_KMEMUSER)
 struct vnode;
 struct buf;
 
 LIST_HEAD(buflists, buf);
-TAILQ_HEAD(vnodelst, vnode);
 
 /*
  * Reading or writing any of these items requires holding the appropriate
@@ -128,9 +126,6 @@ TAILQ_HEAD(vnodelst, vnode);
  *	:	stable, reference to the vnode is required
  *	f	vnode_free_list_lock, or vrele_lock for vrele_list
  *	i	v_interlock
- *	m	mntvnode_lock
- *	n	namecache_lock
- *	s	syncer_data_lock
  *	u	locked by underlying filesystem
  *	v	vnode lock
  *	x	v_interlock + bufcache_lock to modify, either to inspect
@@ -149,17 +144,10 @@ struct vnode {
 	int		v_numoutput;		/* i: # of pending writes */
 	int		v_writecount;		/* i: ref count of writers */
 	int		v_holdcnt;		/* i: page & buffer refs */
-	int		v_synclist_slot;	/* s: synclist slot index */
 	struct mount	*v_mount;		/* v: ptr to vfs we are in */
 	int		(**v_op)(void *);	/* :: vnode operations vector */
-	TAILQ_ENTRY(vnode) v_freelist;		/* f: vnode freelist */
-	struct vnodelst	*v_freelisthd;		/* f: which freelist? */
-	TAILQ_ENTRY(vnode) v_mntvnodes;		/* m: vnodes for mount point */
 	struct buflists	v_cleanblkhd;		/* x: clean blocklist head */
 	struct buflists	v_dirtyblkhd;		/* x: dirty blocklist head */
-	TAILQ_ENTRY(vnode) v_synclist;		/* s: vnodes with dirty bufs */
-	LIST_HEAD(, namecache) v_dnclist;	/* n: namecaches (children) */
-	LIST_HEAD(, namecache) v_nclist;	/* n: namecaches (parent) */
 	union {
 		struct mount	*vu_mountedhere;/* v: ptr to vfs (VDIR) */
 		struct socket	*vu_socket;	/* v: unix ipc (VSOCK) */
@@ -169,7 +157,6 @@ struct vnode {
 	} v_un;
 	enum vtype	v_type;			/* :: vnode type */
 	enum vtagtype	v_tag;			/* :: type of underlying data */
-	krwlock_t	v_lock;			/* v: lock for this vnode */
 	void 		*v_data;		/* :: private data for fs */
 	struct klist	v_klist;		/* i: notes attached to vnode */
 };
@@ -181,7 +168,6 @@ struct vnode {
 #define	v_fifoinfo	v_un.vu_fifoinfo
 #define	v_ractx		v_un.vu_ractx
 
-typedef struct vnodelst vnodelst_t;
 typedef struct vnode vnode_t;
 #endif
 
@@ -393,10 +379,6 @@ extern unsigned int	numvnodes;	/* current number of vnodes */
 #define	VDESC_VP1_WILLRELE	0x00000002
 #define	VDESC_VP2_WILLRELE	0x00000004
 #define	VDESC_VP3_WILLRELE	0x00000008
-#define	VDESC_VP0_WILLUNLOCK	0x00000100
-#define	VDESC_VP1_WILLUNLOCK	0x00000200
-#define	VDESC_VP2_WILLUNLOCK	0x00000400
-#define	VDESC_VP3_WILLUNLOCK	0x00000800
 #define	VDESC_VP0_WILLPUT	0x00000101
 #define	VDESC_VP1_WILLPUT	0x00000202
 #define	VDESC_VP2_WILLPUT	0x00000404
@@ -522,7 +504,6 @@ void	vdevgone(int, int, int, enum vtype);
 int	vfinddev(dev_t, enum vtype, struct vnode **);
 int	vflush(struct mount *, struct vnode *, int);
 int	vflushbuf(struct vnode *, int);
-int 	vget(struct vnode *, int, bool);
 void 	vgone(struct vnode *);
 int	vinvalbuf(struct vnode *, int, kauth_cred_t, struct lwp *, bool, int);
 void	vprint(const char *, struct vnode *);
@@ -530,7 +511,7 @@ void 	vput(struct vnode *);
 bool	vrecycle(struct vnode *);
 void 	vrele(struct vnode *);
 void 	vrele_async(struct vnode *);
-void	vrele_flush(void);
+void	vrele_flush(struct mount *);
 int	vtruncbuf(struct vnode *, daddr_t, bool, int);
 void	vwakeup(struct buf *);
 int	vdead_check(struct vnode *, int);
@@ -543,7 +524,6 @@ int	vcache_rekey_enter(struct mount *, struct vnode *,
 	    const void *, size_t, const void *, size_t);
 void	vcache_rekey_exit(struct mount *, struct vnode *,
 	    const void *, size_t, const void *, size_t);
-void	vcache_remove(struct mount *, const void *, size_t);
 
 /* see vnsubr(9) */
 int	vn_bwrite(void *);
@@ -569,6 +549,23 @@ int	vn_extattr_rm(struct vnode *, int, int, const char *, struct lwp *);
 void	vn_ra_allocctx(struct vnode *);
 int	vn_fifo_bypass(void *);
 
+#ifdef DIAGNOSTIC
+static __inline bool
+vn_locked(struct vnode *_vp)
+{
+
+	return (_vp->v_vflag & VV_LOCKSWORK) == 0 ||
+	    VOP_ISLOCKED(_vp) == LK_EXCLUSIVE;
+}
+
+static __inline bool
+vn_anylocked(struct vnode *_vp)
+{
+
+	return (_vp->v_vflag & VV_LOCKSWORK) == 0 || VOP_ISLOCKED(_vp);
+}
+#endif
+
 /* initialise global vnode management */
 void	vntblinit(void);
 
@@ -582,26 +579,15 @@ uint8_t	vtype2dt(enum vtype);
 
 /* see vfssubr(9) */
 void	vfs_getnewfsid(struct mount *);
-int	vfs_drainvnodes(long);
 void	vfs_timestamp(struct timespec *);
 #if defined(DDB) || defined(DEBUGPRINT)
 void	vfs_vnode_print(struct vnode *, int, void (*)(const char *, ...)
     __printflike(1, 2));
+void	vfs_vnode_lock_print(void *, int, void (*)(const char *, ...)
+    __printflike(1, 2));
 void	vfs_mount_print(struct mount *, int, void (*)(const char *, ...)
     __printflike(1, 2));
 #endif /* DDB */
-
-#ifdef _VFS_VNODE_PRIVATE
-/*
- * Private vnode manipulation functions.
- */
-struct vnode *
-	vnalloc_marker(struct mount *);
-void	vnfree_marker(vnode_t *);
-bool	vnis_marker(vnode_t *);
-void	vcache_print(vnode_t *, const char *,
-    void (*)(const char *, ...) __printflike(1, 2));
-#endif	/* _VFS_VNODE_PRIVATE */
 
 #endif /* _KERNEL */
 

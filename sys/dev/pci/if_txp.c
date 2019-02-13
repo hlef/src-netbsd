@@ -1,4 +1,4 @@
-/* $NetBSD: if_txp.c,v 1.45 2016/07/14 10:19:06 msaitoh Exp $ */
+/* $NetBSD: if_txp.c,v 1.50 2018/07/25 07:55:44 msaitoh Exp $ */
 
 /*
  * Copyright (c) 2001
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_txp.c,v 1.45 2016/07/14 10:19:06 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_txp.c,v 1.50 2018/07/25 07:55:44 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -343,6 +343,7 @@ txp_attach(device_t parent, device_t self, void *aux)
 	 * Attach us everywhere
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 	if (pmf_device_register1(self, NULL, NULL, txp_shutdown))
@@ -568,6 +569,7 @@ txp_download_fw_section(struct txp_softc *sc,
 	 */
 	m.m_type = MT_DATA;
 	m.m_next = m.m_nextpkt = NULL;
+	m.m_owner = NULL;
 	m.m_len = le32toh(sect->nbytes);
 	m.m_data = dma.dma_vaddr;
 	m.m_flags = 0;
@@ -652,7 +654,7 @@ txp_intr(void *vsc)
 	/* unmask all interrupts */
 	WRITE_REG(sc, TXP_IMR, TXP_INT_A2H_3);
 
-	txp_start(&sc->sc_arpcom.ec_if);
+	if_schedule_deferred_start(&sc->sc_arpcom.ec_if);
 
 	return (claimed);
 }
@@ -730,11 +732,6 @@ txp_rx_reclaim(struct txp_softc *sc, struct txp_rx_ring *r,
 		}
 #endif
 
-		/*
-		 * Handle BPF listeners. Let the BPF user see the packet.
-		 */
-		bpf_mtap(ifp, m);
-
 		if (rxd->rx_stat & htole32(RX_STAT_IPCKSUMBAD))
 			sumflags |= (M_CSUM_IPv4|M_CSUM_IPv4_BAD);
 		else if (rxd->rx_stat & htole32(RX_STAT_IPCKSUMGOOD))
@@ -753,8 +750,7 @@ txp_rx_reclaim(struct txp_softc *sc, struct txp_rx_ring *r,
 		m->m_pkthdr.csum_flags = sumflags;
 
 		if (rxd->rx_stat & htole32(RX_STAT_VLAN)) {
-			VLAN_INPUT_TAG(ifp, m, htons(rxd->rx_vlan >> 16),
-			    continue);
+			vlan_set_tag(m, htons(rxd->rx_vlan >> 16));
 		}
 
 		if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -1401,7 +1397,6 @@ txp_start(struct ifnet *ifp)
 	struct mbuf *m, *mnew;
 	struct txp_swdesc *sd;
 	u_int32_t firstprod, firstcnt, prod, cnt, i;
-	struct m_tag *mtag;
 
 	if ((ifp->if_flags & (IFF_RUNNING | IFF_OACTIVE)) != IFF_RUNNING)
 		return;
@@ -1462,9 +1457,9 @@ txp_start(struct ifnet *ifp)
 		if (++cnt >= (TX_ENTRIES - 4))
 			goto oactive;
 
-		if ((mtag = VLAN_OUTPUT_TAG(&sc->sc_arpcom, m)))
+		if (vlan_has_tag(m))
 			txd->tx_pflags = TX_PFLAGS_VLAN |
-			  (htons(VLAN_TAG_VALUE(mtag)) << TX_PFLAGS_VLANTAG_S);
+			  (htons(vlan_get_tag(m)) << TX_PFLAGS_VLANTAG_S);
 
 		if (m->m_pkthdr.csum_flags & M_CSUM_IPv4)
 			txd->tx_pflags |= TX_PFLAGS_IPCKSUM;
@@ -1523,7 +1518,7 @@ txp_start(struct ifnet *ifp)
 
 		ifp->if_timer = 5;
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		txd->tx_flags |= TX_FLAGS_VALID;
 		bus_dmamap_sync(sc->sc_dmat, sc->sc_txhiring_dma.dma_map,

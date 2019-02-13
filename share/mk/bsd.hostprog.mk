@@ -1,7 +1,7 @@
-#	$NetBSD: bsd.hostprog.mk,v 1.76 2016/01/01 17:06:21 christos Exp $
+#	$NetBSD: bsd.hostprog.mk,v 1.80 2018/05/04 14:50:40 christos Exp $
 #	@(#)bsd.prog.mk	8.2 (Berkeley) 4/2/94
 
-.include <bsd.init.mk>
+.include <bsd.hostinit.mk>
 .include <bsd.sys.mk>
 
 ##### Basic targets
@@ -48,14 +48,15 @@ LIBPCI?=	/usr/lib/libpci.a
 LIBPLOT?=	/usr/lib/libplot.a
 LIBPOSIX?=	/usr/lib/libposix.a
 LIBPTHREAD?=    /usr/lib/libpthread.a
-LIBPTHREAD_DBG?=/usr/lib/libpthread_dbg.a
 LIBPUFFS?=	/usr/lib/libpuffs.a
 LIBQUOTA?=	/usr/lib/libquota.a
+LIBREFUSE?=	/usr/lib/librefuse.a
 LIBRESOLV?=	/usr/lib/libresolv.a
 LIBRPCSVC?=	/usr/lib/librpcsvc.a
 LIBRUMP?=	/usr/lib/librump.a
 LIBRUMPCLIENT?=	/usr/lib/librumpclient.a
 LIBRUMPNET?=	/usr/lib/librumpnet.a
+LIBRUMPRES?=	/usr/lib/librumpres.a
 LIBRUMPUSER?=	/usr/lib/librumpuser.a
 LIBRUMPVFS?=	/usr/lib/librumpvfs.a
 LIBSKEY?=	/usr/lib/libskey.a

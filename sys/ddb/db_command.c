@@ -1,4 +1,4 @@
-/*	$NetBSD: db_command.c,v 1.147 2016/04/13 00:47:02 ozaki-r Exp $	*/
+/*	$NetBSD: db_command.c,v 1.160 2018/09/17 01:49:54 kre Exp $	*/
 
 /*
  * Copyright (c) 1996, 1997, 1998, 1999, 2002, 2009 The NetBSD Foundation, Inc.
@@ -60,7 +60,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: db_command.c,v 1.147 2016/04/13 00:47:02 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: db_command.c,v 1.160 2018/09/17 01:49:54 kre Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_aio.h"
@@ -89,9 +89,10 @@ __KERNEL_RCSID(0, "$NetBSD: db_command.c,v 1.147 2016/04/13 00:47:02 ozaki-r Exp
 #include <sys/buf.h>
 #include <sys/module.h>
 #include <sys/kernhist.h>
-
-/*include queue macros*/
+#include <sys/socketvar.h>
 #include <sys/queue.h>
+
+#include <dev/cons.h>
 
 #include <ddb/ddb.h>
 
@@ -190,6 +191,8 @@ static void	db_event_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_fncall(db_expr_t, bool, db_expr_t, const char *);
 static void     db_help_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_lock_print_cmd(db_expr_t, bool, db_expr_t, const char *);
+static void	db_show_all_locks(db_expr_t, bool, db_expr_t, const char *);
+static void	db_show_lockstats(db_expr_t, bool, db_expr_t, const char *);
 static void	db_mount_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_mbuf_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_map_print_cmd(db_expr_t, bool, db_expr_t, const char *);
@@ -201,6 +204,7 @@ static void	db_show_all_pages(db_expr_t, bool, db_expr_t, const char *);
 static void	db_pool_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_reboot_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_sifting_cmd(db_expr_t, bool, db_expr_t, const char *);
+static void	db_socket_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_stack_trace_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_sync_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_whatis_cmd(db_expr_t, bool, db_expr_t, const char *);
@@ -209,6 +213,8 @@ static void	db_uvmexp_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 static void	db_kernhist_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 #endif
 static void	db_vnode_print_cmd(db_expr_t, bool, db_expr_t, const char *);
+static void	db_vnode_lock_print_cmd(db_expr_t, bool, db_expr_t,
+		    const char *);
 static void	db_vmem_print_cmd(db_expr_t, bool, db_expr_t, const char *);
 
 static const struct db_command db_show_cmds[] = {
@@ -223,6 +229,8 @@ static const struct db_command db_show_cmds[] = {
 	    0 ,"List all processes.",NULL,NULL) },
 	{ DDB_ADD_CMD("pools",	db_show_all_pools,
 	    0 ,"Show all pools",NULL,NULL) },
+	{ DDB_ADD_CMD("locks",	db_show_all_locks,
+	    0 ,"Show all held locks", "[/t]", NULL) },
 #ifdef AIO
 	/*added from all sub cmds*/
 	{ DDB_ADD_CMD("aio_jobs",	db_show_aio_jobs,	0,
@@ -239,14 +247,19 @@ static const struct db_command db_show_cmds[] = {
 #endif
 	{ DDB_ADD_CMD("buf",	db_buf_print_cmd,	0,
 	    "Print the struct buf at address.", "[/f] address",NULL) },
+	{ DDB_ADD_CMD("devices", db_show_all_devices,	0,NULL,NULL,NULL) },
 	{ DDB_ADD_CMD("event",	db_event_print_cmd,	0,
 	    "Print all the non-zero evcnt(9) event counters.", "[/fitm]",NULL) },
 	{ DDB_ADD_CMD("files", db_show_files_cmd,	0,
 	    "Print the files open by process at address",
 	    "[/f] address", NULL) },
 	{ DDB_ADD_CMD("lock",	db_lock_print_cmd,	0,NULL,NULL,NULL) },
+	{ DDB_ADD_CMD("lockstats",
+				db_show_lockstats,	0,
+	    "Print statistics of locks", NULL, NULL) },
 	{ DDB_ADD_CMD("map",	db_map_print_cmd,	0,
 	    "Print the vm_map at address.", "[/f] address",NULL) },
+	{ DDB_ADD_CMD("socket",	db_socket_print_cmd,	0,NULL,NULL,NULL) },
 	{ DDB_ADD_CMD("module", db_show_module_cmd,	0,
 	    "Print kernel modules", NULL, NULL) },
 	{ DDB_ADD_CMD("mount",	db_mount_print_cmd,	0,
@@ -282,6 +295,9 @@ static const struct db_command db_show_cmds[] = {
 #endif
 	{ DDB_ADD_CMD("vnode",	db_vnode_print_cmd,	0,
 	    "Print the vnode at address.", "[/f] address",NULL) },
+	{ DDB_ADD_CMD("vnode_lock",	db_vnode_lock_print_cmd,	0,
+	    "Print the vnode having that address as v_lock.",
+	    "[/f] address",NULL) },
 	{ DDB_ADD_CMD("vmem", db_vmem_print_cmd,	0,
 	    "Print the vmem usage.", "[/a] address", NULL) },
 	{ DDB_ADD_CMD("vmems", db_show_all_vmems,	0,
@@ -526,7 +542,14 @@ db_unregister_tbl(uint8_t type,const struct db_command *cmd_tbl)
 	return ENOENT;
 }
 
-/* This function is called from machine trap code. */
+#ifndef _KERNEL
+#define	cnpollc(c)	__nothing
+#endif
+
+/*
+ * This function is called via db_trap() or directly from
+ * machine trap code.
+ */
 void
 db_command_loop(void)
 {
@@ -563,7 +586,9 @@ db_command_loop(void)
 		if (db_print_position() != 0)
 			db_printf("\n");
 		db_output_line = 0;
+		cnpollc(1);
 		(void) db_read_line();
+		cnpollc(0);
 		db_command(&db_last_command);
 	}
 
@@ -1116,6 +1141,21 @@ db_vnode_print_cmd(db_expr_t addr, bool have_addr,
 
 /*ARGSUSED*/
 static void
+db_vnode_lock_print_cmd(db_expr_t addr, bool have_addr,
+    db_expr_t count, const char *modif)
+{
+#ifdef _KERNEL /* XXX CRASH(8) */
+	bool full = false;
+
+	if (modif[0] == 'f')
+		full = true;
+
+	vfs_vnode_lock_print((struct vnode *)(uintptr_t) addr, full, db_printf);
+#endif
+}
+
+/*ARGSUSED*/
+static void
 db_vmem_print_cmd(db_expr_t addr, bool have_addr,
     db_expr_t count, const char *modif)
 {
@@ -1183,6 +1223,17 @@ db_uvmexp_print_cmd(db_expr_t addr, bool have_addr,
 #endif
 }
 
+/*ARGSUSED */
+static void
+db_socket_print_cmd(db_expr_t addr, bool have_addr, db_expr_t count,
+    const char *modif)
+{
+
+#ifdef _KERNEL	/* XXX CRASH(8) */
+	socket_print(modif, db_printf);
+#endif
+}
+
 #ifdef KERNHIST
 /*ARGSUSED*/
 static void
@@ -1190,7 +1241,7 @@ db_kernhist_print_cmd(db_expr_t addr, bool have_addr,
     db_expr_t count, const char *modif)
 {
 
-	kernhist_print((void *)(uintptr_t)addr, db_printf);
+	kernhist_print((void *)(uintptr_t)addr, count, modif, db_printf);
 }
 #endif
 
@@ -1201,7 +1252,28 @@ db_lock_print_cmd(db_expr_t addr, bool have_addr,
 {
 
 #ifdef _KERNEL	/* XXX CRASH(8) */
-	lockdebug_lock_print((void *)(uintptr_t)addr, db_printf);
+	lockdebug_lock_print(have_addr ? (void *)(uintptr_t)addr : NULL,
+	    db_printf);
+#endif
+}
+
+static void
+db_show_all_locks(db_expr_t addr, bool have_addr,
+    db_expr_t count, const char *modif)
+{
+
+#ifdef _KERNEL	/* XXX CRASH(8) */
+	lockdebug_show_all_locks(db_printf, modif);
+#endif
+}
+
+static void
+db_show_lockstats(db_expr_t addr, bool have_addr,
+    db_expr_t count, const char *modif)
+{
+
+#ifdef _KERNEL	/* XXX CRASH(8) */
+	lockdebug_show_lockstats(db_printf);
 #endif
 }
 
@@ -1289,7 +1361,11 @@ db_reboot_cmd(db_expr_t addr, bool have_addr,
 	 * called from cpu_reboot.
 	 */
 	db_recover = 0;
+	/* Avoid all mutex errors */
+	lockdebug_dismiss();
 	panicstr = "reboot forced via kernel debugger";
+	/* Make it possible to break into the debugger again */
+	spl0();
 	cpu_reboot((int)bootflags, NULL);
 #else	/* _KERNEL */
 	db_printf("This command can only be used in-kernel.\n");

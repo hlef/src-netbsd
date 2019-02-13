@@ -1,4 +1,4 @@
-/*	$NetBSD: if_gfe.c,v 1.47 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_gfe.c,v 1.49 2018/06/26 06:48:01 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 2002 Allegro Networks, Inc., Wasabi Systems, Inc.
@@ -42,7 +42,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_gfe.c,v 1.47 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_gfe.c,v 1.49 2018/06/26 06:48:01 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -945,9 +945,6 @@ gfe_rx_get(struct gfe_softc *sc, enum gfe_rxprio rxprio)
 		m->m_len = buflen;
 		m->m_pkthdr.len = buflen;
 
-		ifp->if_ipackets++;
-		bpf_mtap(ifp, m);
-
 		eh = (const struct ether_header *) m->m_data;
 		if ((ifp->if_flags & IFF_PROMISC) ||
 		    (rxq->rxq_cmdsts & RX_STS_M) == 0 ||
@@ -1341,7 +1338,7 @@ gfe_tx_enqueue(struct gfe_softc *sc, enum gfe_txprio txprio)
 	 * Move mbuf from the pending queue to the snd queue.
 	 */
 	IF_DEQUEUE(&txq->txq_pendq, m);
-	bpf_mtap(ifp, m);
+	bpf_mtap(ifp, m, BPF_D_OUT);
 	m_freem(m);
 	ifp->if_flags &= ~IFF_OACTIVE;
 

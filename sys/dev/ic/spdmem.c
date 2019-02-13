@@ -1,4 +1,4 @@
-/* $NetBSD: spdmem.c,v 1.21 2016/01/05 11:49:32 msaitoh Exp $ */
+/* $NetBSD: spdmem.c,v 1.28 2017/10/24 08:02:06 msaitoh Exp $ */
 
 /*
  * Copyright (c) 2007 Nicolas Joly
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: spdmem.c,v 1.21 2016/01/05 11:49:32 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: spdmem.c,v 1.28 2017/10/24 08:02:06 msaitoh Exp $");
 
 #include <sys/param.h>
 #include <sys/device.h>
@@ -185,6 +185,10 @@ spdmem_common_probe(struct spdmem_softc *sc)
 	if ((sc->sc_read)(sc, 2, &spd_type) != 0)
 		return 0;
 
+	/* Memory type should not be 0 */
+	if (spd_type == 0x00)
+		return 0;
+
 	/* For older memory types, validate the checksum over 1st 63 bytes */
 	if (spd_type <= SPDMEM_MEMTYPE_DDR2SDRAM) {
 		for (i = 0; i < 63; i++) {
@@ -240,7 +244,7 @@ spdmem_common_probe(struct spdmem_softc *sc)
 	} else if (spd_type == SPDMEM_MEMTYPE_DDR4SDRAM) {
 		(sc->sc_read)(sc, 0, &val);
 		spd_len = val & 0x0f;
-		if ((unsigned int)spd_len > __arraycount(spd_rom_sizes))
+		if ((unsigned int)spd_len >= __arraycount(spd_rom_sizes))
 			return 0;
 		spd_len = spd_rom_sizes[spd_len];
 		spd_crc_cover = 125; /* For byte 0 to 125 */
@@ -263,8 +267,7 @@ spdmem_common_probe(struct spdmem_softc *sc)
 		 * it some other time.
 		 */
 		return 1;
-	} else
-		return 0;
+	}
 
 	/* For unrecognized memory types, don't match at all */
 	return 0;
@@ -745,12 +748,21 @@ decode_ddr2(const struct sysctlnode *node, device_t self, struct spdmem *s)
 }
 
 static void
+print_part(const char *part, size_t pnsize)
+{
+	const char *p = memchr(part, ' ', pnsize);
+	if (p == NULL)
+		p = part + pnsize;
+	aprint_normal(": %.*s\n", (int)(p - part), part);
+}
+
+static void
 decode_ddr3(const struct sysctlnode *node, device_t self, struct spdmem *s)
 {
 	int dimm_size, cycle_time, bits;
 
 	aprint_naive("\n");
-	aprint_normal(": %18s\n", s->sm_ddr3.ddr3_part);
+	print_part(s->sm_ddr3.ddr3_part, sizeof(s->sm_ddr3.ddr3_part));
 	aprint_normal_dev(self, "%s", spdmem_basic_types[s->sm_type]);
 
 	if (s->sm_ddr3.ddr3_mod_type ==
@@ -861,13 +873,15 @@ decode_ddr4(const struct sysctlnode *node, device_t self, struct spdmem *s)
 	int tAA_clocks, tRCD_clocks,tRP_clocks, tRAS_clocks;
 
 	aprint_naive("\n");
-	aprint_normal(": %20s\n", s->sm_ddr4.ddr4_part_number);
+	print_part(s->sm_ddr4.ddr4_part_number,
+	    sizeof(s->sm_ddr4.ddr4_part_number));
 	aprint_normal_dev(self, "%s", spdmem_basic_types[s->sm_type]);
 	if (s->sm_ddr4.ddr4_mod_type < __arraycount(spdmem_ddr4_module_types))
 		aprint_normal(" (%s)", 
 		    spdmem_ddr4_module_types[s->sm_ddr4.ddr4_mod_type]);
-	aprint_normal(", %stemp-sensor, ",
-		(s->sm_ddr4.ddr4_has_therm_sensor)?"":"no ");
+	aprint_normal(", %sECC, %stemp-sensor, ",
+		(s->sm_ddr4.ddr4_bus_width_extension) ? "" : "no ",
+		(s->sm_ddr4.ddr4_has_therm_sensor) ? "" : "no ");
 
 	/*
 	 * DDR4 size calculation from JEDEC spec
@@ -906,11 +920,15 @@ decode_ddr4(const struct sysctlnode *node, device_t self, struct spdmem *s)
 		}
 	}
 
+/*
+ * Note that the ddr4_xxx_ftb fields are actually signed offsets from
+ * the corresponding mtb value, so we might have to subtract 256!
+ */
 #define	__DDR4_VALUE(field) ((s->sm_ddr4.ddr4_##field##_mtb * 125 +	\
 			     s->sm_ddr4.ddr4_##field##_ftb) - 		\
 			    ((s->sm_ddr4.ddr4_##field##_ftb > 127)?256:0))
 	/*
-	 * For now, the only value for mtb is 1 = 125ps, and ftp = 1ps 
+	 * For now, the only value for mtb is 0 = 125ps, and ftb = 1ps 
 	 * so we don't need to figure out the time-base units - just
 	 * hard-code them for now.
 	 */
@@ -927,10 +945,6 @@ decode_ddr4(const struct sysctlnode *node, device_t self, struct spdmem *s)
 	    1 << s->sm_ddr4.ddr4_bankgroups,
 	    cycle_time / 1000, cycle_time % 1000);
 
-/*
- * Note that the ddr4_xxx_ftb fields are actually signed offsets from
- * the corresponding mtb value, so we might have to subtract 256!
- */
 
 	tAA_clocks =  __DDR4_VALUE(tAAmin)  * 1000 / cycle_time;
 	tRCD_clocks = __DDR4_VALUE(tRCDmin) * 1000 / cycle_time;

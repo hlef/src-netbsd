@@ -1,5 +1,5 @@
 /* $KAME: sctp6_usrreq.c,v 1.38 2005/08/24 08:08:56 suz Exp $ */
-/* $NetBSD: sctp6_usrreq.c,v 1.7 2016/07/15 07:40:09 ozaki-r Exp $ */
+/* $NetBSD: sctp6_usrreq.c,v 1.16 2018/05/01 07:21:39 maxv Exp $ */
 
 /*
  * Copyright (c) 2001, 2002, 2003, 2004 Cisco Systems, Inc.
@@ -33,12 +33,13 @@
  * SUCH DAMAGE.
  */
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sctp6_usrreq.c,v 1.7 2016/07/15 07:40:09 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sctp6_usrreq.c,v 1.16 2018/05/01 07:21:39 maxv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
 #include "opt_ipsec.h"
 #include "opt_sctp.h"
+#include "opt_net_mpsafe.h"
 #endif /* _KERNEL_OPT */
 
 #include <sys/param.h>
@@ -78,7 +79,6 @@ __KERNEL_RCSID(0, "$NetBSD: sctp6_usrreq.c,v 1.7 2016/07/15 07:40:09 ozaki-r Exp
 #include <netinet/icmp6.h>
 #include <netinet6/sctp6_var.h>
 #include <netinet6/ip6protosw.h>
-#include <netinet6/nd6.h>
 
 #ifdef IPSEC
 #include <netipsec/ipsec.h>
@@ -88,10 +88,6 @@ __KERNEL_RCSID(0, "$NetBSD: sctp6_usrreq.c,v 1.7 2016/07/15 07:40:09 ozaki-r Exp
 #if defined(NFAITH) && NFAITH > 0
 #include <net/if_faith.h>
 #endif
-
-#include <net/net_osdep.h>
-
-extern struct protosw inetsw[];
 
 #if defined(HAVE_NRL_INPCB) || defined(__FreeBSD__)
 #ifndef in6pcb
@@ -237,7 +233,7 @@ sctp_skip_csum:
 	/*
 	 * Check AH/ESP integrity.
 	 */
-	if (ipsec_used && ipsec6_in_reject_so(m, in6p->sctp_socket)) {
+	if (ipsec_used && ipsec_in_reject(m, (struct in6pcb *)in6p_ip)) {
 /* XXX */
 #if 0
 		/* FIX ME: need to find right stat */
@@ -611,6 +607,9 @@ sctp6_attach(struct socket *so, int proto)
 	}
 	so->so_send = sctp_sosend;
 
+#ifdef IPSEC
+	inp6->in6p_af = proto;
+#endif
 	inp6->in6p_hops = -1;	        /* use kernel default */
 	inp6->in6p_cksum = -1;	/* just to be sure */
 #ifdef INET
@@ -1294,15 +1293,20 @@ static int
 sctp6_purgeif(struct socket *so, struct ifnet *ifp)
 {
 	struct ifaddr *ifa;
+	/* FIXME NOMPSAFE */
 	IFADDR_READER_FOREACH(ifa, ifp) {
 		if (ifa->ifa_addr->sa_family == PF_INET6) {
 			sctp_delete_ip_address(ifa);
 		}
 	}
 
+#ifndef NET_MPSAFE
 	mutex_enter(softnet_lock);
+#endif
 	in6_purgeif(ifp);
+#ifndef NET_MPSAFE
 	mutex_exit(softnet_lock);
+#endif
 
 	return 0;
 }

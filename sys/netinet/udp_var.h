@@ -1,4 +1,4 @@
-/*	$NetBSD: udp_var.h,v 1.41 2016/01/20 22:01:18 riastradh Exp $	*/
+/*	$NetBSD: udp_var.h,v 1.45 2018/09/14 05:09:51 maxv Exp $	*/
 
 /*
  * Copyright (c) 1982, 1986, 1989, 1993
@@ -75,33 +75,20 @@ struct	udpiphdr {
 #define	UDPCTL_RECVSPACE	3	/* default recv buffer */
 #define	UDPCTL_LOOPBACKCKSUM	4	/* do UDP checksum on loopback */
 #define	UDPCTL_STATS		5	/* UDP statistics */
-#define	UDPCTL_MAXID		7
-
-#define UDPCTL_NAMES { \
-	{ 0, 0 }, \
-	{ "checksum", CTLTYPE_INT }, \
-	{ "sendspace", CTLTYPE_INT }, \
-	{ "recvspace", CTLTYPE_INT }, \
-	{ "do_loopback_cksum", CTLTYPE_INT }, \
-	{ "stats", CTLTYPE_STRUCT }, \
-}
 
 #ifdef _KERNEL
 
-extern	struct	inpcbtable udbtable;
+extern struct inpcbtable udbtable;
 extern const struct pr_usrreqs udp_usrreqs;
 
-void	 *udp_ctlinput(int, const struct sockaddr *, void *);
-int	 udp_ctloutput(int, struct socket *, struct sockopt *);
-void	 udp_init(void);
-void	 udp_init_common(void);
-void	 udp_input(struct mbuf *, ...);
-int	 udp_output(struct mbuf *, struct inpcb *);
-int	 udp_sysctl(int *, u_int, void *, size_t *, void *, size_t);
-
-int	udp_input_checksum(int af, struct mbuf *, const struct udphdr *, int,
-	    int);
-void	udp_statinc(u_int);
+void *udp_ctlinput(int, const struct sockaddr *, void *);
+int udp_ctloutput(int, struct socket *, struct sockopt *);
+void udp_init(void);
+void udp_init_common(void);
+void udp_input(struct mbuf *, int, int);
+int udp_output(struct mbuf *, struct inpcb *, struct mbuf *, struct lwp *);
+int udp_input_checksum(int af, struct mbuf *, const struct udphdr *, int, int);
+void udp_statinc(u_int);
 #endif /* _KERNEL */
 
 #endif /* !_NETINET_UDP_VAR_H_ */

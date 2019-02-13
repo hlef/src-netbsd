@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile.rumpkern,v 1.167 2016/04/11 06:49:11 ozaki-r Exp $
+#	$NetBSD: Makefile.rumpkern,v 1.171 2018/09/14 01:55:20 mrg Exp $
 #
 
 .include "${RUMPTOP}/Makefile.rump"
@@ -51,7 +51,7 @@ SRCS+=	locks.c
 vers.c: ${RUMPTOP}/../conf/newvers.sh ${RUMPTOP}/../conf/osrelease.sh \
 		${RUMPTOP}/../sys/param.h ${_NETBSD_VERSION_DEPENDS}
 	${_MKMSG_CREATE} vers.c
-	${HOST_SH} ${RUMPTOP}/../conf/newvers.sh -i RUMP-ROAST -n -r
+	${HOST_SH} ${RUMPTOP}/../conf/newvers.sh -i RUMP-ROAST -n -R
 SRCS+=		vers.c
 CLEANFILES+=	vers.c version
 
@@ -81,19 +81,21 @@ SRCS+=	init_sysctl_base.c	\
 	kern_proc.c		\
 	kern_prot.c		\
 	kern_rate.c		\
+	kern_reboot.c		\
 	kern_resource.c		\
 	kern_rndpool.c		\
 	kern_rndq.c		\
 	kern_rndsink.c		\
 	kern_rwlock_obj.c	\
+	kern_scdebug.c		\
 	kern_stub.c		\
+	kern_ssp.c		\
 	kern_syscall.c		\
 	kern_sysctl.c		\
 	kern_tc.c		\
 	kern_time.c		\
 	kern_timeout.c		\
 	kern_uidinfo.c		\
-	kern_xxx.c		\
 	param.c			\
 	subr_callback.c		\
 	subr_copy.c		\
@@ -108,6 +110,7 @@ SRCS+=	init_sysctl_base.c	\
 	subr_kcpuset.c		\
 	subr_kmem.c		\
 	subr_kobj.c		\
+	subr_localcount.c	\
 	subr_log.c		\
 	subr_lwp_specificdata.c	\
 	subr_once.c		\

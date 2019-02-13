@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile,v 1.186 2016/01/24 22:49:08 christos Exp $
+#	$NetBSD: Makefile,v 1.196 2018/09/25 05:42:08 joerg Exp $
 
 .include <bsd.own.mk>
 .include <bsd.endian.mk>
@@ -53,9 +53,7 @@ TOOLCHAIN_BITS+= pcc
 . endif
 .endif
 
-.if ${TOOLCHAIN_MISSING} == "no"
-# XXX Eventually, we want to be able to build dbsym and mdsetimage
-# XXX if EXTERNAL_TOOLCHAIN is set.
+.if ${TOOLCHAIN_MISSING} == "no" || defined(EXTERNAL_TOOLCHAIN)
 TOOLCHAIN_BITS+= dbsym mdsetimage
 .endif
 
@@ -102,7 +100,8 @@ SUBDIR+= cap_mkdb crunchgen ctags gencat hexdump \
 		makewhatis mtree nbperf .WAIT uudecode
 .endif
 
-SUBDIR+= cat rpcgen join lorder m4 mkdep tsort .WAIT yacc .WAIT awk .WAIT lex
+SUBDIR+= cat rpcgen join lorder m4 mkdep tsort xz-include .WAIT yacc .WAIT awk .WAIT lex
+SUBDIR+= grep xz-lib
 
 .if ${TOOLS_BUILDRUMP} == "no"
 SUBDIR += .WAIT texinfo \
@@ -120,14 +119,17 @@ SUBDIR += .WAIT texinfo \
 		.WAIT installboot \
 		pwd_mkdb strfile sunlabel vgrind zic
 .endif
-SUBDIR+= stat .WAIT config
+SUBDIR+= stat .WAIT config xz-bin
 
 .if ${MKLLVM} != "no"
 SUBDIR+= \
 	llvm .WAIT \
-	llvm-lib/libLLVMSupport llvm-lib/libLLVMTableGen .WAIT \
-	llvm-tblgen llvm-clang-tblgen .WAIT \
-	llvm-include .WAIT \
+	llvm-lib/libLLVMDemangle llvm-lib/libLLVMSupport llvm-lib/libLLVMTableGen .WAIT \
+	llvm-tblgen llvm-clang-tblgen
+.endif
+.if ${MKLLVM} != "no" && !defined(EXTERNAL_TOOLCHAIN)
+SUBDIR+= \
+	.WAIT llvm-include .WAIT \
 	llvm-lib .WAIT \
 	llvm-clang
 . if ${MKLLD} != "no"
@@ -210,6 +212,8 @@ SUBDIR+=	elftosb
 .if ${MACHINE} == "evbarm" || ${MACHINE} == "evbmips" || \
     ${MACHINE} == "evbppc" || ${MACHINE} == "sandpoint"
 SUBDIR+=	mkubootimage
+SUBDIR+=	libfdt .WAIT
+SUBDIR+=	dtc
 .endif
 
 .if ${MKX11} != "no"
@@ -219,7 +223,7 @@ SUBDIR+=	makekeys
 
 SUBDIR+= cvslatest
 
-.endif # TOOLCHAIN_BUILDRUMP
+.endif # TOOLS_BUILDRUMP != no
 
 check_MKTOOLS: .PHONY .NOTMAIN
 .if ${MKTOOLS:Uyes} == "no"

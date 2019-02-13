@@ -1,4 +1,4 @@
-/*	$NetBSD: ip_nat.c,v 1.16 2016/03/17 04:07:41 khorben Exp $	*/
+/*	$NetBSD: ip_nat.c,v 1.20 2018/06/03 10:37:23 maxv Exp $	*/
 
 /*
  * Copyright (C) 2012 by Darren Reed.
@@ -87,7 +87,6 @@ extern struct ifnet vpnif;
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 #include "netinet/ip_compat.h"
-#include <netinet/tcpip.h>
 #include "netinet/ipl.h"
 #include "netinet/ip_fil.h"
 #include "netinet/ip_nat.h"
@@ -113,7 +112,7 @@ extern struct ifnet vpnif;
 #if !defined(lint)
 #if defined(__NetBSD__)
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ip_nat.c,v 1.16 2016/03/17 04:07:41 khorben Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ip_nat.c,v 1.20 2018/06/03 10:37:23 maxv Exp $");
 #else
 static const char sccsid[] = "@(#)ip_nat.c	1.11 6/5/96 (C) 1995 Darren Reed";
 static const char rcsid[] = "@(#)Id: ip_nat.c,v 1.1.1.2 2012/07/22 13:45:27 darrenr Exp";
@@ -139,7 +138,7 @@ static const char rcsid[] = "@(#)Id: ip_nat.c,v 1.1.1.2 2012/07/22 13:45:27 darr
 
 frentry_t	ipfnatblock;
 
-static ipftuneable_t ipf_nat_tuneables[] = {
+static const ipftuneable_t ipf_nat_tuneables[] = {
 	/* nat */
 	{ { (void *)offsetof(ipf_nat_softc_t, ipf_nat_lock) },
 		"nat_lock",	0,	1,
@@ -4621,8 +4620,8 @@ ipf_nat_lookupredir(ipf_main_softc_t *softc, natlookup_t *np)
 				}
 			}
 
-			np->nl_realip = nat->nat_ndstip;
-			np->nl_realport = nat->nat_ndport;
+			np->nl_realip = nat->nat_odstip;
+			np->nl_realport = nat->nat_odport;
 		}
  	}
 
@@ -6012,7 +6011,7 @@ ipf_nat_icmpquerytype(int icmptype)
 	{
 	case ICMP_ECHOREPLY:
 	case ICMP_ECHO:
-	/* route aedvertisement/solliciation is currently unsupported: */
+	/* route advertisement/sollicitation is currently unsupported: */
 	/* it would require rewriting the ICMP data section            */
 	case ICMP_TSTAMP:
 	case ICMP_TSTAMPREPLY:

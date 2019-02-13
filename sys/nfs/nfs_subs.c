@@ -1,4 +1,4 @@
-/*	$NetBSD: nfs_subs.c,v 1.228 2016/06/10 13:27:16 ozaki-r Exp $	*/
+/*	$NetBSD: nfs_subs.c,v 1.233 2018/09/03 16:29:36 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1989, 1993
@@ -70,7 +70,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: nfs_subs.c,v 1.228 2016/06/10 13:27:16 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: nfs_subs.c,v 1.233 2018/09/03 16:29:36 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_nfs.h"
@@ -671,7 +671,7 @@ nfsm_rpchead(kauth_cred_t cr, int nmflag, int procid,
 				mb->m_len = 0;
 				bpos = mtod(mb, void *);
 			}
-			i = min(siz, M_TRAILINGSPACE(mb));
+			i = uimin(siz, M_TRAILINGSPACE(mb));
 			memcpy(bpos, auth_str, i);
 			mb->m_len += i;
 			auth_str += i;
@@ -706,7 +706,7 @@ nfsm_rpchead(kauth_cred_t cr, int nmflag, int procid,
 				mb->m_len = 0;
 				bpos = mtod(mb, void *);
 			}
-			i = min(siz, M_TRAILINGSPACE(mb));
+			i = uimin(siz, M_TRAILINGSPACE(mb));
 			memcpy(bpos, verf_str, i);
 			mb->m_len += i;
 			verf_str += i;
@@ -942,10 +942,7 @@ nfsm_disct(struct mbuf **mdp, char **dposp, int siz, int left, char **cp2)
 			*mdp = m1 = m_get(M_WAIT, MT_DATA);
 			MCLAIM(m1, m2->m_owner);
 			if ((m2->m_flags & M_PKTHDR) != 0) {
-				/* XXX MOVE */
-				M_COPY_PKTHDR(m1, m2);
-				m_tag_delete_chain(m2, NULL);
-				m2->m_flags &= ~M_PKTHDR;
+				M_MOVE_PKTHDR(m1, m2);
 			}
 			if (havebuf) {
 				havebuf->m_next = m1;
@@ -1005,7 +1002,7 @@ nfsm_disct(struct mbuf **mdp, char **dposp, int siz, int left, char **cp2)
 	 */
 	dst = mtod(m1, char *) + m1->m_len;
 	while ((len = M_TRAILINGSPACE(m1)) != 0 && m2) {
-		if ((len = min(len, m2->m_len)) != 0) {
+		if ((len = uimin(len, m2->m_len)) != 0) {
 			memcpy(dst, mtod(m2, char *), len);
 		}
 		m1->m_len += len;
@@ -1495,6 +1492,7 @@ nfs_init0(void)
 	 * Initialize reply list and start timer
 	 */
 	TAILQ_INIT(&nfs_reqq);
+	mutex_init(&nfs_reqq_lock, MUTEX_DEFAULT, IPL_NONE);
 	nfs_timer_init();
 	MOWNER_ATTACH(&nfs_mowner);
 
@@ -1534,6 +1532,7 @@ nfs_fini(void)
 	if (--nfs_refcount == 0) {
 		MOWNER_DETACH(&nfs_mowner);
 		nfs_timer_fini();
+		mutex_destroy(&nfs_reqq_lock);
 		nfsdreq_fini();
 	}
 	nfs_v();
@@ -1600,7 +1599,7 @@ nfs_zeropad(struct mbuf *mp, int len, int nul)
 		char *cp;
 		int i;
 
-		if (M_ROMAP(m) || M_TRAILINGSPACE(m) < nul) {
+		if (M_READONLY(m) || M_TRAILINGSPACE(m) < nul) {
 			struct mbuf *n;
 
 			KDASSERT(MLEN >= nul);
@@ -1752,6 +1751,8 @@ nfs_clearcommit_selector(void *cl, struct vnode *vp)
 	struct nfs_clearcommit_ctx *c = cl;
 	struct nfsnode *np;
 	struct vm_page *pg;
+
+	KASSERT(mutex_owned(vp->v_interlock));
 
 	np = VTONFS(vp);
 	if (vp->v_type != VREG || vp->v_mount != c->mp || np == NULL)

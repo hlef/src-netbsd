@@ -1,5 +1,5 @@
 
-/*	$NetBSD: kmem.h,v 1.6 2010/02/21 01:46:36 darran Exp $	*/
+/*	$NetBSD: kmem.h,v 1.10 2018/05/28 21:05:10 chs Exp $	*/
 
 /*-
  * Copyright (c) 2009 The NetBSD Foundation, Inc.
@@ -34,16 +34,22 @@
 #define	_OPENSOLARIS_SYS_KMEM_H_
 
 #include_next <sys/kmem.h>
-#include_next <sys/pool.h>
-#include_next <sys/vmem.h>
+#include <sys/pool.h>
+#include <sys/vmem.h>
+
+#define	KM_PUSHPAGE	KM_SLEEP
+#define	KM_NORMALPRI	0
+#define	KM_NODEBUG	0
+
+#define	KMC_NODEBUG	0
+#define	KMC_NOTOUCH	0
 
 typedef void kmem_cache_t;
 
-u_long	kmem_size(void);
-u_long	kmem_used(void);
-void	kmem_reap(void);
+#define	POINTER_IS_VALID(p)	(!((uintptr_t)(p) & 0x3))
+#define	POINTER_INVALIDATE(pp)	(*(pp) = (void *)((uintptr_t)(*(pp)) | 0x1))
 
-void	*calloc(size_t n, size_t s);
+void		kmem_reap(void);
 
 static inline kmem_cache_t *
 kmem_cache_create(char *name, size_t bufsize, size_t align,
@@ -51,10 +57,11 @@ kmem_cache_create(char *name, size_t bufsize, size_t align,
     void (*reclaim)(void *) __unused, void *private, vmem_t *vmp, int cflags)
 {
 	pool_cache_t pc;
+	int flags = bufsize > PAGESIZE ? PR_NOALIGN : 0;
 
 	KASSERT(vmp == NULL);
 
-	pc = pool_cache_init(bufsize, align, 0, 0, name, NULL, IPL_NONE,
+	pc = pool_cache_init(bufsize, align, 0, flags, name, NULL, IPL_NONE,
 	    constructor, destructor, private);
 	if (pc != NULL && reclaim != NULL) {
 		pool_cache_set_drain_hook(pc, (void *)reclaim, private);
@@ -62,12 +69,27 @@ kmem_cache_create(char *name, size_t bufsize, size_t align,
 	return pc;
 }
 
+static inline void *
+kmem_cache_alloc(kmem_cache_t *cache, int flags)
+{
+	return pool_cache_get(cache, flags);
+}
+
 #define	kmem_cache_destroy(cache)		pool_cache_destroy(cache)
-#define	kmem_cache_alloc(cache, flags)		pool_cache_get(cache, flags)
 #define	kmem_cache_free(cache, buf)		pool_cache_put(cache, buf)
 #define	kmem_cache_reap_now(cache)		pool_cache_invalidate(cache)
 
-#define	KM_PUSHPAGE	0x00	/* XXXNETBSD */
-#define	KMC_NODEBUG	0x00
+#define	heap_arena			kmem_arena
+
+#define	kmem_cache_set_move(cache, movefunc)	do { } while (0)
+
+#define kmem_alloc solaris_kmem_alloc
+#define kmem_zalloc solaris_kmem_zalloc
+#define kmem_free solaris_kmem_free
+#define kmem_size() ((uint64_t)physmem * PAGE_SIZE)
+
+void *solaris_kmem_alloc(size_t, int);
+void *solaris_kmem_zalloc(size_t, int);
+void solaris_kmem_free(void *, size_t);
 
 #endif	/* _OPENSOLARIS_SYS_KMEM_H_ */

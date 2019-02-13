@@ -1,4 +1,4 @@
-/*	$NetBSD: cpu.h,v 1.120 2016/07/16 01:59:05 macallan Exp $	*/
+/*	$NetBSD: cpu.h,v 1.126 2018/09/16 09:25:46 skrll Exp $	*/
 
 /*-
  * Copyright (c) 1992, 1993
@@ -150,6 +150,9 @@ struct cpu_info {
 #define	CPUF_RUNNING	0x04		/* CPU is running */
 #define	CPUF_PAUSED	0x08		/* CPU is paused */
 #define	CPUF_USERPMAP	0x20		/* CPU has a user pmap activated */
+	kcpuset_t *ci_multicastcpus;
+	kcpuset_t *ci_watchcpus;
+	kcpuset_t *ci_ddbcpus;
 #endif
 
 };
@@ -157,7 +160,11 @@ struct cpu_info {
 #ifdef MULTIPROCESSOR
 #define	CPU_INFO_ITERATOR		int
 #define	CPU_INFO_FOREACH(cii, ci)	\
-    cii = 0, ci = cpu_infos[0]; cii < ncpu && (ci = cpu_infos[cii]) != NULL; cii++
+    cii = 0, ci = &cpu_info_store; \
+    ci != NULL; \
+    cii++, \
+    ncpu ? (ci = cpu_infos[cii]) \
+         : (ci = NULL)
 #else
 #define	CPU_INFO_ITERATOR		int __unused
 #define	CPU_INFO_FOREACH(cii, ci)	\
@@ -193,17 +200,17 @@ register struct lwp *mips_curlwp asm(MIPS_CURLWP_QUOTED);
  */
 
 /*
- * Send an inter-processor interupt to each other CPU (excludes curcpu())
+ * Send an inter-processor interrupt to each other CPU (excludes curcpu())
  */
 void cpu_broadcast_ipi(int);
 
 /*
- * Send an inter-processor interupt to CPUs in kcpuset (excludes curcpu())
+ * Send an inter-processor interrupt to CPUs in kcpuset (excludes curcpu())
  */
 void cpu_multicast_ipi(const kcpuset_t *, int);
 
 /*
- * Send an inter-processor interupt to another CPU.
+ * Send an inter-processor interrupt to another CPU.
  */
 int cpu_send_ipi(struct cpu_info *, int);
 
@@ -282,13 +289,5 @@ void	cpu_vmspace_exec(struct lwp *, vaddr_t, vaddr_t);
 #define CPU_ROOT_DEVICE		3	/* string: root device name */
 #define CPU_LLSC		4	/* OS/CPU supports LL/SC instruction */
 #define CPU_LMMI		5	/* Loongson multimedia instructions */
-
-/*
- * Platform can override, but note this breaks userland compatibility
- * with other mips platforms.
- */
-#ifndef CPU_MAXID
-#define CPU_MAXID		5	/* number of valid machdep ids */
-#endif
 
 #endif /* _CPU_H_ */
