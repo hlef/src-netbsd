@@ -1,4 +1,4 @@
-/*	$NetBSD: if_jme.c,v 1.30 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_jme.c,v 1.35 2018/06/26 06:48:01 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 2008 Manuel Bouyer.  All rights reserved.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_jme.c,v 1.30 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_jme.c,v 1.35 2018/06/26 06:48:01 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -83,9 +83,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_jme.c,v 1.30 2016/06/10 13:27:14 ozaki-r Exp $");
 #include <net/if_dl.h>
 #include <net/route.h>
 #include <net/netisr.h>
-
 #include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/rndsource.h>
 
@@ -1170,9 +1168,7 @@ jme_intr_rx(jme_softc_t *sc) {
 			m->m_len =
 			    JME_RX_BYTES(buflen) - (MCLBYTES * (nsegs - 1));
 		}
-		ifp->if_ipackets++;
 		ipackets++;
-		bpf_mtap(ifp, mhead);
 
 		if ((ifp->if_capenable & IFCAP_CSUM_IPv4_Rx) &&
 		    (flags & JME_RD_IPV4)) {
@@ -1210,8 +1206,7 @@ jme_intr_rx(jme_softc_t *sc) {
 		}
 		if (flags & JME_RD_VLAN_TAG) {
 			/* pass to vlan_input() */
-			VLAN_INPUT_TAG(ifp, mhead,
-			    (flags & JME_RD_VLAN_MASK), continue);
+			vlan_set_tag(mhead, (flags & JME_RD_VLAN_MASK));
 		}
 		if_percpuq_enqueue(ifp->if_percpuq, mhead);
 	}
@@ -1349,7 +1344,6 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 {
 	struct jme_desc *desc;
 	struct mbuf *m;
-	struct m_tag *mtag;
 	int error, i, prod, headdsc, nsegs;
 	uint32_t cflags, tso_segsz;
 
@@ -1365,7 +1359,7 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 		bool v4 = ((*m_head)->m_pkthdr.csum_flags & M_CSUM_TSOv4) != 0;
 		int iphl = v4 ?
 		    M_CSUM_DATA_IPv4_IPHL((*m_head)->m_pkthdr.csum_data) :
-		    M_CSUM_DATA_IPv6_HL((*m_head)->m_pkthdr.csum_data);
+		    M_CSUM_DATA_IPv6_IPHL((*m_head)->m_pkthdr.csum_data);
 		/*
 		 * note: we support vlan offloading, so we should never have
 		 * a ETHERTYPE_VLAN packet here - so ETHER_HDR_LEN is always
@@ -1492,8 +1486,8 @@ jme_encap(struct jme_softc *sc, struct mbuf **m_head)
 			cflags |= JME_TD_UDPCSUM;
 	}
 	/* Configure VLAN. */
-	if ((mtag = VLAN_OUTPUT_TAG(&sc->jme_ec, m)) != NULL) {
-		cflags |= (VLAN_TAG_VALUE(mtag) & JME_TD_VLAN_MASK);
+	if (vlan_has_tag(m)) {
+		cflags |= (vlan_get_tag(m) & JME_TD_VLAN_MASK);
 		cflags |= JME_TD_VLAN_TAG;
 	}
 
@@ -1684,7 +1678,7 @@ nexttx:
 			break;
 		}
 		/* Pass packet to bpf if there is a listener */
-		bpf_mtap(ifp, mb_head);
+		bpf_mtap(ifp, mb_head, BPF_D_OUT);
 	}
 #ifdef JMEDEBUG_TX
 	printf("jme_ifstart enq %d\n", enq);

@@ -1,4 +1,4 @@
-/*	$NetBSD: ppc_reloc.c,v 1.53 2014/08/25 20:40:52 joerg Exp $	*/
+/*	$NetBSD: ppc_reloc.c,v 1.57 2018/04/03 21:10:27 joerg Exp $	*/
 
 /*-
  * Copyright (C) 1998	Tsubai Masanari
@@ -30,7 +30,7 @@
 
 #include <sys/cdefs.h>
 #ifndef lint
-__RCSID("$NetBSD: ppc_reloc.c,v 1.53 2014/08/25 20:40:52 joerg Exp $");
+__RCSID("$NetBSD: ppc_reloc.c,v 1.57 2018/04/03 21:10:27 joerg Exp $");
 #endif /* not lint */
 
 #include <stdarg.h>
@@ -178,16 +178,39 @@ int
 _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 {
 	const Elf_Rela *rela;
+	const Elf_Sym *def = NULL;
+	const Obj_Entry *defobj = NULL;
+	unsigned long last_symnum = ULONG_MAX;
 
 	for (rela = obj->rela; rela < obj->relalim; rela++) {
 		Elf_Addr        *where;
-		const Elf_Sym   *def;
-		const Obj_Entry *defobj;
 		Elf_Addr         tmp;
 		unsigned long	 symnum;
 
 		where = (Elf_Addr *)(obj->relocbase + rela->r_offset);
-		symnum = ELF_R_SYM(rela->r_info);
+
+		switch (ELF_R_TYPE(rela->r_info)) {
+#ifdef _LP64
+		case R_TYPE(ADDR64):	/* <address> S + A */
+#else
+		case R_TYPE(ADDR32):	/* <address> S + A */
+#endif
+		case R_TYPE(GLOB_DAT):	/* <address> S + A */
+		case R_TYPE(DTPMOD):
+		case R_TYPE(DTPREL):
+		case R_TYPE(TPREL):
+			symnum = ELF_R_SYM(rela->r_info);
+			if (last_symnum != symnum) {
+				last_symnum = symnum;
+				def = _rtld_find_symdef(symnum, obj, &defobj,
+				    false);
+				if (def == NULL)
+					return -1;
+			}
+			break;
+		default:
+			break;
+		}
 
 		switch (ELF_R_TYPE(rela->r_info)) {
 #if 1 /* XXX Should not be necessary. */
@@ -202,10 +225,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 		case R_TYPE(ADDR32):	/* <address> S + A */
 #endif
 		case R_TYPE(GLOB_DAT):	/* <address> S + A */
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			tmp = (Elf_Addr)(defobj->relocbase + def->st_value +
 			    rela->r_addend);
 			if (*where != tmp)
@@ -238,10 +257,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			break;
 
 		case R_TYPE(DTPMOD):
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			*where = (Elf_Addr)defobj->tlsindex;
 			rdbg(("DTPMOD32 %s in %s --> %p in %s",
 			    obj->strtab + obj->symtab[symnum].st_name,
@@ -249,10 +264,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			break;
 
 		case R_TYPE(DTPREL):
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			if (!defobj->tls_done && _rtld_tls_offset_allocate(obj))
 				return -1;
 
@@ -264,10 +275,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			break;
 
 		case R_TYPE(TPREL):
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			if (!defobj->tls_done && _rtld_tls_offset_allocate(obj))
 				return -1;
 
@@ -278,10 +285,19 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			    obj->path, (void *)*where, defobj->path));
 			break;
 
+		case R_TYPE(IRELATIVE):
+			/* IFUNC relocations are handled in _rtld_call_ifunc */
+			if (obj->ifunc_remaining_nonplt == 0) {
+				obj->ifunc_remaining_nonplt =
+				    obj->relalim - rela;
+			}
+			break;
+
 		default:
 			rdbg(("sym = %lu, type = %lu, offset = %p, "
 			    "addend = %p, contents = %p, symbol = %s",
-			    symnum, (u_long)ELF_R_TYPE(rela->r_info),
+			    (u_long)ELF_R_SYM(rela->r_info),
+			    (u_long)ELF_R_TYPE(rela->r_info),
 			    (void *)rela->r_offset, (void *)rela->r_addend,
 			    (void *)*where,
 			    obj->strtab + obj->symtab[symnum].st_name));
@@ -295,24 +311,30 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 }
 
 int
-_rtld_relocate_plt_lazy(const Obj_Entry *obj)
+_rtld_relocate_plt_lazy(Obj_Entry *obj)
 {
 #ifdef _LP64
 	/*
 	 * For PowerPC64, the plt stubs handle an empty function descriptor
 	 * so there's nothing to do.
 	 */
+	/* XXX ifunc support */
 #else
 	Elf_Addr * const pltresolve = obj->pltgot + 8;
 	const Elf_Rela *rela;
-	int reloff;
 
-	for (rela = obj->pltrela, reloff = 0;
-	     rela < obj->pltrelalim;
-	     rela++, reloff++) {
+	for (rela = obj->pltrelalim; rela-- > obj->pltrela;) {
+		size_t reloff = rela - obj->pltrela;
 		Elf_Word *where = (Elf_Word *)(obj->relocbase + rela->r_offset);
 
-		assert(ELF_R_TYPE(rela->r_info) == R_TYPE(JMP_SLOT));
+		assert(ELF_R_TYPE(rela->r_info) == R_TYPE(JUMP_SLOT) ||
+		       ELF_R_TYPE(rela->r_info) == R_TYPE(IRELATIVE));
+
+		if (ELF_R_TYPE(rela->r_info) == R_TYPE(IRELATIVE)) {
+			/* No ifunc support for old-style insecure PLT. */
+			assert(obj->gotptr != NULL);
+			obj->ifunc_remaining = obj->pltrelalim - rela;
+		}
 
 		if (obj->gotptr != NULL) {
 			/*

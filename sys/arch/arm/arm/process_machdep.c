@@ -1,4 +1,4 @@
-/*	$NetBSD: process_machdep.c,v 1.30 2014/08/13 21:41:32 matt Exp $	*/
+/*	$NetBSD: process_machdep.c,v 1.33 2018/01/24 09:04:44 skrll Exp $	*/
 
 /*
  * Copyright (c) 1993 The Regents of the University of California.
@@ -133,7 +133,7 @@
 
 #include <sys/param.h>
 
-__KERNEL_RCSID(0, "$NetBSD: process_machdep.c,v 1.30 2014/08/13 21:41:32 matt Exp $");
+__KERNEL_RCSID(0, "$NetBSD: process_machdep.c,v 1.33 2018/01/24 09:04:44 skrll Exp $");
 
 #include <sys/proc.h>
 #include <sys/ptrace.h>
@@ -165,7 +165,7 @@ process_read_regs(struct lwp *l, struct reg *regs)
 		regs->r_pc |= 1;
 #endif
 
-	return(0);
+	return 0;
 }
 
 int
@@ -177,7 +177,7 @@ process_read_fpregs(struct lwp *l, struct fpreg *regs, size_t *sz)
 		return 0;
 	}
 	const struct pcb * const pcb = lwp_getpcb(l);
-	vfp_savecontext();
+	vfp_savecontext(l);
 	regs->fpr_vfp = pcb->pcb_vfp;
 	regs->fpr_vfp.vfp_fpexc &= ~VFP_FPEXC_EN;
 #endif
@@ -193,7 +193,6 @@ process_write_regs(struct lwp *l, const struct reg *regs)
 	memcpy(&tf->tf_r0, regs->r, sizeof(regs->r));
 	tf->tf_usr_sp = regs->r_sp;
 	tf->tf_usr_lr = regs->r_lr;
-#ifdef __PROG32
 	tf->tf_pc = regs->r_pc;
 	tf->tf_spsr &=  ~(PSR_FLAGS | PSR_T_bit);
 	tf->tf_spsr |= regs->r_cpsr & PSR_FLAGS;
@@ -202,14 +201,8 @@ process_write_regs(struct lwp *l, const struct reg *regs)
 		tf->tf_spsr |= PSR_T_bit;
 #endif
 	KASSERT(VALID_R15_PSR(tf->tf_pc, tf->tf_spsr));
-#else /* __PROG26 */
-	if ((regs->r_pc & (R15_MODE | R15_IRQ_DISABLE | R15_FIQ_DISABLE)) != 0)
-		return EPERM;
 
-	tf->tf_r15 = regs->r_pc;
-#endif
-
-	return(0);
+	return 0;
 }
 
 int
@@ -220,11 +213,11 @@ process_write_fpregs(struct lwp *l, const struct fpreg *regs, size_t sz)
 		return EINVAL;
 	}
 	struct pcb * const pcb = lwp_getpcb(l);
-	vfp_discardcontext(true);
+	vfp_discardcontext(l, true);
 	pcb->pcb_vfp = regs->fpr_vfp;
 	pcb->pcb_vfp.vfp_fpexc &= ~VFP_FPEXC_EN;
 #endif
-	return(0);
+	return 0;
 }
 
 int
@@ -233,7 +226,6 @@ process_set_pc(struct lwp *l, void *addr)
 	struct trapframe * const tf = lwp_trapframe(l);
 
 	KASSERT(tf != NULL);
-#ifdef __PROG32
 	tf->tf_pc = (int)addr;
 #ifdef THUMB_CODE
 	if (((int)addr) & 1)
@@ -241,12 +233,6 @@ process_set_pc(struct lwp *l, void *addr)
 	else
 		tf->tf_spsr &= ~PSR_T_bit;
 #endif
-#else /* __PROG26 */
-	/* Only set the PC, not the PSR */
-	if (((register_t)addr & R15_PC) != (register_t)addr)
-		return EINVAL;
-	tf->tf_r15 = (tf->tf_r15 & ~R15_PC) | (register_t)addr;
-#endif
 
-	return (0);
+	return 0;
 }

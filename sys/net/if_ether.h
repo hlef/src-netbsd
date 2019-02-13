@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ether.h,v 1.65 2015/11/19 16:23:54 christos Exp $	*/
+/*	$NetBSD: if_ether.h,v 1.75 2018/06/14 08:00:24 yamaguchi Exp $	*/
 
 /*
  * Copyright (c) 1982, 1986, 1993
@@ -59,8 +59,11 @@
 /*
  * Some Ethernet extensions.
  */
-#define	ETHER_VLAN_ENCAP_LEN 4	/* length of 802.1Q VLAN encapsulation */
-#define	ETHER_PPPOE_ENCAP_LEN 8	/* length of PPPoE encapsulation */
+#define	ETHER_VLAN_ENCAP_LEN	4      /* length of 802.1Q VLAN encapsulation */
+#define	EVL_VLANOFTAG(tag)	((tag) & 4095)		/* VLAN ID */
+#define	EVL_PRIOFTAG(tag)	(((tag) >> 13) & 7)	/* Priority */
+#define	EVL_CFIOFTAG(tag)	(((tag) >> 12) & 1)	/* CFI */
+#define	ETHER_PPPOE_ENCAP_LEN	8	/* length of PPPoE encapsulation */
 
 /*
  * Ethernet address - 6 octets
@@ -177,6 +180,7 @@ struct ethercom {
 	 * ec_if.if_init, 0 on success, not 0 on failure.
 	 */
 	ether_cb_t				ec_ifflags_cb;
+	kmutex_t				*ec_lock;
 #ifdef MBUFTRACE
 	struct	mowner ec_rx_mowner;		/* mbufs received */
 	struct	mowner ec_tx_mowner;		/* mbufs transmitted */
@@ -201,6 +205,13 @@ struct eccapreq {
 	int		eccr_capenable;		/* capabilities enabled */
 };
 
+/* sysctl for Ethernet multicast addresses */
+struct ether_multi_sysctl {
+	u_int   enm_refcount;
+	uint8_t enm_addrlo[ETHER_ADDR_LEN];
+	uint8_t enm_addrhi[ETHER_ADDR_LEN];
+};
+
 #ifdef	_KERNEL
 extern const uint8_t etherbroadcastaddr[ETHER_ADDR_LEN];
 extern const uint8_t ethermulticastaddr_slowprotocols[ETHER_ADDR_LEN];
@@ -213,7 +224,6 @@ int	ether_addmulti(const struct sockaddr *, struct ethercom *);
 int	ether_delmulti(const struct sockaddr *, struct ethercom *);
 int	ether_multiaddr(const struct sockaddr *, uint8_t[], uint8_t[]);
 void    ether_input(struct ifnet *, struct mbuf *);
-#endif /* _KERNEL */
 
 /*
  * Ethernet multicast address structure.  There is one of these for each
@@ -228,12 +238,6 @@ struct ether_multi {
 	LIST_ENTRY(ether_multi) enm_list;
 };
 
-struct ether_multi_sysctl {
-	u_int   enm_refcount;
-	uint8_t enm_addrlo[ETHER_ADDR_LEN];
-	uint8_t enm_addrhi[ETHER_ADDR_LEN];
-};
-
 /*
  * Structure used by macros below to remember position when stepping through
  * all of the ether_multi records.
@@ -243,83 +247,98 @@ struct ether_multistep {
 };
 
 /*
- * Macro for looking up the ether_multi record for a given range of Ethernet
- * multicast addresses connected to a given ethercom structure.  If no matching
- * record is found, "enm" returns NULL.
+ * lookup the ether_multi record for a given range of Ethernet
+ * multicast addresses connected to a given ethercom structure.
+ * If no matching record is found, NULL is returned.
  */
-#define ETHER_LOOKUP_MULTI(addrlo, addrhi, ec, enm)			\
-	/* uint8_t addrlo[ETHER_ADDR_LEN]; */				\
-	/* uint8_t addrhi[ETHER_ADDR_LEN]; */				\
-	/* struct ethercom *ec; */					\
-	/* struct ether_multi *enm; */					\
-{									\
-	for ((enm) = LIST_FIRST(&(ec)->ec_multiaddrs);			\
-	    (enm) != NULL &&						\
-	    (memcmp((enm)->enm_addrlo, (addrlo), ETHER_ADDR_LEN) != 0 ||	\
-	     memcmp((enm)->enm_addrhi, (addrhi), ETHER_ADDR_LEN) != 0);	\
-		(enm) = LIST_NEXT((enm), enm_list));			\
+static __inline struct ether_multi *
+ether_lookup_multi(const uint8_t *addrlo, const uint8_t *addrhi,
+    const struct ethercom *ec)
+{
+	struct ether_multi *enm;
+
+	LIST_FOREACH(enm, &ec->ec_multiaddrs, enm_list) {
+		if (memcmp(enm->enm_addrlo, addrlo, ETHER_ADDR_LEN) != 0)
+			continue;
+		if (memcmp(enm->enm_addrhi, addrhi, ETHER_ADDR_LEN) != 0)
+			continue;
+
+		break;
+	}
+
+	return enm;
 }
 
 /*
- * Macro to step through all of the ether_multi records, one at a time.
+ * step through all of the ether_multi records, one at a time.
  * The current position is remembered in "step", which the caller must
- * provide.  ETHER_FIRST_MULTI(), below, must be called to initialize "step"
- * and get the first record.  Both macros return a NULL "enm" when there
+ * provide.  ether_first_multi(), below, must be called to initialize "step"
+ * and get the first record.  Both functions return a NULL when there
  * are no remaining records.
  */
+static __inline struct ether_multi *
+ether_next_multi(struct ether_multistep *step)
+{
+	struct ether_multi *enm;
+
+	enm = step->e_enm;
+	if (enm != NULL)
+		step->e_enm = LIST_NEXT(enm, enm_list);
+
+	return enm;
+}
 #define ETHER_NEXT_MULTI(step, enm) \
 	/* struct ether_multistep step; */  \
 	/* struct ether_multi *enm; */  \
-{ \
-	if (((enm) = (step).e_enm) != NULL) \
-		(step).e_enm = LIST_NEXT((enm), enm_list); \
+	(enm) = ether_next_multi(&(step))
+
+static __inline struct ether_multi *
+ether_first_multi(struct ether_multistep *step, const struct ethercom *ec)
+{
+
+	step->e_enm = LIST_FIRST(&ec->ec_multiaddrs);
+
+	return ether_next_multi(step);
 }
 
 #define ETHER_FIRST_MULTI(step, ec, enm) \
 	/* struct ether_multistep step; */ \
 	/* struct ethercom *ec; */ \
 	/* struct ether_multi *enm; */ \
-{ \
-	(step).e_enm = LIST_FIRST(&(ec)->ec_multiaddrs); \
-	ETHER_NEXT_MULTI((step), (enm)); \
-}
+	(enm) = ether_first_multi(&(step), (ec))
 
-#ifdef _KERNEL
+#define ETHER_LOCK(ec)		mutex_enter((ec)->ec_lock)
+#define ETHER_UNLOCK(ec)	mutex_exit((ec)->ec_lock)
 
 /*
  * Ethernet 802.1Q VLAN structures.
  */
 
 /* add VLAN tag to input/received packet */
-static inline int vlan_input_tag(struct ifnet *, struct mbuf *, u_int);
-static inline int
-vlan_input_tag(struct ifnet *ifp, struct mbuf *m, u_int vlanid)
+static __inline void
+vlan_set_tag(struct mbuf *m, uint16_t vlantag)
 {
-	struct m_tag *mtag;
-	mtag = m_tag_get(PACKET_TAG_VLAN, sizeof(u_int), M_NOWAIT);
-	if (mtag == NULL) {
-		ifp->if_ierrors++;
-		printf("%s: unable to allocate VLAN tag\n", ifp->if_xname);
-		m_freem(m);
-		return 1;
-	}
-	*(u_int *)(mtag + 1) = vlanid;
-	m_tag_prepend(m, mtag);
-	return 0;
+	/* VLAN tag contains priority, CFI and VLAN ID */
+	KASSERT((m->m_flags & M_PKTHDR) != 0);
+	m->m_pkthdr.ether_vtag = vlantag;
+	m->m_flags |= M_VLANTAG;
+	return;
 }
 
-#define VLAN_INPUT_TAG(ifp, m, vlanid, _errcase)		\
-    if (vlan_input_tag(ifp, m, vlanid) != 0) {	 		\
-	_errcase;						\
-    }
-
-/* extract VLAN tag from output/trasmit packet */
-#define VLAN_OUTPUT_TAG(ec, m0)			\
-	(VLAN_ATTACHED(ec) ? m_tag_find((m0), PACKET_TAG_VLAN, NULL) : NULL)
+static __inline bool
+vlan_has_tag(struct mbuf *m)
+{
+	return (m->m_flags & M_VLANTAG) != 0;
+}
 
 /* extract VLAN ID value from a VLAN tag */
-#define VLAN_TAG_VALUE(mtag)	\
-	((*(u_int *)(mtag + 1)) & 4095)
+static __inline uint16_t
+vlan_get_tag(struct mbuf *m)
+{
+	KASSERT((m->m_flags & M_PKTHDR) != 0);
+	KASSERT(m->m_flags & M_VLANTAG);
+	return m->m_pkthdr.ether_vtag;
+}
 
 /* test if any VLAN is configured for this interface */
 #define VLAN_ATTACHED(ec)	((ec)->ec_nvlans > 0)

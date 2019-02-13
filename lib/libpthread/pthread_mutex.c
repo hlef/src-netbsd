@@ -1,4 +1,4 @@
-/*	$NetBSD: pthread_mutex.c,v 1.62 2016/07/17 13:49:43 skrll Exp $	*/
+/*	$NetBSD: pthread_mutex.c,v 1.64 2017/12/08 09:24:31 kre Exp $	*/
 
 /*-
  * Copyright (c) 2001, 2003, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -47,7 +47,7 @@
  */
 
 #include <sys/cdefs.h>
-__RCSID("$NetBSD: pthread_mutex.c,v 1.62 2016/07/17 13:49:43 skrll Exp $");
+__RCSID("$NetBSD: pthread_mutex.c,v 1.64 2017/12/08 09:24:31 kre Exp $");
 
 #include <sys/types.h>
 #include <sys/lwpctl.h>
@@ -298,7 +298,8 @@ again:
 	 * we see that the holder is running again.
 	 */
 	membar_sync();
-	pthread__mutex_spin(ptm, owner);
+	if (MUTEX_OWNER(owner) != (uintptr_t)self)
+		pthread__mutex_spin(ptm, owner);
 
 	if (membar_consumer(), !MUTEX_HAS_WAITERS(ptm->ptm_owner)) {
 		goto again;
@@ -338,7 +339,8 @@ pthread__mutex_lock_slow(pthread_mutex_t *ptm, const struct timespec *ts)
 	serrno = errno;
 	for (;; owner = ptm->ptm_owner) {
 		/* Spin while the owner is running. */
-		owner = pthread__mutex_spin(ptm, owner);
+		if (MUTEX_OWNER(owner) != (uintptr_t)self)
+			owner = pthread__mutex_spin(ptm, owner);
 
 		/* If it has become free, try to acquire it again. */
 		if (MUTEX_OWNER(owner) == 0) {
@@ -392,8 +394,9 @@ pthread__mutex_lock_slow(pthread_mutex_t *ptm, const struct timespec *ts)
 		 */
 		while (self->pt_mutexwait) {
 			self->pt_blocking++;
-			error = _lwp_park(CLOCK_REALTIME, TIMER_ABSTIME, ts,
-			    self->pt_unpark, __UNVOLATILE(&ptm->ptm_waiters),
+			error = _lwp_park(CLOCK_REALTIME, TIMER_ABSTIME,
+			    __UNCONST(ts), self->pt_unpark,
+			    __UNVOLATILE(&ptm->ptm_waiters),
 			    __UNVOLATILE(&ptm->ptm_waiters));
 			self->pt_unpark = 0;
 			self->pt_blocking--;

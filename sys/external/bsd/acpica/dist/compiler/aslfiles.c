@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,7 +43,6 @@
 
 #include "aslcompiler.h"
 #include "acapps.h"
-#include "dtcompiler.h"
 
 #define _COMPONENT          ACPI_COMPILER
         ACPI_MODULE_NAME    ("aslfiles")
@@ -218,14 +217,14 @@ FlMergePathnames (
         (*FilePathname == '/') ||
          (FilePathname[1] == ':'))
     {
-        Pathname = UtStringCacheCalloc (strlen (FilePathname) + 1);
+        Pathname = UtLocalCacheCalloc (strlen (FilePathname) + 1);
         strcpy (Pathname, FilePathname);
         goto ConvertBackslashes;
     }
 
     /* Need a local copy of the prefix directory path */
 
-    CommonPath = UtStringCacheCalloc (strlen (PrefixDir) + 1);
+    CommonPath = UtLocalCacheCalloc (strlen (PrefixDir) + 1);
     strcpy (CommonPath, PrefixDir);
 
     /*
@@ -261,7 +260,7 @@ FlMergePathnames (
     /* Build the final merged pathname */
 
 ConcatenatePaths:
-    Pathname = UtStringCacheCalloc (
+    Pathname = UtLocalCacheCalloc (
         strlen (CommonPath) + strlen (FilePathname) + 2);
     if (LastElement && *CommonPath)
     {
@@ -511,8 +510,14 @@ FlOpenAmlOutputFile (
     if (!Filename)
     {
         /* Create the output AML filename */
-
-        Filename = FlGenerateFilename (FilenamePrefix, FILE_SUFFIX_AML_CODE);
+        if (!AcpiGbl_CaptureComments)
+        {
+            Filename = FlGenerateFilename (FilenamePrefix, FILE_SUFFIX_AML_CODE);
+        }
+        else
+        {
+            Filename = FlGenerateFilename (FilenamePrefix, FILE_SUFFIX_CONVERT_AML);
+        }
         if (!Filename)
         {
             AslCommonError (ASL_ERROR, ASL_MSG_OUTPUT_FILENAME,
@@ -852,6 +857,28 @@ FlOpenMiscOutputFiles (
 
         AslCompilerSignon (ASL_FILE_NAMESPACE_OUTPUT);
         AslCompilerFileHeader (ASL_FILE_NAMESPACE_OUTPUT);
+    }
+
+    /* Create a debug file for the converter */
+
+    if (AcpiGbl_DebugAslConversion)
+    {
+        Filename = FlGenerateFilename (FilenamePrefix, FILE_SUFFIX_CONVERT_DEBUG);
+        if (!Filename)
+        {
+            AslCommonError (ASL_ERROR, ASL_MSG_LISTING_FILENAME,
+                0, 0, 0, 0, NULL, NULL);
+            return (AE_ERROR);
+        }
+
+        /* Open the converter debug file, text mode */
+
+        FlOpenFile (ASL_FILE_CONV_DEBUG_OUTPUT, Filename, "w+t");
+
+        AslCompilerSignon (ASL_FILE_CONV_DEBUG_OUTPUT);
+        AslCompilerFileHeader (ASL_FILE_CONV_DEBUG_OUTPUT);
+
+        AcpiGbl_ConvDebugFile = Gbl_Files[ASL_FILE_CONV_DEBUG_OUTPUT].Handle;
     }
 
     return (AE_OK);

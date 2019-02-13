@@ -1,4 +1,4 @@
-/*	$NetBSD: in_pcb.h,v 1.60 2016/04/26 08:44:44 ozaki-r Exp $	*/
+/*	$NetBSD: in_pcb.h,v 1.66 2018/05/31 07:03:57 maxv Exp $	*/
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
@@ -95,6 +95,7 @@ struct inpcb {
 	int	  inp_errormtu;		/* MTU of last xmit status = EMSGSIZE */
 	uint8_t	  inp_ip_minttl;
 	bool      inp_bindportonsend;
+	struct    in_addr inp_prefsrcip; /* preferred src IP when wild  */
 };
 
 #define	inp_faddr	inp_ip.ip_dst
@@ -112,7 +113,6 @@ struct inpcb {
 /* XXX should move to an UDP control block */
 #define INP_ESPINUDP		0x0100	/* ESP over UDP for NAT-T */
 #define INP_ESPINUDP_NON_IKE	0x0200	/* ESP over UDP for NAT-T */
-#define INP_ESPINUDP_ALL	(INP_ESPINUDP|INP_ESPINUDP_NON_IKE)
 #define INP_NOHEADER		0x0400	/* Kernel removes IP header
 					 * before feeding a packet
 					 * to the raw socket user.
@@ -121,17 +121,19 @@ struct inpcb {
 					 * Cancels INP_HDRINCL.
 					 */
 #define	INP_RECVTTL		0x0800	/* receive incoming IP TTL */
-#define	INP_PKTINFO		0x1000	/* receive dst packet info */
-#define	INP_RECVPKTINFO		0x2000	/* receive dst packet info */
+#define	INP_RECVPKTINFO		0x1000	/* receive IP dst if/addr */
 #define	INP_CONTROLOPTS		(INP_RECVOPTS|INP_RECVRETOPTS|INP_RECVDSTADDR|\
-				INP_RECVIF|INP_RECVTTL|INP_RECVPKTINFO|\
-				INP_PKTINFO)
+				INP_RECVIF|INP_RECVTTL|INP_RECVPKTINFO)
 
 #define	sotoinpcb(so)		((struct inpcb *)(so)->so_pcb)
+#define	inp_lock(inp)		solock((inp)->inp_socket)
+#define	inp_unlock(inp)		sounlock((inp)->inp_socket)
+#define	inp_locked(inp)		solocked((inp)->inp_socket)
 
 #ifdef _KERNEL
 void	in_losing(struct inpcb *);
 int	in_pcballoc(struct socket *, void *);
+int	in_pcbbindableaddr(struct sockaddr_in *, kauth_cred_t);
 int	in_pcbbind(void *, struct sockaddr_in *, struct lwp *);
 int	in_pcbconnect(void *, struct sockaddr_in *, struct lwp *);
 void	in_pcbdetach(void *);
@@ -160,6 +162,7 @@ void	in_setpeeraddr(struct inpcb *, struct sockaddr_in *);
 void	in_setsockaddr(struct inpcb *, struct sockaddr_in *);
 struct rtentry *
 	in_pcbrtentry(struct inpcb *);
+void	in_pcbrtentry_unref(struct rtentry *, struct inpcb *);
 #endif
 
 #endif /* !_NETINET_IN_PCB_H_ */

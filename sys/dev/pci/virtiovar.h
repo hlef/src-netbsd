@@ -1,4 +1,4 @@
-/*	$NetBSD: virtiovar.h,v 1.5 2015/10/26 01:44:48 ozaki-r Exp $	*/
+/*	$NetBSD: virtiovar.h,v 1.12 2018/06/15 17:13:43 jakllsch Exp $	*/
 
 /*
  * Copyright (c) 2010 Minoura Makoto.
@@ -118,24 +118,40 @@ struct virtqueue {
 	int			(*vq_done)(struct virtqueue*);
 };
 
+struct virtio_attach_args {
+	int			sc_childdevid;
+};
+
+typedef int (*virtio_callback)(struct virtio_softc*);
+
+#ifdef VIRTIO_PRIVATE
+struct virtio_ops {
+	void		(*kick)(struct virtio_softc *, uint16_t);
+	uint8_t		(*read_dev_cfg_1)(struct virtio_softc *, int);
+	uint16_t	(*read_dev_cfg_2)(struct virtio_softc *, int);
+	uint32_t	(*read_dev_cfg_4)(struct virtio_softc *, int);
+	uint64_t	(*read_dev_cfg_8)(struct virtio_softc *, int);
+	void		(*write_dev_cfg_1)(struct virtio_softc *, int, uint8_t);
+	void		(*write_dev_cfg_2)(struct virtio_softc *, int, uint16_t);
+	void		(*write_dev_cfg_4)(struct virtio_softc *, int, uint32_t);
+	void		(*write_dev_cfg_8)(struct virtio_softc *, int, uint64_t);
+	uint16_t	(*read_queue_size)(struct virtio_softc *, uint16_t);
+	void		(*setup_queue)(struct virtio_softc *, uint16_t, uint32_t);
+	void		(*set_status)(struct virtio_softc *, int);
+	uint32_t	(*neg_features)(struct virtio_softc *, uint32_t);
+	int		(*setup_interrupts)(struct virtio_softc *);
+	void		(*free_interrupts)(struct virtio_softc *);
+};
+
 struct virtio_softc {
 	device_t		sc_dev;
-	pci_chipset_tag_t	sc_pc;
-	pcitag_t		sc_tag;
+	const struct virtio_ops *sc_ops;
 	bus_dma_tag_t		sc_dmat;
 
 	int			sc_ipl; /* set by child */
-	pci_intr_handle_t	*sc_ihp;
-	void			**sc_ihs;
-	int			sc_ihs_num;
 	void			*sc_soft_ih;
 
 	int			sc_flags; /* set by child */
-
-	bus_space_tag_t		sc_iot;
-	bus_space_handle_t	sc_ioh;
-	bus_size_t		sc_iosize;
-	int			sc_config_offset;
 
 	uint32_t		sc_features;
 	bool			sc_indirect;
@@ -144,16 +160,19 @@ struct virtio_softc {
 	struct virtqueue	*sc_vqs; /* set by child */
 
 	int			sc_childdevid;
-	device_t		sc_child; /* set by child */
-	int			(*sc_config_change)(struct virtio_softc*);
-					 /* set by child */
-	int			(*sc_intrhand)(struct virtio_softc*);
-					 /* set by child */
+	device_t		sc_child; 		/* set by child */
+	virtio_callback		sc_config_change; 	/* set by child */
+	virtio_callback		sc_intrhand;		/* set by child */
 };
+#else
+struct virtio_softc;
+#endif
 
 #define VIRTIO_F_PCI_INTR_MPSAFE	(1 << 0)
 #define VIRTIO_F_PCI_INTR_SOFTINT	(1 << 1)
 #define VIRTIO_F_PCI_INTR_MSIX		(1 << 2)
+
+#define	VIRTIO_CHILD_FAILED		((void *)1)
 
 /* public interface */
 uint32_t virtio_negotiate_features(struct virtio_softc*, uint32_t);
@@ -173,6 +192,13 @@ int virtio_free_vq(struct virtio_softc*, struct virtqueue*);
 void virtio_reset(struct virtio_softc *);
 void virtio_reinit_start(struct virtio_softc *);
 void virtio_reinit_end(struct virtio_softc *);
+void virtio_child_attach_start(struct virtio_softc *, device_t, int,
+                    struct virtqueue *,
+                    virtio_callback, virtio_callback, int,
+		    int, const char *);
+int virtio_child_attach_finish(struct virtio_softc *);
+void virtio_child_attach_failed(struct virtio_softc *);
+void virtio_child_detach(struct virtio_softc *);
 
 int virtio_enqueue_prep(struct virtio_softc*, struct virtqueue*, int*);
 int virtio_enqueue_reserve(struct virtio_softc*, struct virtqueue*, int, int);
@@ -189,5 +215,17 @@ int virtio_dequeue_commit(struct virtio_softc*, struct virtqueue*, int);
 int virtio_vq_intr(struct virtio_softc *);
 void virtio_stop_vq_intr(struct virtio_softc *, struct virtqueue *);
 void virtio_start_vq_intr(struct virtio_softc *, struct virtqueue *);
+
+/* encapsulation */
+bus_dma_tag_t	virtio_dmat(struct virtio_softc *);
+device_t	virtio_child(struct virtio_softc *);
+int		virtio_intrhand(struct virtio_softc *);
+uint32_t	virtio_features(struct virtio_softc *);
+
+/* autoconf(9) common */
+void virtio_set_status(struct virtio_softc *, int);
+int virtiobusprint(void *aux, const char *);
+
+#define virtio_device_reset(sc)	virtio_set_status((sc), 0)
 
 #endif /* _DEV_PCI_VIRTIOVAR_H_ */

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +42,6 @@
  */
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
 #include "acnamesp.h"
 
 #include <stdio.h>
@@ -285,8 +284,17 @@ CmDoCompile (
     {
         Event = UtBeginEvent ("Resolve all Externals");
         DbgPrint (ASL_DEBUG_OUTPUT, "\nResolve Externals\n\n");
-        TrWalkParseTree (Gbl_ParseTreeRoot, ASL_WALK_VISIT_TWICE,
-            ExAmlExternalWalkBegin, ExAmlExternalWalkEnd, NULL);
+
+        if (Gbl_DoExternalsInPlace)
+        {
+            TrWalkParseTree (Gbl_ParseTreeRoot, ASL_WALK_VISIT_DOWNWARD,
+                ExAmlExternalWalkBegin, NULL, NULL);
+        }
+        else
+        {
+            TrWalkParseTree (Gbl_ParseTreeRoot, ASL_WALK_VISIT_TWICE,
+                ExAmlExternalWalkBegin, ExAmlExternalWalkEnd, NULL);
+        }
         UtEndEvent (Event);
     }
 
@@ -346,6 +354,18 @@ CmDoCompile (
         AnOtherSemanticAnalysisWalkBegin,
         NULL, &AnalysisWalkInfo);
     UtEndEvent (Event);
+
+    /*
+     * ASL-/ASL+ converter: Gbl_ParseTreeRoot->CommentList contains the
+     * very last comment of a given ASL file because it's the last constructed
+     * node during compilation. We take the very last comment and save it in a
+     * global for it to be used by the disassembler.
+     */
+    if (AcpiGbl_CaptureComments)
+    {
+        AcpiGbl_LastListHead = Gbl_ParseTreeRoot->Asl.CommentList;
+        Gbl_ParseTreeRoot->Asl.CommentList = NULL;
+    }
 
     /* Calculate all AML package lengths */
 
@@ -439,7 +459,7 @@ AslCompilerSignon (
 
     /* Running compiler or disassembler? */
 
-    if (Gbl_DisasmFlag)
+    if (AcpiGbl_DisasmFlag)
     {
         UtilityName = AML_DISASSEMBLER_NAME;
     }
@@ -686,6 +706,7 @@ CmCleanupAndExit (
     BOOLEAN                 DeleteAmlFile = FALSE;
 
 
+    AslCheckExpectedExceptions ();
     AePrintErrorLog (ASL_FILE_STDERR);
     if (Gbl_DebugFlag)
     {
@@ -800,68 +821,9 @@ CmCleanupAndExit (
 
     /* Final cleanup after compiling one file */
 
-    CmDeleteCaches ();
-}
-
-
-/*******************************************************************************
- *
- * FUNCTION:    CmDeleteCaches
- *
- * PARAMETERS:  None
- *
- * RETURN:      None
- *
- * DESCRIPTION: Delete all local cache buffer blocks
- *
- ******************************************************************************/
-
-void
-CmDeleteCaches (
-    void)
-{
-    UINT32                  BufferCount;
-    ASL_CACHE_INFO          *Next;
-
-
-    /* Parse Op cache */
-
-    BufferCount = 0;
-    while (Gbl_ParseOpCacheList)
+    if (!Gbl_DoAslConversion)
     {
-        Next = Gbl_ParseOpCacheList->Next;
-        ACPI_FREE (Gbl_ParseOpCacheList);
-        Gbl_ParseOpCacheList = Next;
-        BufferCount++;
+        UtDeleteLocalCaches ();
     }
 
-    DbgPrint (ASL_DEBUG_OUTPUT,
-        "%u ParseOps, Buffer size: %u ops (%u bytes), %u Buffers\n",
-        Gbl_ParseOpCount, ASL_PARSEOP_CACHE_SIZE,
-        (sizeof (ACPI_PARSE_OBJECT) * ASL_PARSEOP_CACHE_SIZE), BufferCount);
-
-    Gbl_ParseOpCount = 0;
-    Gbl_ParseOpCacheNext = NULL;
-    Gbl_ParseOpCacheLast = NULL;
-    Gbl_ParseTreeRoot = NULL;
-
-    /* Generic string cache */
-
-    BufferCount = 0;
-    while (Gbl_StringCacheList)
-    {
-        Next = Gbl_StringCacheList->Next;
-        ACPI_FREE (Gbl_StringCacheList);
-        Gbl_StringCacheList = Next;
-        BufferCount++;
-    }
-
-    DbgPrint (ASL_DEBUG_OUTPUT,
-        "%u Strings (%u bytes), Buffer size: %u bytes, %u Buffers\n",
-        Gbl_StringCount, Gbl_StringSize, ASL_STRING_CACHE_SIZE, BufferCount);
-
-    Gbl_StringSize = 0;
-    Gbl_StringCount = 0;
-    Gbl_StringCacheNext = NULL;
-    Gbl_StringCacheLast = NULL;
 }

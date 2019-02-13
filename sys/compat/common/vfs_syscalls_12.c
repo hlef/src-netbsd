@@ -1,4 +1,4 @@
-/*	$NetBSD: vfs_syscalls_12.c,v 1.31 2014/09/05 09:21:54 matt Exp $	*/
+/*	$NetBSD: vfs_syscalls_12.c,v 1.36 2018/09/03 16:29:29 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1989, 1993
@@ -37,7 +37,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: vfs_syscalls_12.c,v 1.31 2014/09/05 09:21:54 matt Exp $");
+__KERNEL_RCSID(0, "$NetBSD: vfs_syscalls_12.c,v 1.36 2018/09/03 16:29:29 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -137,7 +137,7 @@ compat_12_sys_getdirentries(struct lwp *l, const struct compat_12_sys_getdirentr
 
 	loff = fp->f_offset;
 	nbytes = SCARG(uap, count);
-	buflen = min(MAXBSIZE, nbytes);
+	buflen = uimin(MAXBSIZE, nbytes);
 	if (buflen < va.va_blocksize)
 		buflen = va.va_blocksize;
 	tbuf = malloc(buflen, M_TEMP, M_WAITOK);
@@ -171,8 +171,10 @@ again:
 	for (cookie = cookiebuf; len > 0; len -= reclen) {
 		bdp = (struct dirent *)inp;
 		reclen = bdp->d_reclen;
-		if (reclen & 3)
-			panic(__func__);
+		if (reclen & 3) {
+			error = EIO;
+			goto out;
+		}
 		if (bdp->d_fileno == 0) {
 			inp += reclen;	/* it is a hole; squish it out */
 			if (cookie)
@@ -181,6 +183,10 @@ again:
 				off += reclen;
 			continue;
 		}
+		if (bdp->d_namlen >= sizeof(idb.d_name))
+			idb.d_namlen = sizeof(idb.d_name) - 1;
+		else
+			idb.d_namlen = bdp->d_namlen;
 		old_reclen = _DIRENT_RECLEN(&idb, bdp->d_namlen);
 		if (reclen > len || resid < old_reclen) {
 			/* entry too big for buffer, so just stop */
@@ -195,8 +201,9 @@ again:
 		idb.d_fileno = (uint32_t)bdp->d_fileno;
 		idb.d_reclen = (uint16_t)old_reclen;
 		idb.d_type = (uint8_t)bdp->d_type;
-		idb.d_namlen = (uint8_t)bdp->d_namlen;
-		strcpy(idb.d_name, bdp->d_name);
+		(void)memcpy(idb.d_name, bdp->d_name, idb.d_namlen);
+		memset(idb.d_name + idb.d_namlen, 0,
+		    idb.d_reclen - _DIRENT_NAMEOFF(&idb) - idb.d_namlen);
 		if ((error = copyout(&idb, outp, old_reclen)))
 			goto out;
 		/* advance past this real entry */

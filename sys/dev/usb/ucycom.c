@@ -1,4 +1,4 @@
-/*	$NetBSD: ucycom.c,v 1.44 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: ucycom.c,v 1.46 2017/12/10 17:03:07 bouyer Exp $	*/
 
 /*
  * Copyright (c) 2005 The NetBSD Foundation, Inc.
@@ -38,7 +38,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ucycom.c,v 1.44 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ucycom.c,v 1.46 2017/12/10 17:03:07 bouyer Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -60,7 +64,7 @@ __KERNEL_RCSID(0, "$NetBSD: ucycom.c,v 1.44 2016/07/07 06:55:42 msaitoh Exp $");
 #include <dev/usb/usbdi_util.h>
 #include <dev/usb/usbdevs.h>
 #include <dev/usb/uhidev.h>
-#include <dev/usb/hid.h>
+#include <dev/hid/hid.h>
 
 #include "ioconf.h"
 

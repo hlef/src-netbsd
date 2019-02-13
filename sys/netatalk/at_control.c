@@ -1,4 +1,4 @@
-/*	$NetBSD: at_control.c,v 1.38 2016/07/07 09:32:02 ozaki-r Exp $	 */
+/*	$NetBSD: at_control.c,v 1.40 2018/02/17 19:10:18 rjs Exp $	 */
 
 /*
  * Copyright (c) 1990,1994 Regents of The University of Michigan.
@@ -27,7 +27,9 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: at_control.c,v 1.38 2016/07/07 09:32:02 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: at_control.c,v 1.40 2018/02/17 19:10:18 rjs Exp $");
+
+#include "opt_atalk.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -194,6 +196,7 @@ at_control(u_long cmd, void *data, struct ifnet *ifp)
 				TAILQ_INSERT_TAIL(&at_ifaddr, aa, aa_list);
 			}
 			ifaref(&aa->aa_ifa);
+			ifa_psref_init(&aa->aa_ifa);
 
 			/*
 		         * Find the end of the interface's addresses

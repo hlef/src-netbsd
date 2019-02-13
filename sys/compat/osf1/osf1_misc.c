@@ -1,4 +1,4 @@
-/* $NetBSD: osf1_misc.c,v 1.86 2011/07/22 10:02:08 njoly Exp $ */
+/* $NetBSD: osf1_misc.c,v 1.88 2018/09/03 16:29:29 riastradh Exp $ */
 
 /*
  * Copyright (c) 1999 Christopher G. Demetriou.  All rights reserved.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: osf1_misc.c,v 1.86 2011/07/22 10:02:08 njoly Exp $");
+__KERNEL_RCSID(0, "$NetBSD: osf1_misc.c,v 1.88 2018/09/03 16:29:29 riastradh Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_syscall_debug.h"
@@ -321,7 +321,7 @@ dont_care:
 	slen = strlen(string) + 1;
 	if (SCARG(uap, buf)) {
 		error = copyout(string, SCARG(uap, buf),
-				min(slen, SCARG(uap, len)));
+				uimin(slen, SCARG(uap, len)));
 		if (!error && (SCARG(uap, len) > 0) && (SCARG(uap, len) < slen))
 			subyte(SCARG(uap, buf) + SCARG(uap, len) - 1, 0);
 	}
@@ -406,7 +406,7 @@ osf1_sys_wait4(struct lwp *l, const struct osf1_sys_wait4_args *uap, register_t 
 	if (leftovers != 0)
 		return (EINVAL);
 
-	error = do_sys_wait(&pid, &status, options | WOPTSCHECKED,
+	error = do_sys_wait(&pid, &status, options,
 	    SCARG(uap, rusage) != NULL ? &netbsd_rusage : NULL);
 
 	retval[0] = pid;

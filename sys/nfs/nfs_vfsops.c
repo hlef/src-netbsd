@@ -1,4 +1,4 @@
-/*	$NetBSD: nfs_vfsops.c,v 1.231 2015/11/02 09:57:43 pgoyette Exp $	*/
+/*	$NetBSD: nfs_vfsops.c,v 1.237 2018/09/03 16:29:36 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1989, 1993, 1995
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: nfs_vfsops.c,v 1.231 2015/11/02 09:57:43 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: nfs_vfsops.c,v 1.237 2018/09/03 16:29:36 riastradh Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_nfs.h"
@@ -122,7 +122,7 @@ struct vfsops nfs_vfsops = {
 	.vfs_mountroot = nfs_mountroot,
 	.vfs_snapshot = (void *)eopnotsupp,
 	.vfs_extattrctl = vfs_stdextattrctl,
-	.vfs_suspendctl = (void *)eopnotsupp,
+	.vfs_suspendctl = genfs_suspendctl,
 	.vfs_renamelock_enter = genfs_renamelock_enter,
 	.vfs_renamelock_exit = genfs_renamelock_exit,
 	.vfs_fsync = (void *)eopnotsupp,
@@ -212,7 +212,7 @@ nfs_statvfs(struct mount *mp, struct statvfs *sbp)
 	}
 	nfsm_dissect(sfp, struct nfs_statfs *, NFSX_STATFS(v3));
 	sbp->f_flag = nmp->nm_flag;
-	sbp->f_iosize = min(nmp->nm_rsize, nmp->nm_wsize);
+	sbp->f_iosize = uimin(nmp->nm_rsize, nmp->nm_wsize);
 	if (v3) {
 		sbp->f_frsize = sbp->f_bsize = NFS_FABLKSIZE;
 		tquad = fxdr_hyper(&sfp->sf_tbytes);
@@ -380,7 +380,7 @@ nfs_mountroot(void)
 	mountlist_append(mp);
 	rootvp = vp;
 	mp->mnt_vnodecovered = NULLVP;
-	vfs_unbusy(mp, false, NULL);
+	vfs_unbusy(mp);
 
 	/* Get root attributes (for the time). */
 	vn_lock(vp, LK_SHARED | LK_RETRY);
@@ -435,8 +435,8 @@ nfs_mount_diskless(struct nfs_dlmount *ndmntp, const char *mntname, struct mount
 	error = mountnfs(&ndmntp->ndm_args, mp, m, mntname,
 			 ndmntp->ndm_args.hostname, vpp, l);
 	if (error) {
-		vfs_unbusy(mp, false, NULL);
-		vfs_destroy(mp);
+		vfs_unbusy(mp);
+		vfs_rele(mp);
 		printf("nfs_mountroot: mount %s failed: %d\n",
 		       mntname, error);
 	} else
@@ -670,7 +670,8 @@ nfs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		goto free_hst;
 	memset(&hst[len], 0, MNAMELEN - len);
 	/* sockargs() call must be after above copyin() calls */
-	error = sockargs(&nam, args->addr, args->addrlen, MT_SONAME);
+	error = sockargs(&nam, args->addr, args->addrlen, UIO_USERSPACE,
+	    MT_SONAME);
 	if (error)
 		goto free_hst;
 	MCLAIM(nam, &nfs_mowner);
@@ -959,6 +960,8 @@ extern int syncprt;
 static bool
 nfs_sync_selector(void *cl, struct vnode *vp)
 {
+
+	KASSERT(mutex_owned(vp->v_interlock));
 
 	return !LIST_EMPTY(&vp->v_dirtyblkhd) || !UVM_OBJ_IS_CLEAN(&vp->v_uobj);
 }

@@ -1,4 +1,4 @@
-/*	$NetBSD: atwvar.h,v 1.37 2010/03/14 21:25:59 dyoung Exp $	*/
+/*	$NetBSD: atwvar.h,v 1.39 2018/04/19 21:50:08 christos Exp $	*/
 
 /*
  * Copyright (c) 2003, 2004 The NetBSD Foundation, Inc.  All rights reserved.
@@ -180,6 +180,8 @@ struct atw_softc {
 				    int, int, u_int32_t);
 	struct ieee80211_node	*(*sc_node_alloc)(struct ieee80211_node_table*);
 	void			(*sc_node_free)(struct ieee80211_node *);
+
+	void			*sc_soft_ih;
 
 	int			sc_tx_timer;
 	int			sc_rescan_timer;
@@ -395,7 +397,7 @@ do {									\
  * field is only 11 bits, we must subtract 1 from the length to avoid
  * having it truncated to 0!
  */
-static inline void
+static __inline void
 atw_init_rxdesc(struct atw_softc *sc, int x)
 {
 	struct atw_rxsoft *rxs = &sc->sc_rxsoft[x];

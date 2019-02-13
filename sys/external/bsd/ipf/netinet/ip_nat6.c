@@ -1,4 +1,4 @@
-/*	$NetBSD: ip_nat6.c,v 1.9 2015/10/06 10:21:08 prlw1 Exp $	*/
+/*	$NetBSD: ip_nat6.c,v 1.11 2018/05/03 07:13:48 maxv Exp $	*/
 
 /*
  * Copyright (C) 2012 by Darren Reed.
@@ -87,7 +87,6 @@ extern struct ifnet vpnif;
 #include <netinet/udp.h>
 #include <netinet/ip_icmp.h>
 #include "netinet/ip_compat.h"
-#include <netinet/tcpip.h>
 #include "netinet/ip_fil.h"
 #include "netinet/ip_nat.h"
 #include "netinet/ip_frag.h"
@@ -2471,8 +2470,8 @@ ipf_nat6_lookupredir(ipf_main_softc_t *softc, natlookup_t *np)
 				}
 			}
 
-			np->nl_realip6 = nat->nat_ndst6.in6;
-			np->nl_realport = nat->nat_ndport;
+			np->nl_realip6 = nat->nat_odst6.in6;
+			np->nl_realport = nat->nat_odport;
 		}
  	}
 

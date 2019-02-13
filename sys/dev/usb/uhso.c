@@ -1,4 +1,4 @@
-/*	$NetBSD: uhso.c,v 1.22 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: uhso.c,v 1.28 2018/06/26 06:48:02 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 2009 Iain Hibbert
@@ -37,10 +37,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uhso.c,v 1.22 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uhso.c,v 1.28 2018/06/26 06:48:02 msaitoh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
+#include "opt_usb.h"
 #endif
 
 #include <sys/param.h>
@@ -640,14 +641,14 @@ uhso_get_iface_spec(struct usb_attach_arg *uaa, uint8_t ifnum, uint8_t *spec)
 
 	switch (hd->type) {
 	case UHSOTYPE_DEFAULT:
-		if (ifnum > __arraycount(uhso_spec_default))
+		if (ifnum >= __arraycount(uhso_spec_default))
 			break;
 
 		*spec = uhso_spec_default[ifnum];
 		return 1;
 
 	case UHSOTYPE_ICON321:
-		if (ifnum > __arraycount(uhso_spec_icon321))
+		if (ifnum >= __arraycount(uhso_spec_icon321))
 			break;
 
 		*spec = uhso_spec_icon321[ifnum];
@@ -664,8 +665,8 @@ uhso_get_iface_spec(struct usb_attach_arg *uaa, uint8_t ifnum, uint8_t *spec)
 		if (status != USBD_NORMAL_COMPLETION)
 			break;
 
-		if (ifnum > __arraycount(config)
-		    || config[ifnum] > __arraycount(uhso_spec_config))
+		if (ifnum >= __arraycount(config)
+		    || config[ifnum] >= __arraycount(uhso_spec_config))
 			break;
 
 		*spec = uhso_spec_config[config[ifnum]];
@@ -1162,7 +1163,7 @@ uhso_bulk_init(struct uhso_port *hp)
 	}
 
 	int error = usbd_create_xfer(hp->hp_rpipe, hp->hp_rsize,
-	    USBD_SHORT_XFER_OK, 0, &hp->hp_rxfer);
+	    0, 0, &hp->hp_rxfer);
 	if (error)
 		return error;
 
@@ -1992,6 +1993,7 @@ uhso_ifnet_detach(struct uhso_port *hp)
 	s = splnet();
 	bpf_detach(ifp);
 	if_detach(ifp);
+	if_free(ifp);
 	splx(s);
 
 	kmem_free(hp, sizeof(struct uhso_port));
@@ -2164,13 +2166,6 @@ uhso_ifnet_input(struct ifnet *ifp, struct mbuf **mb, uint8_t *cp, size_t cc)
 				*mb = m;
 				break;
 			}
-		} else if (want > got) {
-			aprint_error_ifnet(ifp, "bad IP packet (len=%zd)\n",
-			    want);
-
-			ifp->if_ierrors++;
-			m_freem(m);
-			break;
 		}
 
 		m_set_rcvif(m, ifp);
@@ -2178,7 +2173,7 @@ uhso_ifnet_input(struct ifnet *ifp, struct mbuf **mb, uint8_t *cp, size_t cc)
 
 		s = splnet();
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_IN);
 
 		if (__predict_false(!pktq_enqueue(ip_pktq, m, 0))) {
 			m_freem(m);
@@ -2337,7 +2332,7 @@ uhso_ifnet_start(struct ifnet *ifp)
 		hp->hp_wlen = hp->hp_wsize;
 	}
 
-	bpf_mtap(ifp, m);
+	bpf_mtap(ifp, m, BPF_D_OUT);
 
 	m_copydata(m, 0, hp->hp_wlen, hp->hp_wbuf);
 	m_freem(m);

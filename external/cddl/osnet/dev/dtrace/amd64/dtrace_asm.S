@@ -1,4 +1,4 @@
-/*	$NetBSD: dtrace_asm.S,v 1.6 2016/06/23 04:35:35 pgoyette Exp $	*/
+/*	$NetBSD: dtrace_asm.S,v 1.8 2018/05/28 21:05:03 chs Exp $	*/
 
 /*
  * CDDL HEADER START
@@ -22,7 +22,7 @@
  *
  * Portions Copyright 2008 John Birrell <jb@freebsd.org>
  *
- * $FreeBSD: src/sys/cddl/dev/dtrace/amd64/dtrace_asm.S,v 1.1.4.1 2009/08/03 08:13:06 kensmith Exp $
+ * $FreeBSD: head/sys/cddl/dev/dtrace/amd64/dtrace_asm.S 298171 2016-04-17 23:08:47Z markj $
  *
  */
 /*
@@ -72,13 +72,10 @@
 	 */
 	movq	TF_RIP(%rsp), %rdi
 	decq	%rdi
-	movq	TF_RSP(%rsp), %rsi
-	movq	TF_RAX(%rsp), %rdx
-	pushq	(%rsi)
 	movq	%rsp, %rsi
+	movq	TF_RAX(%rsp), %rdx
 	call	dtrace_invop
 	ALTENTRY(dtrace_invop_callsite)
-	addq	$8, %rsp
 	cmpl	$DTRACE_INVOP_PUSHL_EBP, %eax
 	je	bp_push
 	cmpl	$DTRACE_INVOP_LEAVE, %eax

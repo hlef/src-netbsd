@@ -1,4 +1,4 @@
-/*	$NetBSD: ddp_usrreq.c,v 1.68 2015/05/02 17:18:03 rtr Exp $	 */
+/*	$NetBSD: ddp_usrreq.c,v 1.71 2018/02/17 19:10:18 rjs Exp $	 */
 
 /*
  * Copyright (c) 1990,1991 Regents of The University of Michigan.
@@ -27,9 +27,10 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ddp_usrreq.c,v 1.68 2015/05/02 17:18:03 rtr Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ddp_usrreq.c,v 1.71 2018/02/17 19:10:18 rjs Exp $");
 
 #include "opt_mbuftrace.h"
+#include "opt_atalk.h"
 
 #include <sys/param.h>
 #include <sys/errno.h>
@@ -226,6 +227,7 @@ at_pcbconnect(struct ddpcb *ddp, struct sockaddr_at *sat)
 		if (aa == NULL || (cdst->sat_addr.s_net !=
 		    (hintnet ? hintnet : sat->sat_addr.s_net) ||
 		    cdst->sat_addr.s_node != sat->sat_addr.s_node)) {
+			rtcache_unref(rt, ro);
 			rtcache_free(ro);
 			rt = NULL;
 		}
@@ -254,6 +256,7 @@ at_pcbconnect(struct ddpcb *ddp, struct sockaddr_at *sat)
 		}
 	} else
 		aa = NULL;
+	rtcache_unref(rt, ro);
 	if (aa == NULL)
 		return ENETUNREACH;
 	ddp->ddp_fsat = *sat;
@@ -597,6 +600,8 @@ ddp_init(void)
 	TAILQ_INIT(&at_ifaddr);
 	atintrq1.ifq_maxlen = IFQ_MAXLEN;
 	atintrq2.ifq_maxlen = IFQ_MAXLEN;
+	IFQ_LOCK_INIT(&atintrq1);
+	IFQ_LOCK_INIT(&atintrq2);
 
 	MOWNER_ATTACH(&atalk_tx_mowner);
 	MOWNER_ATTACH(&atalk_rx_mowner);

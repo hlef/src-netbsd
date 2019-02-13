@@ -1,4 +1,4 @@
-/*	$NetBSD: if_media.c,v 1.30 2009/10/05 21:27:36 dyoung Exp $	*/
+/*	$NetBSD: if_media.c,v 1.36 2018/03/30 13:21:24 mlelstv Exp $	*/
 
 /*-
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
@@ -76,7 +76,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_media.c,v 1.30 2009/10/05 21:27:36 dyoung Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_media.c,v 1.36 2018/03/30 13:21:24 mlelstv Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -88,6 +88,9 @@ __KERNEL_RCSID(0, "$NetBSD: if_media.c,v 1.30 2009/10/05 21:27:36 dyoung Exp $")
 #include <net/if.h>
 #include <net/if_media.h>
 #include <net/netisr.h>
+
+static void	ifmedia_status(struct ifmedia *, struct ifnet *, struct ifmediareq *);
+static int	_ifmedia_ioctl(struct ifnet *, struct ifreq *, struct ifmedia *, u_long);
 
 /*
  * Compile-time options:
@@ -113,7 +116,7 @@ ifmedia_init(struct ifmedia *ifm, int dontcare_mask,
 
 	TAILQ_INIT(&ifm->ifm_list);
 	ifm->ifm_cur = NULL;
-	ifm->ifm_media = 0;
+	ifm->ifm_media = IFM_NONE;
 	ifm->ifm_mask = dontcare_mask;		/* IF don't-care bits */
 	ifm->ifm_change = change_callback;
 	ifm->ifm_status = status_callback;
@@ -122,7 +125,20 @@ ifmedia_init(struct ifmedia *ifm, int dontcare_mask,
 int
 ifmedia_change(struct ifmedia *ifm, struct ifnet *ifp)
 {
+
+	if (ifm->ifm_change == NULL)
+		return -1;
 	return (*ifm->ifm_change)(ifp);
+}
+
+static void
+ifmedia_status(struct ifmedia *ifm, struct ifnet *ifp,
+	struct ifmediareq *ifmr)
+{
+
+	if (ifm->ifm_status == NULL)
+		return;
+	(*ifm->ifm_status)(ifp, ifmr);
 }
 
 /*
@@ -206,9 +222,8 @@ ifmedia_set(struct ifmedia *ifm, int target)
 		if (match == NULL) {
 			ifmedia_add(ifm, target, 0, NULL);
 			match = ifmedia_match(ifm, target, ifm->ifm_mask);
-			if (match == NULL) {
+			if (match == NULL)
 				panic("ifmedia_set failed");
-			}
 		}
 	}
 	ifm->ifm_cur = match;
@@ -226,8 +241,8 @@ ifmedia_set(struct ifmedia *ifm, int target)
 /*
  * Device-independent media ioctl support function.
  */
-int
-ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm,
+static int
+_ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm,
     u_long cmd)
 {
 	struct ifmedia_entry *match;
@@ -265,7 +280,7 @@ ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm,
 				    newmedia);
 			}
 #endif
-			return (EINVAL);
+			return EINVAL;
 		}
 
 		/*
@@ -318,8 +333,7 @@ ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm,
 		    ifm->ifm_cur->ifm_media : IFM_NONE;
 		ifmr->ifm_mask = ifm->ifm_mask;
 		ifmr->ifm_status = 0;
-		/* ifmedia_status */
-		(*ifm->ifm_status)(ifp, ifmr);
+		ifmedia_status(ifm, ifp, ifmr);
 
 		/*
 		 * Count them so we know a-priori how much is the max we'll
@@ -355,10 +369,26 @@ ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm,
 	}
 
 	default:
-		return (EINVAL);
+		return EINVAL;
 	}
 
-	return (error);
+	return error;
+}
+
+int
+ifmedia_ioctl(struct ifnet *ifp, struct ifreq *ifr, struct ifmedia *ifm,
+    u_long cmd)
+{
+	int e;
+
+	/*
+	 * If if_is_mpsafe(ifp), KERNEL_LOCK isn't held here, but _ifmedia_ioctl
+	 * isn't MP-safe yet, so we must hold the lock.
+	 */
+	KERNEL_LOCK_IF_IFP_MPSAFE(ifp);
+	e = _ifmedia_ioctl(ifp, ifr, ifm, cmd);
+	KERNEL_UNLOCK_IF_IFP_MPSAFE(ifp);
+	return e;
 }
 
 /*
@@ -398,8 +428,7 @@ ifmedia_delete_instance(struct ifmedia *ifm, u_int inst)
 {
 	struct ifmedia_entry *ife, *nife;
 
-	for (ife = TAILQ_FIRST(&ifm->ifm_list); ife != NULL;
-	     ife = nife) {
+	for (ife = TAILQ_FIRST(&ifm->ifm_list); ife != NULL; ife = nife) {
 		nife = TAILQ_NEXT(ife, ifm_list);
 		if (inst == IFM_INST_ANY ||
 		    inst == IFM_INST(ife->ifm_media)) {
@@ -407,18 +436,17 @@ ifmedia_delete_instance(struct ifmedia *ifm, u_int inst)
 			free(ife, M_IFMEDIA);
 		}
 	}
+	if (inst == IFM_INST_ANY) {
+		ifm->ifm_cur = NULL;
+		ifm->ifm_media = IFM_NONE;
+	}
 }
 
 void
 ifmedia_removeall(struct ifmedia *ifm)
 {
-	struct ifmedia_entry *ife, *nife;
 
-	for (ife = TAILQ_FIRST(&ifm->ifm_list); ife != NULL; ife = nife) {
-		nife = TAILQ_NEXT(ife, ifm_list);
-		TAILQ_REMOVE(&ifm->ifm_list, ife, ifm_list);
-		free(ife, M_IFMEDIA);
-	}
+	ifmedia_delete_instance(ifm, IFM_INST_ANY);
 }
 
 
@@ -441,7 +469,7 @@ ifmedia_baudrate(int mword)
 	}
 
 	/* Not known. */
-	return (0);
+	return 0;
 }
 
 #ifdef IFMEDIA_DEBUG

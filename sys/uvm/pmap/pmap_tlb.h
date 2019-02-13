@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap_tlb.h,v 1.9 2016/07/11 16:06:09 matt Exp $	*/
+/*	$NetBSD: pmap_tlb.h,v 1.13 2018/02/19 22:01:15 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -71,11 +71,12 @@
  *	@(#)pmap.h	8.1 (Berkeley) 6/10/93
  */
 
-#ifndef	_COMMON_PMAP_TLB_H_
-#define	_COMMON_PMAP_TLB_H_
+#ifndef	_UVM_PMAP_PMAP_TLB_H_
+#define	_UVM_PMAP_PMAP_TLB_H_
 
 #include <sys/evcnt.h>
 #include <sys/kcpuset.h>
+#include <sys/bitops.h>
 
 #if !defined(PMAP_TLB_MAX)
 # if defined(MULTIPROCESSOR)
@@ -115,7 +116,7 @@ struct pmap_tlb_info {
 #define	tlbinfo_noasids_p(ti)	((ti)->ti_asids_free == 0)
 	kmutex_t *ti_lock;
 	u_int ti_wired;			/* # of wired TLB entries */
-	tlb_asid_t ti_asid_hint;		/* probable next ASID to use */
+	tlb_asid_t ti_asid_hint;	/* probable next ASID to use */
 	tlb_asid_t ti_asid_max;
 	LIST_HEAD(, pmap_asid_info) ti_pais; /* list of active ASIDs */
 #ifdef MULTIPROCESSOR
@@ -129,17 +130,22 @@ struct pmap_tlb_info {
 #else
 #define tlbinfo_index(ti)	((void)(ti), 0)
 #endif
+#if !defined(PMAP_TLB_NO_SYNCI_EVCNT)
 	struct evcnt ti_evcnt_synci_asts;
 	struct evcnt ti_evcnt_synci_all;
 	struct evcnt ti_evcnt_synci_pages;
 	struct evcnt ti_evcnt_synci_deferred;
 	struct evcnt ti_evcnt_synci_desired;
 	struct evcnt ti_evcnt_synci_duplicate;
+#endif /* !PMAP_TLB_NO_SYNCI_EVCNT */
 #else
 #define tlbinfo_index(ti)	((void)(ti), 0)
 #endif
 	struct evcnt ti_evcnt_asid_reinits;
-	u_long ti_asid_bitmap[256 / (sizeof(u_long) * 8)];
+#ifndef PMAP_TLB_BITMAP_LENGTH
+#define	PMAP_TLB_BITMAP_LENGTH 256
+#endif
+	__BITMAP_TYPE(, u_long, PMAP_TLB_BITMAP_LENGTH) ti_asid_bitmap;
 };
 
 #ifdef	_KERNEL
@@ -179,4 +185,4 @@ void	pmap_tlb_check(pmap_t, bool (*)(void *, vaddr_t, tlb_asid_t, pt_entry_t));
 void	pmap_tlb_asid_check(void);
 
 #endif	/* _KERNEL */
-#endif	/* _COMMON_PMAP_TLB_H_ */
+#endif	/* _UVM_PMAP_PMAP_TLB_H_ */

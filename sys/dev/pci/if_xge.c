@@ -1,4 +1,4 @@
-/*      $NetBSD: if_xge.c,v 1.23 2016/07/14 04:00:46 msaitoh Exp $ */
+/*      $NetBSD: if_xge.c,v 1.27 2018/09/03 16:29:32 riastradh Exp $ */
 
 /*
  * Copyright (c) 2004, SUNET, Swedish University Computer Network.
@@ -43,7 +43,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_xge.c,v 1.23 2016/07/14 04:00:46 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_xge.c,v 1.27 2018/09/03 16:29:32 riastradh Exp $");
 
 
 #include <sys/param.h>
@@ -536,7 +536,7 @@ xge_attach(device_t parent, device_t self, void *aux)
 	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
 	ifp->if_ioctl = xge_ioctl;
 	ifp->if_start = xge_start;
-	IFQ_SET_MAXLEN(&ifp->if_snd, max(NTXDESCS - 1, IFQ_MAXLEN));
+	IFQ_SET_MAXLEN(&ifp->if_snd, uimax(NTXDESCS - 1, IFQ_MAXLEN));
 	IFQ_SET_READY(&ifp->if_snd);
 
 	/*
@@ -553,6 +553,7 @@ xge_attach(device_t parent, device_t self, void *aux)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 	/*
@@ -750,7 +751,7 @@ xge_intr(void *pv)
 	if (sc->sc_lasttx != lasttx)
 		ifp->if_flags &= ~IFF_OACTIVE;
 
-	xge_start(ifp); /* Try to get more packets on the wire */
+	if_schedule_deferred_start(ifp); /* Try to get more packets on the wire */
 
 	if ((val = PIF_RCSR(RX_TRAFFIC_INT))) {
 		XGE_EVCNT_INCR(&sc->sc_rxintr);
@@ -805,8 +806,6 @@ xge_intr(void *pv)
 			break;
 		}
 
-		ifp->if_ipackets++;
-
 		if (RXD_CTL1_PROTOS(val) & (RXD_CTL1_P_IPv4|RXD_CTL1_P_IPv6)) {
 			m->m_pkthdr.csum_flags |= M_CSUM_IPv4;
 			if (RXD_CTL1_L3CSUM(val) != 0xffff)
@@ -822,8 +821,6 @@ xge_intr(void *pv)
 			if (RXD_CTL1_L4CSUM(val) != 0xffff)
 				m->m_pkthdr.csum_flags |= M_CSUM_TCP_UDP_BAD;
 		}
-
-		bpf_mtap(ifp, m);
 
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 
@@ -1006,7 +1003,7 @@ xge_start(struct ifnet *ifp)
 		TXP_WCSR(TXDL_PAR, par);
 		TXP_WCSR(TXDL_LCR, lcr);
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		sc->sc_nexttx = NEXTTX(nexttx);
 	}

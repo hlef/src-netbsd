@@ -1,4 +1,4 @@
-/*	$NetBSD: rtl8169.c,v 1.147 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: rtl8169.c,v 1.154 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 1997, 1998-2003
@@ -33,7 +33,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rtl8169.c,v 1.147 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: rtl8169.c,v 1.154 2018/06/26 06:48:00 msaitoh Exp $");
 /* $FreeBSD: /repoman/r/ncvs/src/sys/dev/re/if_re.c,v 1.20 2004/04/11 20:34:08 ru Exp $ */
 
 /*
@@ -837,14 +837,6 @@ re_attach(struct rtk_softc *sc)
 	    IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_UDPv4_Rx |
 	    IFCAP_TSOv4;
 
-	/*
-	 * XXX
-	 * Still have no idea how to make TSO work on 8168C, 8168CP,
-	 * 8102E, 8111C and 8111CP.
-	 */
-	if ((sc->sc_quirk & RTKQ_DESCV2) != 0)
-		ifp->if_capabilities &= ~IFCAP_TSOv4;
-
 	ifp->if_watchdog = re_watchdog;
 	ifp->if_init = re_init;
 	ifp->if_snd.ifq_maxlen = RE_IFQ_MAXLEN;
@@ -869,6 +861,7 @@ re_attach(struct rtk_softc *sc)
 	 * Call MI attach routine.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, eaddr);
 
 	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
@@ -1196,7 +1189,7 @@ re_rxeof(struct rtk_softc *sc)
 			if (sc->re_head == NULL)
 				sc->re_head = sc->re_tail = m;
 			else {
-				m->m_flags &= ~M_PKTHDR;
+				m_remove_pkthdr(m);
 				sc->re_tail->m_next = m;
 				sc->re_tail = m;
 			}
@@ -1283,7 +1276,7 @@ re_rxeof(struct rtk_softc *sc)
 				m_freem(m);
 			} else {
 				m->m_len -= ETHER_CRC_LEN;
-				m->m_flags &= ~M_PKTHDR;
+				m_remove_pkthdr(m);
 				sc->re_tail->m_next = m;
 			}
 			m = sc->re_head;
@@ -1293,7 +1286,6 @@ re_rxeof(struct rtk_softc *sc)
 			m->m_pkthdr.len = m->m_len =
 			    (total_len - ETHER_CRC_LEN);
 
-		ifp->if_ipackets++;
 		m_set_rcvif(m, ifp);
 
 		/* Do RX checksumming */
@@ -1353,11 +1345,9 @@ re_rxeof(struct rtk_softc *sc)
 		}
 
 		if (rxvlan & RE_RDESC_VLANCTL_TAG) {
-			VLAN_INPUT_TAG(ifp, m,
-			     bswap16(rxvlan & RE_RDESC_VLANCTL_DATA),
-			     continue);
+			vlan_set_tag(m,
+			     bswap16(rxvlan & RE_RDESC_VLANCTL_DATA));
 		}
-		bpf_mtap(ifp, m);
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 	}
 
@@ -1419,7 +1409,8 @@ re_txeof(struct rtk_softc *sc)
 	 * This is done in case the transmitter has gone idle.
 	 */
 	if (sc->re_ldata.re_txq_free < RE_TX_QLEN) {
-		CSR_WRITE_4(sc, RTK_TIMERCNT, 1);
+		if ((sc->sc_quirk & RTKQ_IM_HW) == 0)
+			CSR_WRITE_4(sc, RTK_TIMERCNT, 1);
 		if ((sc->sc_quirk & RTKQ_PCIE) != 0) {
 			/*
 			 * Some chips will ignore a second TX request
@@ -1467,6 +1458,9 @@ re_intr(void *arg)
 	if ((ifp->if_flags & IFF_UP) == 0)
 		return 0;
 
+	const uint16_t status_mask = (sc->sc_quirk & RTKQ_IM_HW) ?
+	    RTK_INTRS_IM_HW : RTK_INTRS_CPLUS;
+
 	for (;;) {
 
 		status = CSR_READ_2(sc, RTK_ISR);
@@ -1478,14 +1472,14 @@ re_intr(void *arg)
 			CSR_WRITE_2(sc, RTK_ISR, status);
 		}
 
-		if ((status & RTK_INTRS_CPLUS) == 0)
+		if ((status & status_mask) == 0)
 			break;
 
 		if (status & (RTK_ISR_RX_OK | RTK_ISR_RX_ERR))
 			re_rxeof(sc);
 
 		if (status & (RTK_ISR_TIMEOUT_EXPIRED | RTK_ISR_TX_ERR |
-		    RTK_ISR_TX_DESC_UNAVAIL))
+		    RTK_ISR_TX_DESC_UNAVAIL | RTK_ISR_TX_OK))
 			re_txeof(sc);
 
 		if (status & RTK_ISR_SYSTEM_ERR) {
@@ -1498,8 +1492,8 @@ re_intr(void *arg)
 		}
 	}
 
-	if (handled && !IFQ_IS_EMPTY(&ifp->if_snd))
-		re_start(ifp);
+	if (handled)
+		if_schedule_deferred_start(ifp);
 
 	rnd_add_uint32(&sc->rnd_source, status);
 
@@ -1520,7 +1514,6 @@ re_start(struct ifnet *ifp)
 	bus_dmamap_t map;
 	struct re_txq *txq;
 	struct re_desc *d;
-	struct m_tag *mtag;
 	uint32_t cmdstat, re_flags, vlanctl;
 	int ofree, idx, error, nsegs, seg;
 	int startdesc, curdesc, lastdesc;
@@ -1553,8 +1546,14 @@ re_start(struct ifnet *ifp)
 		if ((m->m_pkthdr.csum_flags & M_CSUM_TSOv4) != 0) {
 			uint32_t segsz = m->m_pkthdr.segsz;
 
-			re_flags = RE_TDESC_CMD_LGSEND |
-			    (segsz << RE_TDESC_CMD_MSSVAL_SHIFT);
+			if ((sc->sc_quirk & RTKQ_DESCV2) == 0) {
+				re_flags = RE_TDESC_CMD_LGSEND |
+				    (segsz << RE_TDESC_CMD_MSSVAL_SHIFT);
+			} else {
+				re_flags = RE_TDESC_CMD_LGSEND_V4;
+				vlanctl |=
+				    (segsz << RE_TDESC_VLANCTL_MSSVAL_SHIFT);
+			}
 		} else {
 			/*
 			 * set RE_TDESC_CMD_IPCSUM if any checksum offloading
@@ -1639,8 +1638,8 @@ re_start(struct ifnet *ifp)
 		 * appear in all descriptors of a multi-descriptor
 		 * transmission attempt.
 		 */
-		if ((mtag = VLAN_OUTPUT_TAG(&sc->ethercom, m)) != NULL)
-			vlanctl |= bswap16(VLAN_TAG_VALUE(mtag)) |
+		if (vlan_has_tag(m))
+			vlanctl |= bswap16(vlan_get_tag(m)) |
 			    RE_TDESC_VLANCTL_TAG;
 
 		/*
@@ -1727,7 +1726,7 @@ re_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 	}
 
 	if (sc->re_ldata.re_txq_free < ofree) {
@@ -1747,15 +1746,17 @@ re_start(struct ifnet *ifp)
 		else
 			CSR_WRITE_1(sc, RTK_GTXSTART, RTK_TXSTART_START);
 
-		/*
-		 * Use the countdown timer for interrupt moderation.
-		 * 'TX done' interrupts are disabled. Instead, we reset the
-		 * countdown timer, which will begin counting until it hits
-		 * the value in the TIMERINT register, and then trigger an
-		 * interrupt. Each time we write to the TIMERCNT register,
-		 * the timer count is reset to 0.
-		 */
-		CSR_WRITE_4(sc, RTK_TIMERCNT, 1);
+		if ((sc->sc_quirk & RTKQ_IM_HW) == 0) {
+			/*
+			 * Use the countdown timer for interrupt moderation.
+			 * 'TX done' interrupts are disabled. Instead, we reset
+			 * the countdown timer, which will begin counting until
+			 * it hits the value in the TIMERINT register, and then
+			 * trigger an interrupt. Each time we write to the
+			 * TIMERCNT register, the timer count is reset to 0.
+			 */
+			CSR_WRITE_4(sc, RTK_TIMERCNT, 1);
+		}
 
 		/*
 		 * Set a timeout in case the chip goes out to lunch.
@@ -1814,8 +1815,13 @@ re_init(struct ifnet *ifp)
 	CSR_WRITE_2(sc, RTK_CPLUS_CMD, cfg);
 
 	/* XXX: from Realtek-supplied Linux driver. Wholly undocumented. */
-	if ((sc->sc_quirk & RTKQ_8139CPLUS) == 0)
-		CSR_WRITE_2(sc, RTK_IM, 0x0000);
+	if ((sc->sc_quirk & RTKQ_8139CPLUS) == 0) {
+		if ((sc->sc_quirk & RTKQ_IM_HW) == 0) {
+			CSR_WRITE_2(sc, RTK_IM, 0x0000);
+		} else {
+			CSR_WRITE_2(sc, RTK_IM, 0x5151);
+		}
+	}
 
 	DELAY(10000);
 
@@ -1908,6 +1914,8 @@ re_init(struct ifnet *ifp)
 	 */
 	if (sc->re_testmode)
 		CSR_WRITE_2(sc, RTK_IMR, 0);
+	else if ((sc->sc_quirk & RTKQ_IM_HW) != 0)
+		CSR_WRITE_2(sc, RTK_IMR, RTK_INTRS_IM_HW);
 	else
 		CSR_WRITE_2(sc, RTK_IMR, RTK_INTRS_CPLUS);
 
@@ -1929,7 +1937,15 @@ re_init(struct ifnet *ifp)
 	if ((sc->sc_quirk & RTKQ_8139CPLUS) != 0)
 		CSR_WRITE_4(sc, RTK_TIMERINT, 0x400);
 	else {
-		CSR_WRITE_4(sc, RTK_TIMERINT_8169, 0x800);
+		if ((sc->sc_quirk & RTKQ_IM_HW) == 0) {
+			if ((sc->sc_quirk & RTKQ_PCIE) != 0) {
+				CSR_WRITE_4(sc, RTK_TIMERINT_8169, 15000);
+			} else {
+				CSR_WRITE_4(sc, RTK_TIMERINT_8169, 0x800);
+			}
+		} else {
+			CSR_WRITE_4(sc, RTK_TIMERINT_8169, 0);
+		}
 
 		/*
 		 * For 8169 gigE NICs, set the max allowed RX packet

@@ -1,4 +1,4 @@
-/*	$NetBSD: uatp.c,v 1.12 2016/04/23 10:15:32 skrll Exp $	*/
+/*	$NetBSD: uatp.c,v 1.18 2018/09/03 16:29:33 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2011-2014 The NetBSD Foundation, Inc.
@@ -146,7 +146,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uatp.c,v 1.12 2016/04/23 10:15:32 skrll Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uatp.c,v 1.18 2018/09/03 16:29:33 riastradh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -166,8 +170,8 @@ __KERNEL_RCSID(0, "$NetBSD: uatp.c,v 1.12 2016/04/23 10:15:32 skrll Exp $");
 #include <dev/usb/usbdi_util.h>
 #include <dev/usb/usbdevs.h>
 #include <dev/usb/uhidev.h>
-#include <dev/usb/hid.h>
 #include <dev/usb/usbhid.h>
+#include <dev/hid/hid.h>
 
 #include <dev/wscons/wsconsio.h>
 #include <dev/wscons/wsmousevar.h>
@@ -510,7 +514,6 @@ struct uatp_softc {
 
 	callout_t sc_untap_callout;	/* Releases button after tap.  */
 	kmutex_t sc_tap_mutex;		/* Protects the following fields.  */
-	kcondvar_t sc_tap_cv;		/* Signalled by untap callout.  */
 	enum uatp_tap_state sc_tap_state;	/* Current tap state.  */
 	unsigned int sc_tapping_fingers;	/* No. fingers tapping.  */
 	unsigned int sc_tapped_fingers;	/* No. fingers of last tap.  */
@@ -1359,7 +1362,8 @@ geyser34_finalize(struct uatp_softc *sc)
 {
 
 	DPRINTF(sc, UATP_DEBUG_MISC, ("finalizing\n"));
-	usb_rem_task(sc->sc_hdev.sc_parent->sc_udev, &sc->sc_reset_task);
+	usb_rem_task_wait(sc->sc_hdev.sc_parent->sc_udev, &sc->sc_reset_task,
+	    USB_TASKQ_DRIVER, NULL);
 
 	return 0;
 }
@@ -1740,7 +1744,7 @@ interpret_input(struct uatp_softc *sc, int *dx, int *dy, int *dz, int *dw,
 		    ("pressure in only one dimension; ignoring\n"));
 		return true;
 	} else if ((x_pressure == 1) && (y_pressure == 1)) {
-		fingers = max(x_fingers, y_fingers);
+		fingers = uimax(x_fingers, y_fingers);
 		CHECK((0 < fingers), return false);
 		if (*buttons == 0)
 			tap_touched(sc, fingers);
@@ -2015,7 +2019,6 @@ tap_initialize(struct uatp_softc *sc)
 	callout_init(&sc->sc_untap_callout, 0);
 	callout_setfunc(&sc->sc_untap_callout, untap_callout, sc);
 	mutex_init(&sc->sc_tap_mutex, MUTEX_DEFAULT, IPL_SOFTUSB);
-	cv_init(&sc->sc_tap_cv, "uatptap");
 }
 
 static void
@@ -2024,7 +2027,6 @@ tap_finalize(struct uatp_softc *sc)
 	/* XXX Can the callout still be scheduled here?  */
 	callout_destroy(&sc->sc_untap_callout);
 	mutex_destroy(&sc->sc_tap_mutex);
-	cv_destroy(&sc->sc_tap_cv);
 }
 
 static void
@@ -2052,6 +2054,7 @@ tap_disable(struct uatp_softc *sc)
 static void
 tap_reset(struct uatp_softc *sc)
 {
+
 	callout_stop(&sc->sc_untap_callout);
 	mutex_enter(&sc->sc_tap_mutex);
 	tap_transition_initial(sc);
@@ -2063,19 +2066,9 @@ tap_reset(struct uatp_softc *sc)
 static void
 tap_reset_wait(struct uatp_softc *sc)
 {
-	bool fired = callout_stop(&sc->sc_untap_callout);
 
+	callout_halt(&sc->sc_untap_callout, NULL);
 	mutex_enter(&sc->sc_tap_mutex);
-	if (fired)
-		while (sc->sc_tap_state == TAP_STATE_TAPPED)
-			if (cv_timedwait(&sc->sc_tap_cv, &sc->sc_tap_mutex,
-				mstohz(1000))) {
-				aprint_error_dev(uatp_dev(sc),
-				    "tap timeout\n");
-				break;
-			}
-	if (sc->sc_tap_state == TAP_STATE_TAPPED)
-		aprint_error_dev(uatp_dev(sc), "%s error\n", __func__);
 	tap_transition_initial(sc);
 	mutex_exit(&sc->sc_tap_mutex);
 }
@@ -2376,8 +2369,6 @@ untap_callout(void *arg)
 		break;
 	}
 	TAP_DEBUG_POST(sc);
-	/* XXX Broadcast only if state was TAPPED?  */
-	cv_broadcast(&sc->sc_tap_cv);
 	mutex_exit(&sc->sc_tap_mutex);
 }
 

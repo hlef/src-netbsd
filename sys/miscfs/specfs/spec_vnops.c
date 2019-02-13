@@ -1,4 +1,4 @@
-/*	$NetBSD: spec_vnops.c,v 1.162 2016/04/04 08:03:53 hannken Exp $	*/
+/*	$NetBSD: spec_vnops.c,v 1.175 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: spec_vnops.c,v 1.162 2016/04/04 08:03:53 hannken Exp $");
+__KERNEL_RCSID(0, "$NetBSD: spec_vnops.c,v 1.175 2018/09/03 16:29:35 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/proc.h>
@@ -68,7 +68,7 @@ __KERNEL_RCSID(0, "$NetBSD: spec_vnops.c,v 1.162 2016/04/04 08:03:53 hannken Exp
 #include <sys/buf.h>
 #include <sys/mount.h>
 #include <sys/namei.h>
-#include <sys/vnode.h>
+#include <sys/vnode_impl.h>
 #include <sys/stat.h>
 #include <sys/errno.h>
 #include <sys/ioctl.h>
@@ -230,15 +230,7 @@ spec_node_init(vnode_t *vp, dev_t rdev)
 	 * the vnode to the hash table.
 	 */
 	sn = kmem_alloc(sizeof(*sn), KM_SLEEP);
-	if (sn == NULL) {
-		/* XXX */
-		panic("spec_node_init: unable to allocate memory");
-	}
 	sd = kmem_alloc(sizeof(*sd), KM_SLEEP);
-	if (sd == NULL) {
-		/* XXX */
-		panic("spec_node_init: unable to allocate memory");
-	}
 	mutex_enter(&device_lock);
 	vpp = &specfs_hash[SPECHASH(rdev)];
 	for (vp2 = *vpp; vp2 != NULL; vp2 = vp2->v_specnext) {
@@ -310,7 +302,7 @@ spec_node_lookup_by_dev(enum vtype type, dev_t dev, vnode_t **vpp)
 		mutex_enter(vp->v_interlock);
 	}
 	mutex_exit(&device_lock);
-	error = vget(vp, 0, true /* wait */);
+	error = vcache_vget(vp);
 	if (error != 0)
 		return error;
 	*vpp = vp;
@@ -345,7 +337,7 @@ spec_node_lookup_by_mount(struct mount *mp, vnode_t **vpp)
 	}
 	mutex_enter(vq->v_interlock);
 	mutex_exit(&device_lock);
-	error = vget(vq, 0, true /* wait */);
+	error = vcache_vget(vq);
 	if (error != 0)
 		return error;
 	*vpp = vq;
@@ -588,13 +580,16 @@ spec_open(void *v)
 		 * For block devices, permit only one open.  The buffer
 		 * cache cannot remain self-consistent with multiple
 		 * vnodes holding a block device open.
+		 *
+		 * Treat zero opencnt with non-NULL mountpoint as open.
+		 * This may happen after forced detach of a mounted device.
 		 */
 		mutex_enter(&device_lock);
 		if (sn->sn_gone) {
 			mutex_exit(&device_lock);
 			return (EBADF);
 		}
-		if (sd->sd_opencnt != 0) {
+		if (sd->sd_opencnt != 0 || sd->sd_mountpoint != NULL) {
 			mutex_exit(&device_lock);
 			return EBUSY;
 		}
@@ -720,12 +715,12 @@ spec_read(void *v)
 		do {
 			bn = (uio->uio_offset >> DEV_BSHIFT) &~ (bscale - 1);
 			on = uio->uio_offset % bsize;
-			n = min((unsigned)(bsize - on), uio->uio_resid);
+			n = uimin((unsigned)(bsize - on), uio->uio_resid);
 			error = bread(vp, bn, bsize, 0, &bp);
 			if (error) {
 				return (error);
 			}
-			n = min(n, bsize - bp->b_resid);
+			n = uimin(n, bsize - bp->b_resid);
 			error = uiomove((char *)bp->b_data + on, n, uio);
 			brelse(bp, 0);
 		} while (error == 0 && uio->uio_resid > 0 && n != 0);
@@ -789,7 +784,7 @@ spec_write(void *v)
 		do {
 			bn = (uio->uio_offset >> DEV_BSHIFT) &~ (bscale - 1);
 			on = uio->uio_offset % bsize;
-			n = min((unsigned)(bsize - on), uio->uio_resid);
+			n = uimin((unsigned)(bsize - on), uio->uio_resid);
 			if (n == bsize)
 				bp = getblk(vp, bn, bsize, 0, 0);
 			else
@@ -797,7 +792,7 @@ spec_write(void *v)
 			if (error) {
 				return (error);
 			}
-			n = min(n, bsize - bp->b_resid);
+			n = uimin(n, bsize - bp->b_resid);
 			error = uiomove((char *)bp->b_data + on, n, uio);
 			if (error)
 				brelse(bp, 0);
@@ -1053,6 +1048,16 @@ spec_strategy(void *v)
 	bp->b_dev = dev;
 
 	if (!(bp->b_flags & B_READ)) {
+#ifdef DIAGNOSTIC
+		if (bp->b_vp && bp->b_vp->v_type == VBLK) {
+			struct mount *mp = spec_node_getmountedfs(bp->b_vp);
+
+			if (mp && (mp->mnt_flag & MNT_RDONLY)) {
+				printf("%s blk %"PRId64" written while ro!\n",
+				    mp->mnt_stat.f_mntonname, bp->b_blkno);
+			}
+		}
+#endif /* DIAGNOSTIC */
 		error = fscow_run(bp, false);
 		if (error)
 			goto out;
@@ -1072,28 +1077,28 @@ out:
 int
 spec_inactive(void *v)
 {
-	struct vop_inactive_args /* {
+	struct vop_inactive_v2_args /* {
 		struct vnode *a_vp;
 		struct bool *a_recycle;
 	} */ *ap = v;
-	struct vnode *vp = ap->a_vp;
 
-	KASSERT(vp->v_mount == dead_rootmount);
+	KASSERT(ap->a_vp->v_mount == dead_rootmount);
 	*ap->a_recycle = true;
-	VOP_UNLOCK(vp);
+
 	return 0;
 }
 
 int
 spec_reclaim(void *v)
 {
-	struct vop_reclaim_args /* {
+	struct vop_reclaim_v2_args /* {
 		struct vnode *a_vp;
 	} */ *ap = v;
 	struct vnode *vp = ap->a_vp;
 
+	VOP_UNLOCK(vp);
+
 	KASSERT(vp->v_mount == dead_rootmount);
-	vcache_remove(vp->v_mount, &vp->v_interlock, sizeof(vp->v_interlock));
 	return 0;
 }
 
@@ -1228,7 +1233,7 @@ spec_close(void *v)
 		sd->sd_bdevvp = NULL;
 	mutex_exit(&device_lock);
 
-	if (count != 0)
+	if (count != 0 && (vp->v_type != VCHR || !(cdev_flags(dev) & D_MCLOSE)))
 		return 0;
 
 	/*

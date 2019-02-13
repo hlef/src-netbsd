@@ -1,4 +1,4 @@
-/*	$NetBSD: if_udav.c,v 1.48 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: if_udav.c,v 1.55 2018/08/02 06:09:04 riastradh Exp $	*/
 /*	$nabe: if_udav.c,v 1.3 2003/08/21 16:57:19 nabe Exp $	*/
 
 /*
@@ -45,10 +45,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_udav.c,v 1.48 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_udav.c,v 1.55 2018/08/02 06:09:04 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
+#include "opt_usb.h"
 #endif
 
 #include <sys/param.h>
@@ -282,7 +283,7 @@ udav_attach(device_t parent, device_t self, void *aux)
 	ifp = GET_IFP(sc);
 	ifp->if_softc = sc;
 	ifp->if_mtu = ETHERMTU;
-	strncpy(ifp->if_xname, device_xname(self), IFNAMSIZ);
+	strlcpy(ifp->if_xname, device_xname(self), IFNAMSIZ);
 	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
 	ifp->if_start = udav_start;
 	ifp->if_ioctl = udav_ioctl;
@@ -351,11 +352,13 @@ udav_detach(device_t self, int flags)
 	if (!sc->sc_attached)
 		return 0;
 
-	callout_stop(&sc->sc_stat_ch);
+	callout_halt(&sc->sc_stat_ch, NULL);
 
 	/* Remove any pending tasks */
-	usb_rem_task(sc->sc_udev, &sc->sc_tick_task);
-	usb_rem_task(sc->sc_udev, &sc->sc_stop_task);
+	usb_rem_task_wait(sc->sc_udev, &sc->sc_tick_task, USB_TASKQ_DRIVER,
+	    NULL);
+	usb_rem_task_wait(sc->sc_udev, &sc->sc_stop_task, USB_TASKQ_DRIVER,
+	    NULL);
 
 	s = splusb();
 
@@ -940,7 +943,7 @@ udav_rx_list_init(struct udav_softc *sc)
 			return ENOBUFS;
 		if (c->udav_xfer == NULL) {
 			int error = usbd_create_xfer(sc->sc_pipe_rx,
-			    UDAV_BUFSZ, USBD_SHORT_XFER_OK, 0, &c->udav_xfer);
+			    UDAV_BUFSZ, 0, 0, &c->udav_xfer);
 			if (error)
 				return error;
 			c->udav_buf = usbd_get_buffer(c->udav_xfer);
@@ -1006,7 +1009,7 @@ udav_start(struct ifnet *ifp)
 
 	IFQ_DEQUEUE(&ifp->if_snd, m_head);
 
-	bpf_mtap(ifp, m_head);
+	bpf_mtap(ifp, m_head, BPF_D_OUT);
 
 	ifp->if_flags |= IFF_OACTIVE;
 
@@ -1175,7 +1178,6 @@ udav_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		goto done;
 	}
 
-	ifp->if_ipackets++;
 	total_len -= ETHER_CRC_LEN;
 
 	m->m_pkthdr.len = m->m_len = total_len;
@@ -1187,8 +1189,6 @@ udav_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		ifp->if_ierrors++;
 		goto done1;
 	}
-
-	bpf_mtap(ifp, m);
 
 	DPRINTF(("%s: %s: deliver %d\n", device_xname(sc->sc_dev),
 		 __func__, m->m_len));

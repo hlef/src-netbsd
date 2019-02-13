@@ -1,4 +1,4 @@
-#	$NetBSD: bsd.prog.mk,v 1.299 2016/04/04 15:06:16 joerg Exp $
+#	$NetBSD: bsd.prog.mk,v 1.318 2018/08/12 11:50:51 christos Exp $
 #	@(#)bsd.prog.mk	8.2 (Berkeley) 4/2/94
 
 .ifndef HOSTPROG
@@ -6,6 +6,19 @@
 .include <bsd.init.mk>
 .include <bsd.shlib.mk>
 .include <bsd.gcc.mk>
+
+##### Sanitizer specific flags.
+
+CFLAGS+=	${SANITIZERFLAGS} ${LIBCSANITIZERFLAGS}
+CXXFLAGS+=	${SANITIZERFLAGS} ${LIBCSANITIZERFLAGS}
+LDFLAGS+=	${SANITIZERFLAGS}
+
+# Rename the local function definitions to not conflict with libc/rt/pthread/m.
+.if ${MKSANITIZER:Uno} == "yes" && defined(SANITIZER_RENAME_SYMBOL)
+.	for _symbol in ${SANITIZER_RENAME_SYMBOL}
+CPPFLAGS+=	-D${_symbol}=__mksanitizer_${_symbol}
+.	endfor
+.endif
 
 #
 # Definitions and targets shared among all programs built by a single
@@ -99,7 +112,7 @@ LIBCRTI=	${DESTDIR}/usr/lib/${MLIBDIR:D${MLIBDIR}/}crti.o
 #	etc..
 #	NB:	If you are a library here, add it in bsd.README
 
-.for _lib in \
+_LIBLIST=\
 	archive \
 	asn1 \
 	atf_c \
@@ -114,17 +127,17 @@ LIBCRTI=	${DESTDIR}/usr/lib/${MLIBDIR:D${MLIBDIR}/}crti.o
 	compat \
 	crypt \
 	crypto \
-	crypto_idea \
-	crypto_mdc2 \
-	crypto_rc5 \
 	curses \
+	cxx \
 	dbm \
 	des \
 	dns \
 	edit \
 	event \
-	expat \
+	event_openssl \
+	event_pthreads \
 	execinfo \
+	expat \
 	fetch \
 	fl \
 	form \
@@ -151,22 +164,24 @@ LIBCRTI=	${DESTDIR}/usr/lib/${MLIBDIR:D${MLIBDIR}/}crti.o
 	ldap \
 	ldap_r \
 	lua \
-	lwres \
+	lutok \
 	m \
 	magic \
 	menu \
+	netpgpverify \
+	ns \
 	objc \
 	ossaudio \
+	panel \
 	pam \
 	pcap \
 	pci \
-	pmc \
 	posix \
 	pthread \
-	pthread_dbg \
 	puffs \
 	quota \
 	radius \
+	refuse \
 	resolv \
 	rmt \
 	roken \
@@ -195,33 +210,50 @@ LIBCRTI=	${DESTDIR}/usr/lib/${MLIBDIR:D${MLIBDIR}/}crti.o
 	ssh \
 	ssl \
 	ssp \
-	stdcxx \
-	supcxx \
+	stdc++ \
+	supc++ \
 	terminfo \
 	tre \
+	unbound \
 	usbhid \
 	util \
 	wind \
 	wrap \
 	y \
 	z 
+
+.for _lib in ${_LIBLIST}
 .ifndef LIB${_lib:tu}
 LIB${_lib:tu}=	${DESTDIR}/usr/lib/lib${_lib:S/xx/++/:S/atf_c/atf-c/}.a
 .MADE:		${LIB${_lib:tu}}	# Note: ${DESTDIR} will be expanded
 .endif
 .endfor
 
+.if (${MKKERBEROS} != "no")
+LIBKRB5_LDADD+= -lkrb5
+LIBKRB5_DPADD+= ${LIBKRB5}
+# Kerberos5 applications, if linked statically, need more libraries
+LIBKRB5_STATIC_LDADD+= \
+	-lhx509 -lcrypto -lasn1 -lcom_err -lroken \
+	-lwind -lheimbase -lsqlite3 -lcrypt -lutil
+LIBKRB5_STATIC_DPADD+= \
+	${LIBHX509} ${LIBCRYPTO} ${LIBASN1} ${LIBCOM_ERR} ${LIBROKEN} \
+	${LIBWIND} ${LIBHEIMBASE} ${LIBSQLITE3} ${LIBCRYPT}  ${LIBUTIL}
+. if (${MKPIC} == "no")
+LIBKRB5_LDADD+= ${LIBKRB5_STATIC_LDADD}
+LIBKRB5_DPADD+= ${LIBKRB5_STATIC_DPADD}
+. endif
+.endif
+
 # PAM applications, if linked statically, need more libraries
 .if (${MKPIC} == "no")
-.if (${MKCRYPTO} != "no")
 PAM_STATIC_LDADD+= -lssh
 PAM_STATIC_DPADD+= ${LIBSSH}
-.endif
 .if (${MKKERBEROS} != "no")
 PAM_STATIC_LDADD+= -lkafs -lkrb5 -lhx509 -lwind -lasn1 \
-	-lroken -lcom_err -lheimbase -lcrypto
+	-lroken -lcom_err -lheimbase -lcrypto -lsqlite3
 PAM_STATIC_DPADD+= ${LIBKAFS} ${LIBKRB5} ${LIBHX509} ${LIBWIND} ${LIBASN1} \
-	${LIBROKEN} ${LIBCOM_ERR} ${LIBHEIMBASE} ${LIBCRYPTO}
+	${LIBROKEN} ${LIBCOM_ERR} ${LIBHEIMBASE} ${LIBCRYPTO} ${LIBSQLITE3}
 .endif
 .if (${MKSKEY} != "no")
 PAM_STATIC_LDADD+= -lskey
@@ -247,6 +279,7 @@ PAM_STATIC_DPADD=
 	Xaw \
 	Xdmcp \
 	Xext \
+	Xfont2 \
 	Xfont \
 	Xft \
 	Xi \
@@ -351,8 +384,8 @@ SRCS.rump.${PROG}=	${PROG}.c ${PROG}_rumpops.c ${RUMPSRCS}
 .  endif
 .   if (${MKRUMP} != "no")
 DPSRCS+=		${PROG}_rumpops.c ${RUMPSRCS}
-LDADD.rump.${PROG}+=	-lrumpclient
-DPADD.rump.${PROG}+=	${LIBRUMPCLIENT}
+LDADD.rump.${PROG}+=	${LDADD.rump} -lrumpclient
+DPADD.rump.${PROG}+=	${DPADD.rump} ${LIBRUMPCLIENT}
 MAN.rump.${PROG}=	# defined but feeling empty
 _RUMPINSTALL.rump.${PROG}=# defined
 .   endif
@@ -434,7 +467,8 @@ _CCLINK.${_P}=	${CXX} ${_CCLINKFLAGS}
 BINDIR.${_P}?=		${BINDIR}
 PROGNAME.${_P}?=	${_P}
 
-.if ${MKDEBUG:Uno} != "no" && !defined(NODEBUG) && !commands(${_P})
+.if ${MKDEBUG:Uno} != "no" && !defined(NODEBUG) && !commands(${_P}) && \
+    empty(SRCS.${_P}:M*.sh)
 _PROGDEBUG.${_P}:=	${PROGNAME.${_P}}.debug
 .endif
 
@@ -447,7 +481,10 @@ PAXCTL_FLAGS.${_P}?= ${PAXCTL_FLAGS}
 _DPADD.${_P}=		${DPADD}    ${DPADD.${_P}}
 _LDADD.${_P}=		${LDADD}    ${LDADD.${_P}}
 _LDFLAGS.${_P}=		${LDFLAGS}  ${LDFLAGS.${_P}}
+.if ${MKSANITIZER} != "yes"
+# Sanitizers don't support static build.
 _LDSTATIC.${_P}=	${LDSTATIC} ${LDSTATIC.${_P}}
+.endif
 
 ##### Build and install rules
 .if !empty(_APPEND_SRCS:M[Yy][Ee][Ss])

@@ -1,4 +1,4 @@
-/*	$NetBSD: msm6258var.h,v 1.8 2011/10/16 03:10:18 isaki Exp $	*/
+/*	$NetBSD: msm6258var.h,v 1.10 2017/09/02 12:57:35 isaki Exp $	*/
 
 /*
  * Copyright (c) 2001 Tetsuya Isaki. All rights reserved.

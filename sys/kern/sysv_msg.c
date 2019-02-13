@@ -1,4 +1,4 @@
-/*	$NetBSD: sysv_msg.c,v 1.70 2015/11/06 02:26:42 pgoyette Exp $	*/
+/*	$NetBSD: sysv_msg.c,v 1.72 2018/03/30 22:54:37 maya Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2006, 2007 The NetBSD Foundation, Inc.
@@ -50,7 +50,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sysv_msg.c,v 1.70 2015/11/06 02:26:42 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sysv_msg.c,v 1.72 2018/03/30 22:54:37 maya Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_sysv.h"
@@ -195,6 +195,7 @@ msgfini(void)
 	sz = round_page(sz);
 	uvm_km_free(kernel_map, v, sz, UVM_KMF_WIRED);
 
+	cv_destroy(&msg_realloc_cv);
 	mutex_exit(&msgmutex);
 	mutex_destroy(&msgmutex);
 
@@ -314,8 +315,8 @@ msgrealloc(int newmsgmni, int newmsgseg)
 		memcpy(nmptr, mptr, sizeof(struct msqid_ds));
 
 		/*
-		 * Go through the message headers, and and copy each
-		 * one by taking the new ones, and thus defragmenting.
+		 * Go through the message headers, and copy each one
+		 * by taking the new ones, and thus defragmenting.
 		 */
 		nmsghdr = pmsghdr = NULL;
 		msghdr = mptr->_msg_first;

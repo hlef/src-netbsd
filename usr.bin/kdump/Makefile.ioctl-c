@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile.ioctl-c,v 1.32 2016/04/01 07:23:15 knakahara Exp $
+#	$NetBSD: Makefile.ioctl-c,v 1.38 2018/09/29 14:41:36 rmind Exp $
 
 # NOTE: <bsd.own.mk> needs to be previously .included for NETBSDSRCDIR
 
@@ -25,15 +25,16 @@ EXTRAS=	${NETBSDSRCDIR}/external/cddl/osnet/dist/uts/common/sys/dtrace.h
 .endif
 
 .if !make(cleandir) && !make(obj) && !make(includes) && !make(install)
-DEPFILEGLOB = ${TOOL_SED} -ne '/\/usr\/.*include\/.*\.h[ 	]/{s/[ 	]obsolete$$//;t' -e 's/xenio//;t' -e 's,\.\([^ 	]*\).*,${DESTDIR}\1,;p;}' ${SETFILES}
+DEPFILEGLOB = ${TOOL_SED} \
+    -ne '/\/usr\/.*include\/.*\.h[ 	]/{s/[ 	,]obsolete//;t' \
+    -e "s/xorg_server_ver=${XORG_SERVER_VER}//;t skipserver" \
+    -e "s/xorg_server_ver=//;t" \
+    -e ":skipserver" \
+    -e 's/xenio//;t' \
+    -e 's,\.\([^ 	]*\).*,${DESTDIR}\1,;p;}' ${SETFILES}
 DEPFILES != (${DEPFILEGLOB}; echo ${EXTRAS}) | xargs egrep -l '(_IO\(|_IOR\(|_IOW\(|_IOWR\()' 2>/dev/null || :
 .endif
 
-${PROG}-ioctl.c: mkioctls Makefile ${DEPFILES} ${SETFILES}
-	${_MKTARGET_CREATE}
-	AWK=${TOOL_AWK:Q} CC="${CC}" DESTDIR="${DESTDIR}" SED=${TOOL_SED:Q} \
-	    ${HOST_SH} ${NETBSDSRCDIR}/usr.bin/kdump/mkioctls \
-	    ${DEPFILES} >${.TARGET}
 
 SRCS+=		${PROG}-ioctl.c
 CLEANFILES+=	${PROG}-ioctl.c
@@ -41,11 +42,13 @@ DPSRCS+=	${PROG}-ioctl.c
 CPPFLAGS+=	-I${DESTDIR}/usr/X11R7/include/libdrm
 CPPFLAGS+=	-I${DESTDIR}/usr/X11R7/include/pixman-1
 CPPFLAGS+=	-I${DESTDIR}/usr/X11R7/include
+CPPFLAGS+=	-I${NETBSDSRCDIR}/sys/external/bsd/libnv/dist
 .if ${MKDTRACE} != "no"
 CPPFLAGS+=	-I${NETBSDSRCDIR}/external/cddl/osnet/sys
 CPPFLAGS+=	-I${NETBSDSRCDIR}/external/cddl/osnet/dist/uts/common
-CPPFLAGS+=	-D_DEV_IC_BT8XX_H_
+CWARNFLAGS+=	-Wno-unknown-pragmas
 .endif
+CPPFLAGS+=	-D_DEV_IC_BT8XX_H_
 CPPFLAGS+=	-D_ALTQ_ALTQ_JOBS_H_	# redefinition of inline
 # De-select one, dup ioctls
 CPPFLAGS+=	-D_VIA_DRM_H_		# Missing header
@@ -57,5 +60,12 @@ CPPFLAGS+=	-D__SAVAGE_DRM_H__	# Dup ioctls
 CPPFLAGS+=	-D__RADEON_DRM_H__	# Dup ioctls
 CPPFLAGS+=	-D__MACH64_DRM_H__	# Dup ioctls
 CPPFLAGS+=	-D__MGA_DRM_H__		# Dup ioctls
+
+${PROG}-ioctl.c: mkioctls Makefile ${DEPFILES} ${SETFILES}
+	${_MKTARGET_CREATE}
+	AWK=${TOOL_AWK:q} CC=${CC:q} DESTDIR=${DESTDIR:q} SED=${TOOL_SED:q} \
+	    NETBSDSRCDIR=${NETBSDSRCDIR:q} CPPFLAGS=${CPPFLAGS:q} \
+	    ${HOST_SH} ${NETBSDSRCDIR}/usr.bin/kdump/mkioctls \
+	    ${DEPFILES} >${.TARGET}
 
 ${DEPFILES}: .PRECIOUS

@@ -1,4 +1,4 @@
-# $NetBSD: Makefile,v 1.9 2016/06/29 19:16:23 christos Exp $
+# $NetBSD: Makefile,v 1.11 2018/01/14 03:05:06 christos Exp $
 
 .include "${.CURDIR}/../Makefile.inc"
 
@@ -21,19 +21,24 @@ hostapd.c \
 ieee802_11_auth.c \
 ieee802_11_shared.c \
 ieee802_1x.c \
+neighbor_db.c \
 peerkey_auth.c \
 pmksa_cache_auth.c \
 preauth_auth.c \
+rrm.c \
 sta_info.c \
 tkip_countermeasures.c \
 utils.c \
+vlan_ifconfig.c \
 vlan_init.c \
+vlan.c \
 wpa_auth.c \
 wpa_auth_glue.c \
 wpa_auth_ie.c
 
 # common
 SRCS+= \
+ctrl_iface_common.c \
 hw_features_common.c \
 ieee802_11_common.c \
 wpa_common.c \
@@ -42,6 +47,8 @@ wpa_ctrl.c
 # drivers
 SRCS+= \
 driver_bsd.c \
+driver_none.c \
+driver_wired.c \
 driver_common.c \
 drivers.c
 
@@ -91,6 +98,7 @@ sha1-prf.c
 
 # crypto for non-openssl
 NO_SRCS+= \
+aes-cbc.c \
 aes-wrap.c \
 md5.c
 
@@ -111,6 +119,9 @@ CPPFLAGS+= -DRADIUS_SERVER
 CPPFLAGS+= -DCONFIG_CTRL_IFACE
 CPPFLAGS+= -DCONFIG_CTRL_IFACE_UNIX
 CPPFLAGS+= -DCONFIG_DRIVER_BSD
+CPPFLAGS+= -DCONFIG_DRIVER_NONE
+CPPFLAGS+= -DCONFIG_DRIVER_WIRED
+CPPFLAGS+= -DCONFIG_DRIVER_WPA
 .if ${MKINET6} != "no"
 CPPFLAGS+= -DCONFIG_IPV6
 .endif
@@ -144,7 +155,6 @@ CPPFLAGS+= -DPKCS12_FUNCS
 
 # crypto
 SRCS+= \
-aes-cbc.c \
 aes-ctr.c \
 aes-eax.c \
 aes-encblock.c \

@@ -1,4 +1,4 @@
-#	$NetBSD: genassym.cf,v 1.74 2015/06/09 08:09:24 skrll Exp $
+#	$NetBSD: genassym.cf,v 1.80 2018/10/18 09:01:52 skrll Exp $
 
 # Copyright (c) 1982, 1990 The Regents of the University of California.
 # All rights reserved.
@@ -94,19 +94,14 @@ define	KERNEL_BASE		KERNEL_BASE
 define	VM_MIN_ADDRESS		VM_MIN_ADDRESS
 define	VM_MAXUSER_ADDRESS	VM_MAXUSER_ADDRESS
 
-define	DCACHE_LINE_SIZE	offsetof(struct arm_cache_info, dcache_line_size)
-
 define	PV_PA			offsetof(pv_addr_t, pv_pa)
 define	PMAP_DOMAIN_KERNEL	PMAP_DOMAIN_KERNEL
 define	DOMAIN_CLIENT		DOMAIN_CLIENT
-ifdef ARM_MMU_EXTENDED
-define	DOMAIN_DEFAULT		((DOMAIN_CLIENT << (PMAP_DOMAIN_KERNEL*2)) | (DOMAIN_CLIENT << (PMAP_DOMAIN_USER*2)))
-else
-define	DOMAIN_DEFAULT		((DOMAIN_CLIENT << (PMAP_DOMAIN_KERNEL*2)) | DOMAIN_CLIENT)
-endif
+define	DOMAIN_DEFAULT		DOMAIN_DEFAULT
 
 define	L1_S_PROTO_generic	L1_S_PROTO_generic
 define	L1_S_PROTO_armv7	L1_S_PROTO_armv7
+
 define	L1_S_PROTO_xscale	L1_S_PROTO_xscale
 if ARM_NMMUS == 1
 define	L1_S_PROTO		L1_S_PROTO
@@ -150,6 +145,14 @@ define	PAGE_SIZE		PAGE_SIZE
 define	UPAGES			UPAGES
 define	PGSHIFT			PGSHIFT
 
+define	MAXCPUS			MAXCPUS
+
+#define	PSR_HYP32_MODE		PSR_HYP32_MODE
+#define	PSR_SVC32_MODE		PSR_SVC32_MODE
+#define	PSR_MODE		PSR_MODE
+#define	CPU_CONTROL_DC_ENABLE	CPU_CONTROL_DC_ENABLE
+#define	TTBCR_S_PD0		TTBCR_S_PD0
+
 # Important offsets into the lwp and proc structs & associated constants
 define	L_PCB			offsetof(struct lwp, l_addr)
 define	L_CPU			offsetof(struct lwp, l_cpu)
@@ -168,15 +171,15 @@ define	LW_SYSTEM		LW_SYSTEM
 
 define	P_RASLIST		offsetof(struct proc, p_raslist)
 
-define	PCB_R8			offsetof(struct pcb, pcb_un.un_32.pcb32_r8)
-define	PCB_R9			offsetof(struct pcb, pcb_un.un_32.pcb32_r9)
-define	PCB_R10			offsetof(struct pcb, pcb_un.un_32.pcb32_r10)
-define	PCB_R11			offsetof(struct pcb, pcb_un.un_32.pcb32_r11)
-define	PCB_R12			offsetof(struct pcb, pcb_un.un_32.pcb32_r12)
-define	PCB_KSP			offsetof(struct pcb, pcb_un.un_32.pcb32_sp)
-define	PCB_LR			offsetof(struct pcb, pcb_un.un_32.pcb32_lr)
-define	PCB_PC			offsetof(struct pcb, pcb_un.un_32.pcb32_pc)
-define	PCB_USER_PID_RW		offsetof(struct pcb, pcb_un.un_32.pcb32_user_pid_rw)
+define	PCB_R8			offsetof(struct pcb, pcb_r8)
+define	PCB_R9			offsetof(struct pcb, pcb_r9)
+define	PCB_R10			offsetof(struct pcb, pcb_r10)
+define	PCB_R11			offsetof(struct pcb, pcb_r11)
+define	PCB_R12			offsetof(struct pcb, pcb_r12)
+define	PCB_KSP			offsetof(struct pcb, pcb_sp)
+define	PCB_LR			offsetof(struct pcb, pcb_lr)
+define	PCB_PC			offsetof(struct pcb, pcb_pc)
+define	PCB_USER_PID_RW		offsetof(struct pcb, pcb_user_pid_rw)
 define	PCB_ONFAULT		offsetof(struct pcb, pcb_onfault)
 define	PCB_VFP_FPEXC		offsetof(struct pcb, pcb_vfp.vfp_fpexc)
 
@@ -246,8 +249,12 @@ define	VFP_FPEXC_EN		VFP_FPEXC_EN
 define	NSACR_VFPCP		NSACR_CPn(VFP_COPROC)|NSACR_CPn(VFP_COPROC2)
 
 # Constants required for in_cksum() and friends.
-define	M_LEN				offsetof(struct mbuf, m_len)
-define	M_DATA				offsetof(struct mbuf, m_data)
-define	M_NEXT				offsetof(struct mbuf, m_next)
-define	IP_SRC				offsetof(struct ip, ip_src)
-define	IP_DST				offsetof(struct ip, ip_dst)
+define	M_LEN			offsetof(struct mbuf, m_len)
+define	M_DATA			offsetof(struct mbuf, m_data)
+define	M_NEXT			offsetof(struct mbuf, m_next)
+define	IP_SRC			offsetof(struct ip, ip_src)
+define	IP_DST			offsetof(struct ip, ip_dst)
+
+# Cache information
+define	DCACHE_LINE_SIZE	offsetof(struct arm_cache_info, dcache_line_size)
+define	DCACHE_SIZE		offsetof(struct arm_cache_info, dcache_size)

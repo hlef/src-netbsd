@@ -1,5 +1,3 @@
-/*	$NetBSD: npf_conndb.c,v 1.2 2014/07/23 01:25:34 rmind Exp $	*/
-
 /*-
  * Copyright (c) 2010-2014 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -33,8 +31,9 @@
  * NPF connection storage.
  */
 
+#ifdef _KERNEL
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: npf_conndb.c,v 1.2 2014/07/23 01:25:34 rmind Exp $");
+__KERNEL_RCSID(0, "$NetBSD: npf_conndb.c,v 1.4 2018/09/29 14:41:36 rmind Exp $");
 
 #include <sys/param.h>
 #include <sys/types.h>
@@ -43,6 +42,7 @@ __KERNEL_RCSID(0, "$NetBSD: npf_conndb.c,v 1.2 2014/07/23 01:25:34 rmind Exp $")
 #include <sys/cprng.h>
 #include <sys/hash.h>
 #include <sys/kmem.h>
+#endif
 
 #define __NPF_CONN_PRIVATE
 #include "npf_conn.h"
@@ -62,6 +62,7 @@ struct npf_conndb {
 	npf_conn_t *		cd_list;
 	npf_conn_t *		cd_tail;
 	uint32_t		cd_seed;
+	void *			cd_tree;
 	npf_hashbucket_t	cd_hashtbl[];
 };
 
@@ -194,7 +195,7 @@ npf_conndb_insert(npf_conndb_t *cd, npf_connkey_t *key, npf_conn_t *con)
  * it represents.
  */
 npf_conn_t *
-npf_conndb_remove(npf_conndb_t *cd, const npf_connkey_t *key)
+npf_conndb_remove(npf_conndb_t *cd, npf_connkey_t *key)
 {
 	npf_hashbucket_t *hb = conndb_hash_bucket(cd, key);
 	npf_connkey_t *foundkey;

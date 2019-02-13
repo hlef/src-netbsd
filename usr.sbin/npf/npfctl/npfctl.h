@@ -1,7 +1,5 @@
-/*	$NetBSD: npfctl.h,v 1.39 2014/12/26 22:44:54 christos Exp $	*/
-
 /*-
- * Copyright (c) 2009-2013 The NetBSD Foundation, Inc.
+ * Copyright (c) 2009-2017 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
  * This material is based upon work partially supported by The
@@ -78,6 +76,8 @@ typedef struct addr_port {
 typedef struct filt_opts {
 	addr_port_t	fo_from;
 	addr_port_t	fo_to;
+	bool		fo_finvert;
+	bool		fo_tinvert;
 } filt_opts_t;
 
 typedef struct opt_proto {
@@ -110,20 +110,22 @@ void		npfctl_bpfjit(bool);
 void		npfctl_parse_file(const char *);
 void		npfctl_parse_string(const char *);
 
-void		npfctl_print_error(const nl_error_t *);
-char *		npfctl_print_addrmask(int, const npf_addr_t *, npf_netmask_t);
+void		npfctl_print_error(const npf_error_t *);
+char *		npfctl_print_addrmask(int, const char *, const npf_addr_t *,
+		    npf_netmask_t);
 void		npfctl_note_interface(const char *);
 unsigned	npfctl_table_getid(const char *);
 int		npfctl_protono(const char *);
 in_port_t	npfctl_portno(const char *);
 uint8_t		npfctl_icmpcode(int, uint8_t, const char *);
 uint8_t		npfctl_icmptype(int, const char *);
+npfvar_t *	npfctl_ifnet_table(const char *);
 npfvar_t *	npfctl_parse_ifnet(const char *, const int);
 npfvar_t *	npfctl_parse_tcpflag(const char *);
 npfvar_t *	npfctl_parse_table_id(const char *);
 npfvar_t * 	npfctl_parse_icmp(int, int, int);
 npfvar_t *	npfctl_parse_port_range(in_port_t, in_port_t);
-npfvar_t *	npfctl_parse_port_range_variable(const char *);
+npfvar_t *	npfctl_parse_port_range_variable(const char *, npfvar_t *);
 npfvar_t *	npfctl_parse_fam_addr_mask(const char *, const char *,
 		    unsigned long *);
 bool		npfctl_parse_cidr(char *, fam_addr_mask_t *, int *);
@@ -148,6 +150,7 @@ typedef struct npf_bpf npf_bpf_t;
 
 #define	MATCH_DST	0x01
 #define	MATCH_SRC	0x02
+#define	MATCH_INVERT	0x04
 
 enum {
 	BM_IPVER, BM_PROTO, BM_SRC_CIDR, BM_SRC_TABLE, BM_DST_CIDR,
@@ -161,7 +164,7 @@ const void *	npfctl_bpf_bmarks(npf_bpf_t *, size_t *);
 void		npfctl_bpf_destroy(npf_bpf_t *);
 
 void		npfctl_bpf_group(npf_bpf_t *);
-void		npfctl_bpf_endgroup(npf_bpf_t *);
+void		npfctl_bpf_endgroup(npf_bpf_t *, bool);
 
 void		npfctl_bpf_proto(npf_bpf_t *, sa_family_t, int);
 void		npfctl_bpf_cidr(npf_bpf_t *, u_int, sa_family_t,
@@ -179,9 +182,13 @@ void		npfctl_bpf_table(npf_bpf_t *, u_int, u_int);
 #define	NPFCTL_NAT_STATIC	2
 
 void		npfctl_config_init(bool);
-int		npfctl_config_send(int, const char *);
+int		npfctl_config_send(int);
 nl_config_t *	npfctl_config_ref(void);
 int		npfctl_config_show(int);
+void		npfctl_config_save(nl_config_t *, const char *);
+void		npfctl_config_debug(const char *);
+
+void		npfctl_show_init(void);
 int		npfctl_ruleset_show(int, const char *);
 
 nl_rule_t *	npfctl_rule_ref(void);
@@ -194,10 +201,20 @@ void		npfctl_build_group_end(void);
 void		npfctl_build_rule(uint32_t, const char *, sa_family_t,
 		    const opt_proto_t *, const filt_opts_t *,
 		    const char *, const char *);
-void		npfctl_build_natseg(int, int, const char *,
+void		npfctl_build_natseg(int, int, unsigned, const char *,
 		    const addr_port_t *, const addr_port_t *,
-		    const filt_opts_t *, unsigned);
+		    const opt_proto_t *, const filt_opts_t *, unsigned);
 void		npfctl_build_maprset(const char *, int, const char *);
 void		npfctl_build_table(const char *, u_int, const char *);
+
+/*
+ * For the systems which do not define TH_ECE and TW_CRW.
+ */
+#ifndef TH_ECE
+#define	TH_ECE	  0x40
+#endif
+#ifndef TH_CWR
+#define	TH_CWR	  0x80
+#endif
 
 #endif

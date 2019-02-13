@@ -1,4 +1,4 @@
-/*	$NetBSD: uvm_aobj.c,v 1.124 2016/07/28 07:52:06 martin Exp $	*/
+/*	$NetBSD: uvm_aobj.c,v 1.127 2018/05/28 21:04:35 chs Exp $	*/
 
 /*
  * Copyright (c) 1998 Chuck Silvers, Charles D. Cranor and
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uvm_aobj.c,v 1.124 2016/07/28 07:52:06 martin Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uvm_aobj.c,v 1.127 2018/05/28 21:04:35 chs Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_uvmhist.h"
@@ -288,8 +288,8 @@ uao_set_swslot(struct uvm_object *uobj, int pageidx, int slot)
 	struct uao_swhash_elt *elt;
 	int oldslot;
 	UVMHIST_FUNC("uao_set_swslot"); UVMHIST_CALLED(pdhist);
-	UVMHIST_LOG(pdhist, "aobj %p pageidx %d slot %d",
-	    aobj, pageidx, slot, 0);
+	UVMHIST_LOG(pdhist, "aobj %#jx pageidx %jd slot %jd",
+	    (uintptr_t)aobj, pageidx, slot, 0);
 
 	KASSERT(mutex_owned(uobj->vmobjlock) || uobj->uo_refs == 0);
 
@@ -408,12 +408,12 @@ uao_free(struct uvm_aobj *aobj)
  */
 
 struct uvm_object *
-uao_create(vsize_t size, int flags)
+uao_create(voff_t size, int flags)
 {
 	static struct uvm_aobj kernel_object_store;
 	static kmutex_t kernel_object_lock;
 	static int kobj_alloced __diagused = 0;
-	pgoff_t pages = round_page(size) >> PAGE_SHIFT;
+	pgoff_t pages = round_page((uint64_t)size) >> PAGE_SHIFT;
 	struct uvm_aobj *aobj;
 	int refs;
 
@@ -590,7 +590,9 @@ uao_detach(struct uvm_object *uobj)
 	 * Drop the reference.  If it was the last one, destroy the object.
 	 */
 
-	UVMHIST_LOG(maphist,"  (uobj=0x%x)  ref=%d", uobj,uobj->uo_refs,0,0);
+	KASSERT(uobj->uo_refs > 0);
+	UVMHIST_LOG(maphist,"  (uobj=0x%#jx)  ref=%jd",
+	    (uintptr_t)uobj, uobj->uo_refs, 0, 0);
 	if (atomic_dec_uint_nv(&uobj->uo_refs) > 0) {
 		UVMHIST_LOG(maphist, "<- done (rc>0)", 0,0,0,0);
 		return;
@@ -698,16 +700,18 @@ uao_put(struct uvm_object *uobj, voff_t start, voff_t stop, int flags)
 		} else {
 			stop = round_page(stop);
 		}
-		if (stop > (aobj->u_pages << PAGE_SHIFT)) {
-			printf("uao_flush: strange, got an out of range "
-			    "flush (fixed)\n");
+		if (stop > (uint64_t)(aobj->u_pages << PAGE_SHIFT)) {
+			printf("uao_put: strange, got an out of range "
+			    "flush 0x%jx > 0x%jx (fixed)\n",
+			    (uintmax_t)stop,
+			    (uintmax_t)(aobj->u_pages << PAGE_SHIFT));
 			stop = aobj->u_pages << PAGE_SHIFT;
 		}
 		by_list = (uobj->uo_npages <=
 		    ((stop - start) >> PAGE_SHIFT) * UVM_PAGE_TREE_PENALTY);
 	}
 	UVMHIST_LOG(maphist,
-	    " flush start=0x%lx, stop=0x%x, by_list=%d, flags=0x%x",
+	    " flush start=0x%jx, stop=0x%jx, by_list=%jd, flags=0x%jx",
 	    start, stop, by_list, flags);
 
 	/*
@@ -873,8 +877,8 @@ uao_get(struct uvm_object *uobj, voff_t offset, struct vm_page **pps,
 	bool done;
 	UVMHIST_FUNC("uao_get"); UVMHIST_CALLED(pdhist);
 
-	UVMHIST_LOG(pdhist, "aobj=%p offset=%d, flags=%d",
-		    (struct uvm_aobj *)uobj, offset, flags,0);
+	UVMHIST_LOG(pdhist, "aobj=%#jx offset=%jd, flags=%jd",
+		    (uintptr_t)uobj, offset, flags,0);
 
 	/*
  	 * get number of pages
@@ -950,7 +954,7 @@ gotpage:
 		 * to unlock and do some waiting or I/O.
  		 */
 
-		UVMHIST_LOG(pdhist, "<- done (done=%d)", done, 0,0,0);
+		UVMHIST_LOG(pdhist, "<- done (done=%jd)", done, 0,0,0);
 		*npagesp = gotpages;
 		if (done)
 			return 0;
@@ -1036,7 +1040,7 @@ gotpage:
 			if ((ptmp->flags & PG_BUSY) != 0) {
 				ptmp->flags |= PG_WANTED;
 				UVMHIST_LOG(pdhist,
-				    "sleeping, ptmp->flags 0x%x\n",
+				    "sleeping, ptmp->flags 0x%jx\n",
 				    ptmp->flags,0,0,0);
 				UVM_UNLOCK_AND_WAIT(ptmp, uobj->vmobjlock,
 				    false, "uao_get", 0);
@@ -1087,7 +1091,7 @@ gotpage:
 #if defined(VMSWAP)
 			int error;
 
-			UVMHIST_LOG(pdhist, "pagein from swslot %d",
+			UVMHIST_LOG(pdhist, "pagein from swslot %jd",
 			     swslot, 0,0,0);
 
 			/*
@@ -1104,7 +1108,7 @@ gotpage:
 			 */
 
 			if (error != 0) {
-				UVMHIST_LOG(pdhist, "<- done (error=%d)",
+				UVMHIST_LOG(pdhist, "<- done (error=%jd)",
 				    error,0,0,0);
 				if (ptmp->flags & PG_WANTED)
 					wakeup(ptmp);

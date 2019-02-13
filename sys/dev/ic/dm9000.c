@@ -1,4 +1,4 @@
-/*	$NetBSD: dm9000.c,v 1.10 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: dm9000.c,v 1.15 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 2009 Paul Fleischer
@@ -102,13 +102,12 @@
 #include <net/if.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
+#include <net/bpf.h>
+
 #ifdef INET
 #include <netinet/in.h>
 #include <netinet/if_inarp.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 #include <sys/intr.h>
@@ -651,8 +650,7 @@ dme_prepare(struct dme_softc *sc, struct ifnet *ifp)
 
 	/* Element has now been removed from the queue, so we better send it */
 
-	if (ifp->if_bpf)
-		bpf_mtap(ifp, bufChain);
+	bpf_mtap(ifp, bufChain, BPF_D_OUT);
 
 	/* Setup the DM9000 to accept the writes, and then write each buf in
 	   the chain. */
@@ -824,9 +822,6 @@ dme_receive(struct dme_softc *sc, struct ifnet *ifp)
 			} else if (rx_status & DM9000_RSR_LCS) {
 				ifp->if_collisions++;
 			} else {
-				if (ifp->if_bpf)
-					bpf_mtap(ifp, m);
-				ifp->if_ipackets++;
 				if_percpuq_enqueue(ifp->if_percpuq, m);
 			}
 
@@ -1229,8 +1224,13 @@ dme_alloc_receive_buffer(struct ifnet *ifp, unsigned int frame_length)
 		sizeof(struct ether_header);
 	/* All our frames have the CRC attached */
 	m->m_flags |= M_HASFCS;
-	if (m->m_pkthdr.len + pad > MHLEN )
+	if (m->m_pkthdr.len + pad > MHLEN) {
 		MCLGET(m, M_DONTWAIT);
+		if ((m->m_flags & M_EXT) == 0) {
+			m_freem(m);
+			return NULL;
+		}
+	}
 
 	m->m_data += pad;
 	m->m_len = frame_length + (frame_length % sc->sc_data_width);

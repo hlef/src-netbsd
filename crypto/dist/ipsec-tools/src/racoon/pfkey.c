@@ -1,6 +1,6 @@
-/*	$NetBSD: pfkey.c,v 1.59 2012/11/29 15:31:25 vanhu Exp $	*/
+/*	$NetBSD: pfkey.c,v 1.61 2018/05/19 20:14:56 maxv Exp $	*/
 
-/* $Id: pfkey.c,v 1.59 2012/11/29 15:31:25 vanhu Exp $ */
+/* $Id: pfkey.c,v 1.61 2018/05/19 20:14:56 maxv Exp $ */
 
 /*
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
@@ -200,9 +200,7 @@ static int addnewsp __P((caddr_t *, struct sockaddr *, struct sockaddr *));
  *	-1: fail
  */
 static int
-pfkey_handler(ctx, fd)
-	void *ctx;
-	int fd;
+pfkey_handler(void *ctx, int fd)
 {
 	struct sadb_msg *msg;
 	int len;
@@ -3177,8 +3175,8 @@ migrate_ph2_one_isr(spid, isr_cur, xisr_old, xisr_new)
 
 	/* Then, verify reqid if necessary */
 	if (isr_cur->saidx.reqid &&
-	    (xisr_old->sadb_x_ipsecrequest_reqid != IPSEC_LEVEL_UNIQUE ||
-	     xisr_new->sadb_x_ipsecrequest_reqid != IPSEC_LEVEL_UNIQUE ||
+	    (xisr_old->sadb_x_ipsecrequest_level != IPSEC_LEVEL_UNIQUE ||
+	     xisr_new->sadb_x_ipsecrequest_level != IPSEC_LEVEL_UNIQUE ||
 	     isr_cur->saidx.reqid != xisr_old->sadb_x_ipsecrequest_reqid ||
 	     isr_cur->saidx.reqid != xisr_new->sadb_x_ipsecrequest_reqid))
 		return -1;

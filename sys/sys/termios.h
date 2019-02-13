@@ -1,4 +1,4 @@
-/*	$NetBSD: termios.h,v 1.32 2013/07/11 16:46:06 christos Exp $	*/
+/*	$NetBSD: termios.h,v 1.34 2017/10/25 06:32:59 kre Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1993, 1994
@@ -98,7 +98,7 @@
 #define	ICRNL		0x00000100U	/* map CR to NL (ala CRMOD) */
 #define	IXON		0x00000200U	/* enable output flow control */
 #define	IXOFF		0x00000400U	/* enable input flow control */
-#if defined(_NETBSD_SOURCE)
+#if defined(_XOPEN_SOURCE) || defined(_NETBSD_SOURCE)
 #define	IXANY		0x00000800U	/* any char will restart after stop */
 #endif
 #if defined(_NETBSD_SOURCE)
@@ -284,15 +284,17 @@ __END_DECLS
 
 #endif /* !_KERNEL */
 
-#if defined(_NETBSD_SOURCE)
-
 /*
  * Include tty ioctl's that aren't just for backwards compatibility
  * with the old tty driver.  These ioctl definitions were previously
- * in <sys/ioctl.h>.
+ * in <sys/ioctl.h>.   Most of this appears only when _NETBSD_SOURCE
+ * is defined, but (at least) struct winsize has been made standard,
+ * and needs to be visible here (as well as via the old <sys/ioctl.h>.)
  */
 #include <sys/ttycom.h>
-#endif
+
+int	tcgetwinsize(int, struct winsize *);
+int	tcsetwinsize(int, const struct winsize *);
 
 /*
  * END OF PROTECTED INCLUDE.

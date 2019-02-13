@@ -1,4 +1,4 @@
-/*	$NetBSD: cs89x0.c,v 1.37 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: cs89x0.c,v 1.41 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 2004 Christopher Gilbert
@@ -212,7 +212,7 @@
 */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: cs89x0.c,v 1.37 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: cs89x0.c,v 1.41 2018/06/26 06:48:00 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -231,13 +231,12 @@ __KERNEL_RCSID(0, "$NetBSD: cs89x0.c,v 1.37 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <net/if.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
+#include <net/bpf.h>
+
 #ifdef INET
 #include <netinet/in.h>
 #include <netinet/if_inarp.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 #include <sys/intr.h>
@@ -486,6 +485,7 @@ cs_attach(struct cs_softc *sc, u_int8_t *enaddr, int *media,
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr);
 
 	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
@@ -1583,11 +1583,8 @@ cs_transmit_event(struct cs_softc *sc, u_int16_t txEvent)
 	/* Transmission is no longer in progress */
 	sc->sc_txbusy = FALSE;
 
-	/* If there is more to transmit */
-	if (IFQ_IS_EMPTY(&ifp->if_snd) == 0) {
-		/* Start the next transmission */
-		cs_start_output(ifp);
-	}
+	/* If there is more to transmit, start the next transmission */
+	if_schedule_deferred_start(ifp);
 }
 
 void
@@ -1655,14 +1652,6 @@ void
 cs_ether_input(struct cs_softc *sc, struct mbuf *m)
 {
 	struct ifnet *ifp = &sc->sc_ethercom.ec_if;
-
-	ifp->if_ipackets++;
-
-	/*
-	 * Check if there's a BPF listener on this interface.
-	 * If so, hand off the raw packet to BPF.
-	 */
-	bpf_mtap(ifp, m);
 
 	/* Pass the packet up. */
 	if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -1915,7 +1904,7 @@ cs_start_output(struct ifnet *ifp)
 	         * If BPF is listening on this interface, let it see the packet
 	         * before we commit it to the wire.
 	         */
-		bpf_mtap(ifp, pMbufChain);
+		bpf_mtap(ifp, pMbufChain, BPF_D_OUT);
 
 		/* Find the total length of the data to transmit */
 		Length = 0;

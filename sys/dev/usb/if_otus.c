@@ -1,4 +1,4 @@
-/*	$NetBSD: if_otus.c,v 1.29 2016/06/10 13:27:15 ozaki-r Exp $	*/
+/*	$NetBSD: if_otus.c,v 1.35 2018/08/02 06:09:04 riastradh Exp $	*/
 /*	$OpenBSD: if_otus.c,v 1.18 2010/08/27 17:08:00 jsg Exp $	*/
 
 /*-
@@ -23,7 +23,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_otus.c,v 1.29 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_otus.c,v 1.35 2018/08/02 06:09:04 riastradh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/sockio.h>
@@ -697,7 +701,7 @@ otus_detach(device_t self, int flags)
 	if (ifp != NULL)	/* Failed to attach properly */
 		otus_stop(ifp);
 
-	usb_rem_task(sc->sc_udev, &sc->sc_task);
+	usb_rem_task_wait(sc->sc_udev, &sc->sc_task, USB_TASKQ_DRIVER, NULL);
 	callout_destroy(&sc->sc_scan_to);
 	callout_destroy(&sc->sc_calib_to);
 
@@ -998,11 +1002,6 @@ otus_open_pipes(struct otus_softc *sc)
 		goto fail;
 	}
 	sc->sc_ibuf = kmem_alloc(sc->sc_ibuf_size, KM_SLEEP);
-	if (sc->sc_ibuf == NULL) {
-		aprint_error_dev(sc->sc_dev,
-		    "could not allocate Rx intr buffer\n");
-		goto fail;
-	}
 	error = usbd_open_pipe_intr(sc->sc_iface, AR_EPT_INTR_RX_NO,
 	    USBD_SHORT_XFER_OK, &sc->sc_cmd_rx_pipe, sc, sc->sc_ibuf,
 	    sc->sc_ibuf_size, otus_intr, USBD_DEFAULT_INTERVAL);
@@ -1182,7 +1181,7 @@ otus_alloc_rx_data_list(struct otus_softc *sc)
 		data->sc = sc;	/* Backpointer for callbacks. */
 
 		error = usbd_create_xfer(sc->sc_data_rx_pipe, OTUS_RXBUFSZ,
-		    USBD_SHORT_XFER_OK, 0, &data->xfer);
+		   0, 0, &data->xfer);
 
 		if (error) {
 			aprint_error_dev(sc->sc_dev,
@@ -1813,7 +1812,7 @@ otus_sub_rxeof(struct otus_softc *sc, uint8_t *buf, int len)
 			}
 			break;
 		}
-		bpf_mtap2(sc->sc_drvbpf, tap, sc->sc_rxtap_len, m);
+		bpf_mtap2(sc->sc_drvbpf, tap, sc->sc_rxtap_len, m, BPF_D_IN);
 	}
 
 	ni = ieee80211_find_rxnode(ic, (struct ieee80211_frame_min *)wh);
@@ -2027,7 +2026,7 @@ otus_tx(struct otus_softc *sc, struct mbuf *m, struct ieee80211_node *ni,
 		tap->wt_chan_freq = htole16(ic->ic_curchan->ic_freq);
 		tap->wt_chan_flags = htole16(ic->ic_curchan->ic_flags);
 
-		bpf_mtap2(sc->sc_drvbpf, tap, sc->sc_txtap_len, m);
+		bpf_mtap2(sc->sc_drvbpf, tap, sc->sc_txtap_len, m, BPF_D_OUT);
 	}
 
 	xferlen = sizeof(*head) + m->m_pkthdr.len;
@@ -2118,7 +2117,7 @@ otus_start(struct ifnet *ifp)
 			continue;
 		}
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		if ((m = ieee80211_encap(ic, m, ni)) == NULL) {
 			/* original m was freed by ieee80211_encap() */
@@ -2127,7 +2126,7 @@ otus_start(struct ifnet *ifp)
 			continue;
 		}
  sendit:
-		bpf_mtap3(ic->ic_rawbpf, m);
+		bpf_mtap3(ic->ic_rawbpf, m, BPF_D_OUT);
 
 		if (otus_tx(sc, m, ni, data) != 0) {
 			m_freem(m);

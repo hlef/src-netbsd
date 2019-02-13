@@ -1,4 +1,4 @@
-/*	$NetBSD: awi.c,v 1.90 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: awi.c,v 1.94 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 1999,2000,2001 The NetBSD Foundation, Inc.
@@ -78,7 +78,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: awi.c,v 1.90 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: awi.c,v 1.94 2018/06/26 06:48:00 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -113,6 +113,7 @@ __KERNEL_RCSID(0, "$NetBSD: awi.c,v 1.90 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <dev/ic/awireg.h>
 #include <dev/ic/awivar.h>
 
+static void awi_softintr(void *);
 static int  awi_init(struct ifnet *);
 static void awi_stop(struct ifnet *, int);
 static void awi_start(struct ifnet *);
@@ -158,7 +159,7 @@ static struct mbuf *awi_ether_modcap(struct awi_softc *, struct mbuf *);
 	 (((u_int8_t *)(p))[2] = (((u_int32_t)(v) >> 16) & 0xff)),	\
 	 (((u_int8_t *)(p))[3] = (((u_int32_t)(v) >> 24) & 0xff)))
 
-struct awi_chanset awi_chanset[] = {
+static const struct awi_chanset awi_chanset[] = {
     /* PHY type        domain            min max def */
     { AWI_PHY_TYPE_FH, AWI_REG_DOMAIN_JP,  6, 17,  6 },
     { AWI_PHY_TYPE_FH, AWI_REG_DOMAIN_ES,  0, 26,  1 },
@@ -198,6 +199,12 @@ awi_attach(struct awi_softc *sc)
 	sc->sc_busy = 1;
 	sc->sc_attached = 0;
 	sc->sc_substate = AWI_ST_NONE;
+	sc->sc_soft_ih = softint_establish(SOFTINT_NET, awi_softintr, sc);
+	if (sc->sc_soft_ih == NULL) {
+		config_deactivate(sc->sc_dev);
+		splx(s);
+		return ENOMEM;
+	}
 	if ((error = awi_hw_init(sc)) != 0) {
 		config_deactivate(sc->sc_dev);
 		splx(s);
@@ -311,6 +318,7 @@ awi_detach(struct awi_softc *sc)
 	if_detach(ifp);
 	shutdownhook_disestablish(sc->sc_sdhook);
 	powerhook_disestablish(sc->sc_powerhook);
+	softint_disestablish(sc->sc_soft_ih);
 	splx(s);
 	return 0;
 }
@@ -349,7 +357,7 @@ awi_power(int why, void *arg)
 	case PWR_RESUME:
 		if (ifp->if_flags & IFF_UP) {
 			awi_init(ifp);
-			(void)awi_intr(sc);	/* make sure */
+			awi_softintr(sc);	/* make sure */
 		}
 		break;
 	case PWR_SOFTSUSPEND:
@@ -375,16 +383,6 @@ int
 awi_intr(void *arg)
 {
 	struct awi_softc *sc = arg;
-	u_int16_t status;
-	int handled = 0, ocansleep;
-#ifdef AWI_DEBUG
-	static const char *intname[] = {
-	    "CMD", "RX", "TX", "SCAN_CMPLT",
-	    "CFP_START", "DTIM", "CFP_ENDING", "GROGGY",
-	    "TXDATA", "TXBCAST", "TXPS", "TXCF",
-	    "TXMGT", "#13", "RXDATA", "RXMGT"
-	};
-#endif
 
 	if (!sc->sc_enabled || !sc->sc_enab_intr ||
 	    !device_is_active(sc->sc_dev)) {
@@ -395,6 +393,27 @@ awi_intr(void *arg)
 		return 0;
 	}
 
+	softint_schedule(sc->sc_soft_ih);
+	return 1;
+}
+
+static void
+awi_softintr(void *arg)
+{
+	struct awi_softc *sc = arg;
+	u_int16_t status;
+	int ocansleep;
+	int s;
+#ifdef AWI_DEBUG
+	static const char *intname[] = {
+	    "CMD", "RX", "TX", "SCAN_CMPLT",
+	    "CFP_START", "DTIM", "CFP_ENDING", "GROGGY",
+	    "TXDATA", "TXBCAST", "TXPS", "TXCF",
+	    "TXMGT", "#13", "RXDATA", "RXMGT"
+	};
+#endif
+
+	s = splnet();
 	am79c930_gcr_setbits(&sc->sc_chip,
 	    AM79C930_GCR_DISPWDN | AM79C930_GCR_ECINT);
 	awi_write_1(sc, AWI_DIS_PWRDN, 1);
@@ -428,7 +447,6 @@ awi_intr(void *arg)
 			printf("\n");
 		}
 #endif
-		handled = 1;
 		if (status & AWI_INT_RX)
 			awi_rx_int(sc);
 		if (status & AWI_INT_TX)
@@ -441,10 +459,11 @@ awi_intr(void *arg)
 				ieee80211_next_scan(&sc->sc_ic);
 		}
 	}
+
 	sc->sc_cansleep = ocansleep;
 	am79c930_gcr_clearbits(&sc->sc_chip, AM79C930_GCR_DISPWDN);
 	awi_write_1(sc, AWI_DIS_PWRDN, 0);
-	return handled;
+	splx(s);
 }
 
 
@@ -694,7 +713,7 @@ awi_start(struct ifnet *ifp)
 			}
 			IFQ_DEQUEUE(&ifp->if_snd, m0);
 			ifp->if_opackets++;
-			bpf_mtap(ifp, m0);
+			bpf_mtap(ifp, m0, BPF_D_OUT);
 			eh = mtod(m0, struct ether_header *);
 			ni = ieee80211_find_txnode(ic, eh->ether_dhost);
 			if (ni == NULL) {
@@ -725,7 +744,7 @@ awi_start(struct ifnet *ifp)
 				continue;
 			}
 		}
-		bpf_mtap3(ic->ic_rawbpf, m0);
+		bpf_mtap3(ic->ic_rawbpf, m0, BPF_D_OUT);
 		if (dowep) {
 			if ((ieee80211_crypto_encap(ic, ni, m0)) == NULL) {
 				m_freem(m0);
@@ -1154,7 +1173,7 @@ awi_tx_int(struct awi_softc *sc)
 	    sc->sc_txdone, sc->sc_txnext, sc->sc_txbase, sc->sc_txend));
 	sc->sc_tx_timer = 0;
 	ifp->if_flags &= ~IFF_OACTIVE;
-	awi_start(ifp);
+	awi_start(ifp); /* in softint */
 }
 
 static struct mbuf *
@@ -1339,7 +1358,7 @@ awi_init_mibs(struct awi_softc *sc)
 {
 	int chan, i, error;
 	struct ieee80211com *ic = &sc->sc_ic;
-	struct awi_chanset *cs;
+	const struct awi_chanset *cs;
 
 	if ((error = awi_mib(sc, AWI_CMD_GET_MIB, AWI_MIB_LOCAL, AWI_WAIT)) ||
 	    (error = awi_mib(sc, AWI_CMD_GET_MIB, AWI_MIB_ADDR, AWI_WAIT)) ||

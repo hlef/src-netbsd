@@ -1,4 +1,4 @@
-/*	$NetBSD: uscanner.c,v 1.78 2016/07/11 11:31:51 msaitoh Exp $	*/
+/*	$NetBSD: uscanner.c,v 1.83 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*
  * Copyright (c) 2000 The NetBSD Foundation, Inc.
@@ -32,7 +32,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uscanner.c,v 1.78 2016/07/11 11:31:51 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uscanner.c,v 1.83 2018/09/03 16:29:34 riastradh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -373,7 +377,7 @@ uscanneropen(dev_t dev, int flag, int mode, struct lwp *l)
 	if (sc == NULL)
 		return ENXIO;
 
- 	DPRINTFN(5, ("uscanneropen: flag=%d, mode=%d, unit=%d\n",
+	DPRINTFN(5, ("uscanneropen: flag=%d, mode=%d, unit=%d\n",
 		     flag, mode, unit));
 
 	if (sc->sc_dying)
@@ -410,7 +414,7 @@ uscanneropen(dev_t dev, int flag, int mode, struct lwp *l)
 	}
 
 	int error = usbd_create_xfer(sc->sc_bulkin_pipe, USCANNER_BUFFERSIZE,
-	    USBD_SHORT_XFER_OK, 0, &sc->sc_bulkin_xfer);
+	    0, 0, &sc->sc_bulkin_xfer);
 	if (error) {
 		uscanner_do_close(sc);
 		return error;
@@ -502,7 +506,7 @@ uscanner_do_read(struct uscanner_softc *sc, struct uio *uio, int flag)
 	if (sc->sc_dying)
 		return EIO;
 
-	while ((n = min(sc->sc_bulkin_bufferlen, uio->uio_resid)) != 0) {
+	while ((n = uimin(sc->sc_bulkin_bufferlen, uio->uio_resid)) != 0) {
 		DPRINTFN(1, ("uscannerread: start transfer %d bytes\n",n));
 		tn = n;
 
@@ -555,7 +559,7 @@ uscanner_do_write(struct uscanner_softc *sc, struct uio *uio, int flag)
 	if (sc->sc_dying)
 		return EIO;
 
-	while ((n = min(sc->sc_bulkout_bufferlen, uio->uio_resid)) != 0) {
+	while ((n = uimin(sc->sc_bulkout_bufferlen, uio->uio_resid)) != 0) {
 		error = uiomove(sc->sc_bulkout_buffer, n, uio);
 		if (error)
 			break;
@@ -672,8 +676,12 @@ filt_uscannerdetach(struct knote *kn)
 	SLIST_REMOVE(&sc->sc_selq.sel_klist, kn, knote, kn_selnext);
 }
 
-static const struct filterops uscanner_seltrue_filtops =
-	{ 1, NULL, filt_uscannerdetach, filt_seltrue };
+static const struct filterops uscanner_seltrue_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_uscannerdetach,
+	.f_event = filt_seltrue,
+};
 
 int
 uscannerkqfilter(dev_t dev, struct knote *kn)

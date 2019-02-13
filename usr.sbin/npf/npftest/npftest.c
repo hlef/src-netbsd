@@ -1,4 +1,4 @@
-/*	$NetBSD: npftest.c,v 1.19 2016/01/25 12:24:41 pooka Exp $	*/
+/*	$NetBSD: npftest.c,v 1.22 2018/09/29 14:41:36 rmind Exp $	*/
 
 /*
  * NPF testing framework.
@@ -16,14 +16,18 @@
 #include <err.h>
 
 #include <sys/mman.h>
+#include <sys/stat.h>
+#if !defined(_NPF_STANDALONE)
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <arpa/inet.h>
 
-#include <prop/proplib.h>
+#include <dnv.h>
+#include <nv.h>
 
 #include <rump/rump.h>
 #include <rump/rump_syscalls.h>
+#endif
 
 #include <cdbw.h>
 
@@ -32,7 +36,7 @@
 static bool verbose, quiet;
 
 __dead static void
-usage(void)
+usage(const char *progname)
 {
 	printf("usage:\n"
 	    "  %s [ -q | -v ] [ -c <config> ] "
@@ -49,7 +53,7 @@ usage(void)
 	    "\t-L: list testnames and description for -T\n"
 	    "\t-q: quiet mode\n"
 	    "\t-v: verbose mode\n",
-	    getprogname(), getprogname(), getprogname());
+	    progname, progname, progname);
 	exit(EXIT_FAILURE);
 }
 
@@ -78,51 +82,40 @@ result(const char *testcase, bool ok)
 }
 
 static void
-load_npf_config_ifs(prop_dictionary_t dbg_dict)
+load_npf_config(const char *fpath)
 {
-	prop_array_t iflist = prop_dictionary_get(dbg_dict, "interfaces");
-	prop_object_iterator_t it = prop_array_iterator(iflist);
-	prop_dictionary_t ifdict;
+	struct stat sb;
+	int error, fd;
+	size_t len;
+	void *buf;
 
-	while ((ifdict = prop_object_iterator_next(it)) != NULL) {
-		const char *ifname = NULL;
-
-		prop_dictionary_get_cstring_nocopy(ifdict, "name", &ifname);
-		(void)rumpns_npf_test_addif(ifname, true, verbose);
+	/*
+	 * Read the configuration from the specified file.
+	 */
+	if ((fd = open(fpath, O_RDONLY)) == -1) {
+		err(EXIT_FAILURE, "open");
 	}
-	prop_object_iterator_release(it);
-}
-
-static void
-load_npf_config(const char *config)
-{
-	prop_dictionary_t npf_dict, dbg_dict;
-	void *xml;
-	int error;
-
-	/* Read the configuration from the specified file. */
-	npf_dict = prop_dictionary_internalize_from_file(config);
-	if (!npf_dict) {
-		err(EXIT_FAILURE, "prop_dictionary_internalize_from_file");
+	if (fstat(fd, &sb) == -1) {
+		err(EXIT_FAILURE, "fstat");
 	}
-	xml = prop_dictionary_externalize(npf_dict);
-
-	/* Inspect the debug data.  Create the interfaces, if any. */
-	dbg_dict = prop_dictionary_get(npf_dict, "debug");
-	if (dbg_dict) {
-		load_npf_config_ifs(dbg_dict);
+	len = sb.st_size;
+	buf = mmap(NULL, len, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
+	if (buf == MAP_FAILED) {
+		err(EXIT_FAILURE, "mmap");
 	}
-	prop_object_release(npf_dict);
+	close(fd);
 
-	/* Pass the XML configuration for NPF kernel component to load. */
-	error = rumpns_npf_test_load(xml);
+	/*
+	 * Load the NPF configuration.
+	 */
+	error = rumpns_npf_test_load(buf, len, verbose);
 	if (error) {
-		errx(EXIT_FAILURE, "npf_test_load: %s", strerror(error));
+		errx(EXIT_FAILURE, "npf_test_load: %s\n", strerror(error));
 	}
-	free(xml);
+	munmap(buf, len);
 
 	if (verbose) {
-		printf("Loaded NPF config at '%s'\n", config);
+		printf("Loaded NPF config at '%s'\n", fpath);
 	}
 }
 
@@ -169,6 +162,27 @@ generate_test_cdb(size_t *size)
 
 	*size = sb.st_size;
 	return cdb;
+}
+
+static void
+npf_kern_init(void)
+{
+#if !defined(_NPF_STANDALONE)
+	/* XXX rn_init */
+	extern int rumpns_max_keylen;
+	rumpns_max_keylen = 1;
+
+	rump_init();
+	rump_schedule();
+#endif
+}
+
+static void
+npf_kern_fini(void)
+{
+#if !defined(_NPF_STANDALONE)
+	rump_unschedule();
+#endif
 }
 
 int
@@ -226,14 +240,13 @@ main(int argc, char **argv)
 			/* Note: RUMP_NCPU must be high enough. */
 			if ((nthreads = atoi(optarg)) > 0 &&
 			    getenv("RUMP_NCPU") == NULL) {
-				char *val;
-				asprintf(&val, "%u", nthreads + 1);
-				setenv("RUMP_NCPU", val, 1);
-				free(val);
+				static char nthr[64];
+				sprintf(nthr, "%u", nthreads + 1);
+				setenv("RUMP_NCPU", nthr, 1);
 			}
 			break;
 		default:
-			usage();
+			usage(argv[0]);
 		}
 	}
 
@@ -243,20 +256,17 @@ main(int argc, char **argv)
 	 * config should be loaded.
 	 */
 	if ((benchmark != NULL) == test && (stream && !interface)) {
-		usage();
+		usage(argv[0]);
 	}
 	if (benchmark && (!config || !nthreads)) {
 		errx(EXIT_FAILURE, "missing config for the benchmark or "
 		    "invalid thread count");
 	}
 
-	/* XXX rn_init */
-	extern int rumpns_max_keylen;
-	rumpns_max_keylen = 1;
-
-	rump_init();
-	rump_schedule();
-
+	/*
+	 * Initialise the NPF kernel component.
+	 */
+	npf_kern_init();
 	rumpns_npf_test_init(inet_pton, inet_ntop, random);
 
 	if (config) {
@@ -308,6 +318,7 @@ main(int argc, char **argv)
 		}
 
 		if (!testname || strcmp("nat", testname) == 0) {
+			srandom(1);
 			ok = rumpns_npf_nat_test(verbose);
 			fail |= result("nat", ok);
 			tname_matched = true;
@@ -327,7 +338,8 @@ main(int argc, char **argv)
 		}
 	}
 
-	rump_unschedule();
+	rumpns_npf_test_fini();
+	npf_kern_fini();
 
 	if (testname && !tname_matched)
 		errx(EXIT_FAILURE, "test \"%s\" unknown", testname);

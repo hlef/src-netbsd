@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +42,6 @@
  */
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
 #include "dtparser.y.h"
 
 #define _COMPONENT          DT_COMPILER
@@ -102,7 +101,7 @@ DtResolveIntegerExpression (
  * FUNCTION:    DtDoOperator
  *
  * PARAMETERS:  LeftValue           - First 64-bit operand
- *              Operator            - Parse token for the operator (EXPOP_*)
+ *              Operator            - Parse token for the operator (OP_EXP_*)
  *              RightValue          - Second 64-bit operand
  *
  * RETURN:      64-bit result of the requested operation
@@ -124,22 +123,22 @@ DtDoOperator (
 
     switch (Operator)
     {
-    case EXPOP_ONES_COMPLIMENT:
+    case OP_EXP_ONES_COMPLIMENT:
 
         Result = ~RightValue;
         break;
 
-    case EXPOP_LOGICAL_NOT:
+    case OP_EXP_LOGICAL_NOT:
 
         Result = !RightValue;
         break;
 
-    case EXPOP_MULTIPLY:
+    case OP_EXP_MULTIPLY:
 
         Result = LeftValue * RightValue;
         break;
 
-    case EXPOP_DIVIDE:
+    case OP_EXP_DIVIDE:
 
         if (!RightValue)
         {
@@ -151,7 +150,7 @@ DtDoOperator (
         Result = LeftValue / RightValue;
         break;
 
-    case EXPOP_MODULO:
+    case OP_EXP_MODULO:
 
         if (!RightValue)
         {
@@ -163,76 +162,76 @@ DtDoOperator (
         Result = LeftValue % RightValue;
         break;
 
-    case EXPOP_ADD:
+    case OP_EXP_ADD:
         Result = LeftValue + RightValue;
         break;
 
-    case EXPOP_SUBTRACT:
+    case OP_EXP_SUBTRACT:
 
         Result = LeftValue - RightValue;
         break;
 
-    case EXPOP_SHIFT_RIGHT:
+    case OP_EXP_SHIFT_RIGHT:
 
         Result = LeftValue >> RightValue;
         break;
 
-    case EXPOP_SHIFT_LEFT:
+    case OP_EXP_SHIFT_LEFT:
 
         Result = LeftValue << RightValue;
         break;
 
-    case EXPOP_LESS:
+    case OP_EXP_LESS:
 
         Result = LeftValue < RightValue;
         break;
 
-    case EXPOP_GREATER:
+    case OP_EXP_GREATER:
 
         Result = LeftValue > RightValue;
         break;
 
-    case EXPOP_LESS_EQUAL:
+    case OP_EXP_LESS_EQUAL:
 
         Result = LeftValue <= RightValue;
         break;
 
-    case EXPOP_GREATER_EQUAL:
+    case OP_EXP_GREATER_EQUAL:
 
         Result = LeftValue >= RightValue;
         break;
 
-    case EXPOP_EQUAL:
+    case OP_EXP_EQUAL:
 
         Result = LeftValue == RightValue;
         break;
 
-    case EXPOP_NOT_EQUAL:
+    case OP_EXP_NOT_EQUAL:
 
         Result = LeftValue != RightValue;
         break;
 
-    case EXPOP_AND:
+    case OP_EXP_AND:
 
         Result = LeftValue & RightValue;
         break;
 
-    case EXPOP_XOR:
+    case OP_EXP_XOR:
 
         Result = LeftValue ^ RightValue;
         break;
 
-    case EXPOP_OR:
+    case OP_EXP_OR:
 
         Result = LeftValue | RightValue;
         break;
 
-    case EXPOP_LOGICAL_AND:
+    case OP_EXP_LOGICAL_AND:
 
         Result = LeftValue && RightValue;
         break;
 
-    case EXPOP_LOGICAL_OR:
+    case OP_EXP_LOGICAL_OR:
 
         Result = LeftValue || RightValue;
         break;

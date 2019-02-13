@@ -1,4 +1,4 @@
-/*	$NetBSD: uhidev.c,v 1.68 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: uhidev.c,v 1.73 2017/12/10 17:03:07 bouyer Exp $	*/
 
 /*
  * Copyright (c) 2001, 2012 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uhidev.c,v 1.68 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uhidev.c,v 1.73 2017/12/10 17:03:07 bouyer Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -57,10 +57,10 @@ __KERNEL_RCSID(0, "$NetBSD: uhidev.c,v 1.68 2016/07/07 06:55:42 msaitoh Exp $");
 #include <dev/usb/usbdevs.h>
 #include <dev/usb/usbdi.h>
 #include <dev/usb/usbdi_util.h>
-#include <dev/usb/hid.h>
 #include <dev/usb/usb_quirks.h>
 
 #include <dev/usb/uhidev.h>
+#include <dev/hid/hid.h>
 
 /* Report descriptor for broken Wacom Graphire */
 #include <dev/usb/ugraphire_rdesc.h>
@@ -103,7 +103,7 @@ uhidev_match(device_t parent, cfdata_t match, void *aux)
 	if (USBIF_IS_XINPUT(uiaa))
 		return UMATCH_IFACECLASS_IFACESUBCLASS_IFACEPROTO;
 	/* Xbox One controllers */
- 	if (USBIF_IS_X1INPUT(uiaa) && uiaa->uiaa_ifaceno == 0)
+	if (USBIF_IS_X1INPUT(uiaa) && uiaa->uiaa_ifaceno == 0)
 		return UMATCH_IFACECLASS_IFACESUBCLASS_IFACEPROTO;
 
 	if (uiaa->uiaa_class != UICLASS_HID)
@@ -152,13 +152,19 @@ uhidev_attach(device_t parent, device_t self, void *aux)
 	if (!pmf_device_register(self, NULL, NULL))
 		aprint_error_dev(self, "couldn't establish power handler\n");
 
+	if (uiaa->uiaa_vendor == USB_VENDOR_WACOM) {
+		if (uiaa->uiaa_product == USB_PRODUCT_WACOM_XD0912U) {
+		/*
+		 * Wacom Intuos2 (XD-0912-U) requires longer idle time to
+		 * initialize the device with 0x0202.
+		 */
+			DELAY(500000);
+		}
+	}
 	(void)usbd_set_idle(iface, 0, 0);
-#if 0
 
-	if ((usbd_get_quirks(sc->sc_udev)->uq_flags & UQ_NO_SET_PROTO) == 0 &&
-	    id->bInterfaceSubClass != UISUBCLASS_BOOT)
+	if ((usbd_get_quirks(sc->sc_udev)->uq_flags & UQ_NO_SET_PROTO) == 0)
 		(void)usbd_set_protocol(iface, 1);
-#endif
 
 	maxinpktsize = 0;
 	sc->sc_iep_addr = sc->sc_oep_addr = -1;
@@ -205,12 +211,10 @@ uhidev_attach(device_t parent, device_t self, void *aux)
 	/* XXX need to extend this */
 	descptr = NULL;
 	if (uiaa->uiaa_vendor == USB_VENDOR_WACOM) {
-		static uByte reportbuf[] = {2, 2, 2};
+		static uByte reportbuf[3];
 
 		/* The report descriptor for the Wacom Graphire is broken. */
 		switch (uiaa->uiaa_product) {
-		case USB_PRODUCT_WACOM_GRAPHIRE:
-		case USB_PRODUCT_WACOM_GRAPHIRE2:
 		case USB_PRODUCT_WACOM_GRAPHIRE3_4X5:
 		case USB_PRODUCT_WACOM_GRAPHIRE3_6X8:
 		case USB_PRODUCT_WACOM_GRAPHIRE4_4X5: /* The 6x8 too? */
@@ -219,11 +223,22 @@ uhidev_attach(device_t parent, device_t self, void *aux)
 			 * feature report ID 2 before it'll start
 			 * returning digitizer data.
 			 */
+			reportbuf[0] = 0x02;
+			reportbuf[1] = 0x02;
 			usbd_set_report(uiaa->uiaa_iface, UHID_FEATURE_REPORT, 2,
-			    &reportbuf, sizeof(reportbuf));
+			    &reportbuf, 2);
 
 			size = sizeof(uhid_graphire3_4x5_report_descr);
 			descptr = uhid_graphire3_4x5_report_descr;
+			break;
+		case USB_PRODUCT_WACOM_GRAPHIRE:
+		case USB_PRODUCT_WACOM_GRAPHIRE2:
+		case USB_PRODUCT_WACOM_XD0912U:
+		case USB_PRODUCT_WACOM_CTH690K0:
+			reportbuf[0] = 0x02;
+			reportbuf[1] = 0x02;
+			usbd_set_report(uiaa->uiaa_iface, UHID_FEATURE_REPORT, 2,
+			    &reportbuf, 2);
 			break;
 		default:
 			/* Keep descriptor */
@@ -242,12 +257,8 @@ uhidev_attach(device_t parent, device_t self, void *aux)
 
 	if (descptr) {
 		desc = kmem_alloc(size, KM_SLEEP);
-		if (desc == NULL)
-			err = USBD_NOMEM;
-		else {
-			err = USBD_NORMAL_COMPLETION;
-			memcpy(desc, descptr, size);
-		}
+		err = USBD_NORMAL_COMPLETION;
+		memcpy(desc, descptr, size);
 	} else {
 		desc = NULL;
 		err = usbd_read_report_desc(uiaa->uiaa_iface, &desc, &size);
@@ -316,16 +327,8 @@ uhidev_attach(device_t parent, device_t self, void *aux)
 		aprint_normal_dev(self, "%d report ids\n", nrepid);
 	nrepid++;
 	repsizes = kmem_alloc(nrepid * sizeof(*repsizes), KM_SLEEP);
-	if (repsizes == NULL)
-		goto nomem;
 	sc->sc_subdevs = kmem_zalloc(nrepid * sizeof(device_t),
 	    KM_SLEEP);
-	if (sc->sc_subdevs == NULL) {
-		kmem_free(repsizes, nrepid * sizeof(*repsizes));
-nomem:
-		aprint_error_dev(self, "no memory\n");
-		return;
-	}
 
 	/* Just request max packet size for the interrupt pipe */
 	sc->sc_isize = maxinpktsize;

@@ -1,4 +1,4 @@
-/*	$NetBSD: subr_tftproot.c,v 1.18 2016/06/10 13:27:15 ozaki-r Exp $ */
+/*	$NetBSD: subr_tftproot.c,v 1.22 2018/10/27 09:13:45 mlelstv Exp $ */
 
 /*-
  * Copyright (c) 2007 Emmanuel Dreyfus, all rights reserved.
@@ -39,7 +39,7 @@
 #include "opt_md.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: subr_tftproot.c,v 1.18 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: subr_tftproot.c,v 1.22 2018/10/27 09:13:45 mlelstv Exp $");
 
 #include <sys/param.h>
 #include <sys/types.h>
@@ -64,8 +64,6 @@ __KERNEL_RCSID(0, "$NetBSD: subr_tftproot.c,v 1.18 2016/06/10 13:27:15 ozaki-r E
 #include <nfs/nfsmount.h>
 #include <nfs/nfsdiskless.h>
 #include <nfs/nfs_var.h>
-
-extern void       mdattach(int);
 
 /* 
  * Copied from <lib/libsa/tftp.h> 
@@ -295,7 +293,7 @@ tftproot_getfile(struct tftproot_handle *trh, struct lwp *l)
 		}
 
 		/* 
-		 * Accomodate the packet length for acks.
+		 * Accommodate the packet length for acks.
 		 * This is really needed only on first pass
 		 */
 		m_outbuf->m_len = hdrlen;
@@ -316,16 +314,17 @@ tftproot_getfile(struct tftproot_handle *trh, struct lwp *l)
 	printf("\n");
 
 	/*
-	 * Ack the last block. so_send frees m_outbuf, therefore
-	 * we do not want to free it ourselves.
-	 * Ignore errors, as we already have the whole file.
+	 * Ack the last block. Ignore errors, as we already have the whole
+	 * file.
 	 */
 	if ((error = (*so->so_send)(so, mtod(m_serv, struct sockaddr *), NULL,
-	    m_outbuf, NULL, 0, l)) != 0)
+	    m_outbuf, NULL, 0, l)) != 0) {
 		DPRINTF(("%s():%d tftproot: sosend returned %d\n", 
 		    __func__, __LINE__, error));
-	else
-		m_outbuf = NULL;
+	}
+
+	/* Freed by the protocol */
+	m_outbuf = NULL;
 
 	/* 
 	 * And use it as the root ramdisk. 
@@ -333,7 +332,6 @@ tftproot_getfile(struct tftproot_handle *trh, struct lwp *l)
 	DPRINTF(("%s():%d RAMdisk loaded: %ld@%p\n", 
 	    __func__, __LINE__, trh->trh_len, trh->trh_base));
 	md_root_setconf(trh->trh_base, trh->trh_len);
-	mdattach(0);
 
 	error = 0;
 out:

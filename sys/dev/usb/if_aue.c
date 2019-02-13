@@ -1,4 +1,4 @@
-/*	$NetBSD: if_aue.c,v 1.137 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: if_aue.c,v 1.145 2018/08/02 06:09:04 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1997, 1998, 1999, 2000
@@ -78,9 +78,10 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_aue.c,v 1.137 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_aue.c,v 1.145 2018/08/02 06:09:04 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
+#include "opt_usb.h"
 #include "opt_inet.h"
 #endif
 
@@ -661,7 +662,7 @@ aue_reset(struct aue_softc *sc)
 	 *
 	 * Note: We force all of the GPIO pins low first, *then*
 	 * enable the ones we want.
-  	 */
+	 */
 	if (sc->aue_flags & LSYS) {
 		/* Grrr. LinkSys has to be different from everyone else. */
 		aue_csr_write_1(sc, AUE_GPIO0,
@@ -670,7 +671,7 @@ aue_reset(struct aue_softc *sc)
 		aue_csr_write_1(sc, AUE_GPIO0,
 		    AUE_GPIO_OUT0 | AUE_GPIO_SEL0);
 	}
-  	aue_csr_write_1(sc, AUE_GPIO0,
+	aue_csr_write_1(sc, AUE_GPIO0,
 	    AUE_GPIO_OUT0 | AUE_GPIO_SEL0 | AUE_GPIO_SEL1);
 
 	if (sc->aue_flags & PII)
@@ -835,7 +836,7 @@ aue_attach(device_t parent, device_t self, void *aux)
 	ifp->if_ioctl = aue_ioctl;
 	ifp->if_start = aue_start;
 	ifp->if_watchdog = aue_watchdog;
-	strncpy(ifp->if_xname, device_xname(sc->aue_dev), IFNAMSIZ);
+	strlcpy(ifp->if_xname, device_xname(sc->aue_dev), IFNAMSIZ);
 
 	IFQ_SET_READY(&ifp->if_snd);
 
@@ -885,13 +886,18 @@ aue_detach(device_t self, int flags)
 		return 0;
 	}
 
-	callout_stop(&sc->aue_stat_ch);
 	/*
-	 * Remove any pending tasks.  They cannot be executing because they run
-	 * in the same thread as detach.
+	 * XXX Halting callout guarantees no more tick tasks.  What
+	 * guarantees no more stop tasks?  What guarantees no more
+	 * calls to aue_send?  Don't we need to wait for if_detach or
+	 * something?  Should we set sc->aue_dying here?  Is device
+	 * deactivation guaranteed to have already happened?
 	 */
-	usb_rem_task(sc->aue_udev, &sc->aue_tick_task);
-	usb_rem_task(sc->aue_udev, &sc->aue_stop_task);
+	callout_halt(&sc->aue_stat_ch, NULL);
+	usb_rem_task_wait(sc->aue_udev, &sc->aue_tick_task, USB_TASKQ_DRIVER,
+	    NULL);
+	usb_rem_task_wait(sc->aue_udev, &sc->aue_stop_task, USB_TASKQ_DRIVER,
+	    NULL);
 
 	sc->aue_closing = 1;
 	cv_signal(&sc->aue_domc);
@@ -1013,7 +1019,7 @@ aue_rx_list_init(struct aue_softc *sc)
 			return ENOBUFS;
 		if (c->aue_xfer == NULL) {
 			int err = usbd_create_xfer(sc->aue_ep[AUE_ENDPT_RX],
-			    AUE_BUFSZ, USBD_SHORT_XFER_OK, 0, &c->aue_xfer);
+			    AUE_BUFSZ, 0, 0, &c->aue_xfer);
 			if (err) {
 				return err;
 			}
@@ -1151,7 +1157,6 @@ aue_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	m = c->aue_mbuf;
 	total_len -= ETHER_CRC_LEN + 4;
 	m->m_pkthdr.len = m->m_len = total_len;
-	ifp->if_ipackets++;
 
 	m_set_rcvif(m, ifp);
 
@@ -1162,14 +1167,6 @@ aue_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		ifp->if_ierrors++;
 		goto done1;
 	}
-
-	/*
-	 * Handle BPF listeners. Let the BPF user see the packet, but
-	 * don't pass it up to the ether_input() layer unless it's
-	 * a broadcast packet, multicast packet, matches our ethernet
-	 * address or the interface is in promiscuous mode.
-	 */
-	bpf_mtap(ifp, m);
 
 	DPRINTFN(10,("%s: %s: deliver %d\n", device_xname(sc->aue_dev),
 		    __func__, m->m_len));
@@ -1375,7 +1372,7 @@ aue_start(struct ifnet *ifp)
 	 * If there's a BPF listener, bounce a copy of this frame
 	 * to him.
 	 */
-	bpf_mtap(ifp, m_head);
+	bpf_mtap(ifp, m_head, BPF_D_OUT);
 
 	ifp->if_flags |= IFF_OACTIVE;
 

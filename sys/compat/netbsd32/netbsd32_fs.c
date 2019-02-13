@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32_fs.c,v 1.74 2016/03/21 22:42:56 mrg Exp $	*/
+/*	$NetBSD: netbsd32_fs.c,v 1.81 2018/08/11 03:41:06 mrg Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001 Matthew R. Green
@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_fs.c,v 1.74 2016/03/21 22:42:56 mrg Exp $");
+__KERNEL_RCSID(0, "$NetBSD: netbsd32_fs.c,v 1.81 2018/08/11 03:41:06 mrg Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -54,6 +54,7 @@ __KERNEL_RCSID(0, "$NetBSD: netbsd32_fs.c,v 1.74 2016/03/21 22:42:56 mrg Exp $")
 #include <fs/msdosfs/bpb.h>
 #include <fs/msdosfs/msdosfsmount.h>
 #include <ufs/ufs/ufsmount.h>
+#include <miscfs/nullfs/null.h>
 
 #define NFS_ARGS_ONLY
 #include <nfs/nfsmount.h>
@@ -307,7 +308,7 @@ dofilewritev32(int fd, struct file *fp, struct netbsd32_iovec *iovp, int iovcnt,
 	}
 	cnt -= auio.uio_resid;
 	if (ktriov != NULL) {
-		ktrgenio(fd, UIO_WRITE, ktriov, cnt, error);
+		ktrgeniov(fd, UIO_WRITE, ktriov, cnt, error);
 		kmem_free(ktriov, iovlen);
 	}
 	*retval = cnt;
@@ -385,7 +386,7 @@ netbsd32___utimes50(struct lwp *l, const struct netbsd32___utimes50_args *uap, r
 }
 
 static int
-netbds32_copyout_statvfs(const void *kp, void *up, size_t len)
+netbsd32_copyout_statvfs(const void *kp, void *up, size_t len)
 {
 	struct netbsd32_statvfs *sbuf_32;
 	int error;
@@ -412,7 +413,7 @@ netbsd32_statvfs1(struct lwp *l, const struct netbsd32_statvfs1_args *uap, regis
 	sb = STATVFSBUF_GET();
 	error = do_sys_pstatvfs(l, SCARG_P32(uap, path), SCARG(uap, flags), sb);
 	if (error == 0)
-		error = netbds32_copyout_statvfs(sb, SCARG_P32(uap, buf), 0);
+		error = netbsd32_copyout_statvfs(sb, SCARG_P32(uap, buf), 0);
 	STATVFSBUF_PUT(sb);
 	return error;
 }
@@ -431,7 +432,7 @@ netbsd32_fstatvfs1(struct lwp *l, const struct netbsd32_fstatvfs1_args *uap, reg
 	sb = STATVFSBUF_GET();
 	error = do_sys_fstatvfs(l, SCARG(uap, fd), SCARG(uap, flags), sb);
 	if (error == 0)
-		error = netbds32_copyout_statvfs(sb, SCARG_P32(uap, buf), 0);
+		error = netbsd32_copyout_statvfs(sb, SCARG_P32(uap, buf), 0);
 	STATVFSBUF_PUT(sb);
 	return error;
 }
@@ -446,7 +447,7 @@ netbsd32_getvfsstat(struct lwp *l, const struct netbsd32_getvfsstat_args *uap, r
 	} */
 
 	return do_sys_getvfsstat(l, SCARG_P32(uap, buf), SCARG(uap, bufsize),
-	    SCARG(uap, flags), netbds32_copyout_statvfs,
+	    SCARG(uap, flags), netbsd32_copyout_statvfs,
 	    sizeof (struct netbsd32_statvfs), retval);
 }
 
@@ -467,7 +468,7 @@ netbsd32___fhstatvfs140(struct lwp *l, const struct netbsd32___fhstatvfs140_args
 	    SCARG(uap, flags));
 
 	if (error == 0)
-		error = netbds32_copyout_statvfs(sb, SCARG_P32(uap, buf), 0);
+		error = netbsd32_copyout_statvfs(sb, SCARG_P32(uap, buf), 0);
 	STATVFSBUF_PUT(sb);
 
 	return error;
@@ -519,6 +520,7 @@ netbsd32___getdents30(struct lwp *l,
 	}
 	error = vn_readdir(fp, SCARG_P32(uap, buf),
 	    UIO_USERSPACE, SCARG(uap, count), &done, l, 0, 0);
+	ktrgenio(SCARG(uap, fd), UIO_READ, SCARG_P32(uap, buf), done, error);
 	*retval = done;
  out:
 	fd_putfile(SCARG(uap, fd));
@@ -751,9 +753,6 @@ netbsd32___getcwd(struct lwp *l, const struct netbsd32___getcwd_args *uap, regis
 		return ERANGE;
 
 	path = kmem_alloc(len, KM_SLEEP);
-	if (!path)
-		return ENOMEM;
-
 	bp = &path[len];
 	bend = bp;
 	*(--bp) = '\0';
@@ -801,6 +800,7 @@ netbsd32___mount50(struct lwp *l, const struct netbsd32___mount50_args *uap,
 		struct netbsd32_nfs_args nfs_args;
 		struct netbsd32_msdosfs_args msdosfs_args;
 		struct netbsd32_tmpfs_args tmpfs_args;
+		struct netbsd32_null_args null_args;
 	} fs_args32;
 	union {
 		struct ufs_args ufs_args;
@@ -809,6 +809,7 @@ netbsd32___mount50(struct lwp *l, const struct netbsd32___mount50_args *uap,
 		struct nfs_args nfs_args;
 		struct msdosfs_args msdosfs_args;
 		struct tmpfs_args tmpfs_args;
+		struct null_args null_args;
 	} fs_args;
 	const char *type = SCARG_P32(uap, type);
 	const char *path = SCARG_P32(uap, path);
@@ -955,6 +956,20 @@ netbsd32___mount50(struct lwp *l, const struct netbsd32___mount50_args *uap,
 		data_seg = UIO_SYSSPACE;
 		data = &fs_args.nfs_args;
 		data_len = sizeof(fs_args.nfs_args);
+	} else if (strcmp(mtype, MOUNT_NULL) == 0) {
+		if (data_len > sizeof(fs_args32.null_args))
+			return EINVAL;
+		if ((flags & MNT_GETARGS) == 0) {
+			error = copyin(data, &fs_args32.null_args, 
+			    sizeof(fs_args32.null_args));
+			if (error)
+				return error;
+			fs_args.null_args.la.target =
+			    NETBSD32PTR64(fs_args32.null_args.la.target);
+		}
+		data_seg = UIO_SYSSPACE;
+		data = &fs_args.null_args;
+		data_len = sizeof(fs_args.null_args);
 	} else {
 		data_seg = UIO_USERSPACE;
 	}
@@ -1034,6 +1049,13 @@ netbsd32___mount50(struct lwp *l, const struct netbsd32___mount50_args *uap,
 			    fs_args.nfs_args.hostname);
 			error = copyout(&fs_args32.nfs_args, data,
 			    sizeof(fs_args32.nfs_args));
+		} else if (strcmp(mtype, MOUNT_NULL) == 0) {
+			if (data_len != sizeof(fs_args.null_args))
+				return EINVAL;
+			NETBSD32PTR32(fs_args32.null_args.la.target,
+			    fs_args.null_args.la.target);
+			error = copyout(&fs_args32.null_args, data, 
+			    sizeof(fs_args32.null_args));
 		}
 	}
 	return error;

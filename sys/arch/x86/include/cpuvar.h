@@ -1,4 +1,4 @@
-/* 	$NetBSD: cpuvar.h,v 1.47 2015/12/13 15:02:19 maxv Exp $ */
+/* 	$NetBSD: cpuvar.h,v 1.50 2017/05/23 08:54:39 nonaka Exp $ */
 
 /*-
  * Copyright (c) 2000, 2007 The NetBSD Foundation, Inc.
@@ -66,6 +66,7 @@
 #ifndef _X86_CPUVAR_H_
 #define	_X86_CPUVAR_H_
 
+struct cpu_info;
 struct cpu_functions {
 #ifndef XEN
 	int (*start)(struct cpu_info *, paddr_t);
@@ -100,8 +101,7 @@ struct cpufeature_attach_args {
 #include "opt_multiprocessor.h"
 #endif /* defined(_KERNEL_OPT) */
 
-int x86_ipi(int, int, int);
-void x86_self_ipi(int);
+extern int (*x86_ipi)(int, int, int);
 int x86_ipi_init(int);
 int x86_ipi_startup(int, int);
 void x86_errata(void);

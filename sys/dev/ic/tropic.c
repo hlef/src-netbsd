@@ -1,4 +1,4 @@
-/*	$NetBSD: tropic.c,v 1.47 2016/07/14 04:00:45 msaitoh Exp $	*/
+/*	$NetBSD: tropic.c,v 1.51 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*
  * Ported to NetBSD by Onno van der Linden
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tropic.c,v 1.47 2016/07/14 04:00:45 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tropic.c,v 1.51 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "opt_inet.h"
 
@@ -58,6 +58,7 @@ __KERNEL_RCSID(0, "$NetBSD: tropic.c,v 1.47 2016/07/14 04:00:45 msaitoh Exp $");
 #include <net/netisr.h>
 #include <net/route.h>
 #include <net/if_token.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -66,10 +67,6 @@ __KERNEL_RCSID(0, "$NetBSD: tropic.c,v 1.47 2016/07/14 04:00:45 msaitoh Exp $");
 #include <netinet/ip.h>
 #include <netinet/in_var.h>
 #endif
-
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/cpu.h>
 #include <sys/bus.h>
@@ -715,7 +712,7 @@ next:
 
 	if (m0 == 0)
 		return;
-	bpf_mtap(ifp, m0);
+	bpf_mtap(ifp, m0, BPF_D_OUT);
 	first_txbuf = txbuf = TXCA_INW(sc, TXCA_FREE_QUEUE_HEAD) - XMIT_NEXTBUF;
 	framedata = txbuf + XMIT_FP_DATA;
 	size = 0;
@@ -1258,9 +1255,7 @@ tr_rint(struct tr_softc *sc)
 		 */
 		ASB_OUTB(sc, asb, RECV_RETCODE, 0);
 		ACA_SETB(sc, ACA_ISRA_o, RESP_IN_ASB);
-		++ifp->if_ipackets;
 
-		bpf_mtap(ifp, m);
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 	}
 }
@@ -1324,7 +1319,7 @@ tr_oldxint(struct tr_softc *sc)
 		/* if data in queue, copy mbuf chain to DHB */
 		IFQ_DEQUEUE(&ifp->if_snd, m0);
 		if (m0 != 0) {
-			bpf_mtap(ifp, m0);
+			bpf_mtap(ifp, m0, BPF_D_OUT);
 			/* Pull packet off interface send queue, fill DHB. */
 			trh = mtod(m0, struct token_header *);
 			hlen = sizeof(struct token_header);
@@ -1470,7 +1465,7 @@ tr_get(struct tr_softc *sc, int totlen, struct ifnet *ifp)
 			len -= newdata - m->m_data;
 			m->m_data = newdata;
 		}
-		m->m_len = len = min(totlen, len);
+		m->m_len = len = uimin(totlen, len);
 		tr_bcopy(sc, mtod(m, char *), len);
 		totlen -= len;
 		if (totlen > 0) {

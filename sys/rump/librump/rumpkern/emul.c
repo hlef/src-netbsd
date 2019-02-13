@@ -1,4 +1,4 @@
-/*	$NetBSD: emul.c,v 1.179 2016/01/26 23:12:17 pooka Exp $	*/
+/*	$NetBSD: emul.c,v 1.188 2018/10/06 00:17:06 christos Exp $	*/
 
 /*
  * Copyright (c) 2007-2011 Antti Kantee.  All Rights Reserved.
@@ -26,15 +26,17 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: emul.c,v 1.179 2016/01/26 23:12:17 pooka Exp $");
+__KERNEL_RCSID(0, "$NetBSD: emul.c,v 1.188 2018/10/06 00:17:06 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/cprng.h>
 #include <sys/filedesc.h>
+#include <sys/fstrans.h>
 #include <sys/kauth.h>
 #include <sys/module.h>
 #include <sys/reboot.h>
 #include <sys/syscall.h>
+#include <sys/pserialize.h>
 #ifdef LOCKDEBUG
 #include <sys/sleepq.h>
 #endif
@@ -54,7 +56,7 @@ void (*rump_vfs_fini)(void) = (void *)nullop;
  * calling rump_init()
  */
 #define PHYSMEM 512*256
-int physmem = PHYSMEM;
+psize_t physmem = PHYSMEM;
 int nkmempages = PHYSMEM/2; /* from le chapeau */
 #undef PHYSMEM
 
@@ -83,6 +85,7 @@ int mem_no = 2;
 device_t booted_device;
 device_t booted_wedge;
 int booted_partition;
+const char *booted_method;
 
 /* XXX: unused */
 kmutex_t tty_lock;
@@ -116,6 +119,7 @@ struct loadavg averunnable = {
 struct emul emul_netbsd = {
 	.e_name = "netbsd-rump",
 	.e_sysent = rump_sysent,
+	.e_nomodbits = rump_sysent_nomodbits,
 #ifndef __HAVE_MINIMAL_EMUL
 	.e_nsysent = SYS_NSYSENT,
 #endif
@@ -164,11 +168,23 @@ calc_cache_size(vsize_t vasz, int pct, int va_pct)
 	return t;
 }
 
+#define	RETURN_ADDRESS	(uintptr_t)__builtin_return_address(0)
+
 void
 assert_sleepable(void)
 {
+	const char *reason = NULL;
 
 	/* always sleepable, although we should improve this */
+
+	if (!pserialize_not_in_read_section()) {
+		reason = "pserialize";
+	}
+
+	if (reason) {
+		panic("%s: %s caller=%p", __func__, reason,
+		    (void *)RETURN_ADDRESS);
+	}
 }
 
 void
@@ -239,6 +255,42 @@ rump_delay(unsigned int us)
 void (*delay_func)(unsigned int) = rump_delay;
 __strong_alias(delay,rump_delay);
 __strong_alias(_delay,rump_delay);
+
+/* Weak aliases for fstrans to be used unless librumpvfs is present. */
+
+void rump_fstrans_start(struct mount *);
+void
+rump_fstrans_start(struct mount *mp)
+{
+
+}
+__weak_alias(fstrans_start,rump_fstrans_start);
+
+int rump_fstrans_start_nowait(struct mount *);
+int
+rump_fstrans_start_nowait(struct mount *mp)
+{
+
+	return 0;
+}
+__weak_alias(fstrans_start_nowait,rump_fstrans_start_nowait);
+
+void rump_fstrans_start_lazy(struct mount *);
+void
+rump_fstrans_start_lazy(struct mount *mp)
+{
+
+}
+__weak_alias(fstrans_start_lazy,rump_fstrans_start_lazy);
+
+
+void rump_fstrans_done(struct mount *);
+void
+rump_fstrans_done(struct mount *mp)
+{
+
+}
+__weak_alias(fstrans_done,rump_fstrans_done);
 
 /*
  * Provide weak aliases for tty routines used by printf.
@@ -349,4 +401,10 @@ cpu_getmodel(void)
 {
 
 	return "rumpcore (virtual)";
+}
+
+bool
+get_expose_address(struct proc *p)
+{
+	return 1;
 }

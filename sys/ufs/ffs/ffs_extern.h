@@ -1,4 +1,4 @@
-/*	$NetBSD: ffs_extern.h,v 1.82 2015/03/27 17:27:56 riastradh Exp $	*/
+/*	$NetBSD: ffs_extern.h,v 1.85 2018/08/22 01:05:24 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 1991, 1993, 1994
@@ -43,7 +43,6 @@
 #define FFS_ASYNCFREE		4	/* asynchronous block freeing enabled */
 #define FFS_LOG_CHANGEOPT	5	/* log optimalization strategy change */
 #define FFS_EXTATTR_AUTOCREATE	6	/* size for backing file autocreation */
-#define FFS_MAXID		7	/* number of valid ffs ids */
 
 struct buf;
 struct fid;
@@ -168,8 +167,8 @@ int	ffs_wapbl_stop(struct mount *, int);
 int	ffs_wapbl_replay_start(struct mount *, struct fs *, struct vnode *);
 void	ffs_wapbl_blkalloc(struct fs *, struct vnode *, daddr_t, int);
 
-void	ffs_wapbl_sync_metadata(struct mount *, daddr_t *, int *, int);
-void	ffs_wapbl_abort_sync_metadata(struct mount *, daddr_t *, int *, int);
+void	ffs_wapbl_sync_metadata(struct mount *, struct wapbl_dealloc *);
+void	ffs_wapbl_abort_sync_metadata(struct mount *, struct wapbl_dealloc *);
 
 extern int (**ffs_vnodeop_p)(void *);
 extern int (**ffs_specop_p)(void *);
@@ -186,13 +185,13 @@ void	ffs_appleufs_set(struct appleufslabel *, const char *, time_t,
 			 uint64_t);
 
 /* ffs_bswap.c */
-void	ffs_sb_swap(struct fs*, struct fs *);
+void	ffs_sb_swap(const struct fs *, struct fs *);
 void	ffs_dinode1_swap(struct ufs1_dinode *, struct ufs1_dinode *);
 void	ffs_dinode2_swap(struct ufs2_dinode *, struct ufs2_dinode *);
 struct csum;
 void	ffs_csum_swap(struct csum *, struct csum *, int);
 struct csum_total;
-void	ffs_csumtotal_swap(struct csum_total *, struct csum_total *);
+void	ffs_csumtotal_swap(const struct csum_total *, struct csum_total *);
 void	ffs_cg_swap(struct cg *, struct cg *, struct fs *);
 
 /* ffs_subr.c */

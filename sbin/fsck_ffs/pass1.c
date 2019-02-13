@@ -1,4 +1,4 @@
-/*	$NetBSD: pass1.c,v 1.56 2013/10/19 01:09:58 christos Exp $	*/
+/*	$NetBSD: pass1.c,v 1.58 2018/02/13 11:20:08 hannken Exp $	*/
 
 /*
  * Copyright (c) 1980, 1986, 1993
@@ -34,7 +34,7 @@
 #if 0
 static char sccsid[] = "@(#)pass1.c	8.6 (Berkeley) 4/28/95";
 #else
-__RCSID("$NetBSD: pass1.c,v 1.56 2013/10/19 01:09:58 christos Exp $");
+__RCSID("$NetBSD: pass1.c,v 1.58 2018/02/13 11:20:08 hannken Exp $");
 #endif
 #endif /* not lint */
 
@@ -220,7 +220,9 @@ pass1(void)
 		progress_done();
 #endif /* PROGRESS */
 	freeinodebuf();
+#ifndef NO_FFS_EI
 	do_blkswap = 0; /* has been done */
+#endif
 }
 
 static void
@@ -251,8 +253,9 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 		    (memcmp(dp->dp1.di_db, ufs1_zino.di_db,
 			UFS_NDADDR * sizeof(int32_t)) ||
 		    memcmp(dp->dp1.di_ib, ufs1_zino.di_ib,
-			UFS_NIADDR * sizeof(int32_t)))) ||
-		    mode || size) {
+			UFS_NIADDR * sizeof(int32_t))))
+		    ||
+		    mode || size || DIP(dp, blocks)) {
 			pfatal("PARTIALLY ALLOCATED INODE I=%llu",
 			    (unsigned long long)inumber);
 			if (reply("CLEAR") == 1) {

@@ -1,4 +1,4 @@
-/*	$NetBSD: job.c,v 1.187 2016/05/12 20:28:34 sjg Exp $	*/
+/*	$NetBSD: job.c,v 1.195 2018/05/13 22:13:28 sjg Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990 The Regents of the University of California.
@@ -70,14 +70,14 @@
  */
 
 #ifndef MAKE_NATIVE
-static char rcsid[] = "$NetBSD: job.c,v 1.187 2016/05/12 20:28:34 sjg Exp $";
+static char rcsid[] = "$NetBSD: job.c,v 1.195 2018/05/13 22:13:28 sjg Exp $";
 #else
 #include <sys/cdefs.h>
 #ifndef lint
 #if 0
 static char sccsid[] = "@(#)job.c	8.2 (Berkeley) 3/19/94";
 #else
-__RCSID("$NetBSD: job.c,v 1.187 2016/05/12 20:28:34 sjg Exp $");
+__RCSID("$NetBSD: job.c,v 1.195 2018/05/13 22:13:28 sjg Exp $");
 #endif
 #endif /* not lint */
 #endif
@@ -102,7 +102,7 @@ __RCSID("$NetBSD: job.c,v 1.187 2016/05/12 20:28:34 sjg Exp $");
  *	    	  	    	a time given by the SEL_* constants, below,
  *	    	  	    	or until output is ready.
  *
- *	Job_Init  	    	Called to intialize this module. in addition,
+ *	Job_Init  	    	Called to initialize this module. in addition,
  *	    	  	    	any commands attached to the .BEGIN target
  *	    	  	    	are executed before this function returns.
  *	    	  	    	Hence, the makefile must have been parsed
@@ -335,11 +335,6 @@ static Job childExitJob;	/* child exit pseudo-job */
 	    (void)fprintf(fp, TARG_FMT, targPrefix, gn->name)
 
 static sigset_t caught_signals;	/* Set of signals we handle */
-#if defined(SYSV)
-#define KILLPG(pid, sig)	kill(-(pid), (sig))
-#else
-#define KILLPG(pid, sig)	killpg((pid), (sig))
-#endif
 
 static void JobChildSig(int);
 static void JobContinueSig(int);
@@ -375,6 +370,21 @@ job_table_dump(const char *where)
 }
 
 /*
+ * Delete the target of a failed, interrupted, or otherwise
+ * unsuccessful job unless inhibited by .PRECIOUS.
+ */
+static void
+JobDeleteTarget(GNode *gn)
+{
+	if ((gn->type & (OP_JOIN|OP_PHONY)) == 0 && !Targ_Precious(gn)) {
+	    char *file = (gn->path == NULL ? gn->name : gn->path);
+	    if (!noExecute && eunlink(file) != -1) {
+		Error("*** %s removed", file);
+	    }
+	}
+}
+
+/*
  * JobSigLock/JobSigUnlock
  *
  * Signal lock routines to get exclusive access. Currently used to
@@ -396,7 +406,7 @@ static void JobSigUnlock(sigset_t *omaskp)
 static void
 JobCreatePipe(Job *job, int minfd)
 {
-    int i, fd;
+    int i, fd, flags;
 
     if (pipe(job->jobPipe) == -1)
 	Punt("Cannot create pipe: %s", strerror(errno));
@@ -411,8 +421,10 @@ JobCreatePipe(Job *job, int minfd)
     }
     
     /* Set close-on-exec flag for both */
-    (void)fcntl(job->jobPipe[0], F_SETFD, FD_CLOEXEC);
-    (void)fcntl(job->jobPipe[1], F_SETFD, FD_CLOEXEC);
+    if (fcntl(job->jobPipe[0], F_SETFD, FD_CLOEXEC) == -1)
+	Punt("Cannot set close-on-exec: %s", strerror(errno));
+    if (fcntl(job->jobPipe[1], F_SETFD, FD_CLOEXEC) == -1)
+	Punt("Cannot set close-on-exec: %s", strerror(errno));
 
     /*
      * We mark the input side of the pipe non-blocking; we poll(2) the
@@ -420,8 +432,12 @@ JobCreatePipe(Job *job, int minfd)
      * race for the token when a new one becomes available, so the read 
      * from the pipe should not block.
      */
-    fcntl(job->jobPipe[0], F_SETFL, 
-	fcntl(job->jobPipe[0], F_GETFL, 0) | O_NONBLOCK);
+    flags = fcntl(job->jobPipe[0], F_GETFL, 0);
+    if (flags == -1)
+	Punt("Cannot get flags: %s", strerror(errno));
+    flags |= O_NONBLOCK;
+    if (fcntl(job->jobPipe[0], F_SETFL, flags) == -1)
+	Punt("Cannot set flags: %s", strerror(errno));
 }
 
 /*-
@@ -723,6 +739,7 @@ JobPrintCommand(void *cmdp, void *jobp)
 		 * but this one needs to be - use compat mode just for it.
 		 */
 		CompatRunCommand(cmdp, job->node);
+		free(cmdStart);
 		return 0;
 	    }
 	    break;
@@ -1020,6 +1037,9 @@ JobFinish(Job *job, int status)
 		if (job->flags & JOB_IGNERR) {
 		    status = 0;
 		} else {
+		    if (deleteOnError) {
+			JobDeleteTarget(job->node);
+		    }
 		    PrintOnError(job->node, NULL);
 		}
 	    } else if (DEBUG(JOB)) {
@@ -1037,6 +1057,9 @@ JobFinish(Job *job, int status)
 	    }
 	    (void)printf("*** [%s] Signal %d\n",
 			job->node->name, WTERMSIG(status));
+	    if (deleteOnError) {
+		JobDeleteTarget(job->node);
+	    }
 	}
 	(void)fflush(stdout);
     }
@@ -1344,15 +1367,27 @@ JobExec(Job *job, char **argv)
 	    execError("dup2", "job->cmdFILE");
 	    _exit(1);
 	}
-	(void)fcntl(0, F_SETFD, 0);
-	(void)lseek(0, (off_t)0, SEEK_SET);
+	if (fcntl(0, F_SETFD, 0) == -1) {
+	    execError("fcntl clear close-on-exec", "stdin");
+	    _exit(1);
+	}
+	if (lseek(0, (off_t)0, SEEK_SET) == -1) {
+	    execError("lseek to 0", "stdin");
+	    _exit(1);
+	}
 
 	if (job->node->type & (OP_MAKE | OP_SUBMAKE)) {
 		/*
 		 * Pass job token pipe to submakes.
 		 */
-		fcntl(tokenWaitJob.inPipe, F_SETFD, 0);
-		fcntl(tokenWaitJob.outPipe, F_SETFD, 0);		
+		if (fcntl(tokenWaitJob.inPipe, F_SETFD, 0) == -1) {
+		    execError("clear close-on-exec", "tokenWaitJob.inPipe");
+		    _exit(1);
+		}
+		if (fcntl(tokenWaitJob.outPipe, F_SETFD, 0) == -1) {
+		    execError("clear close-on-exec", "tokenWaitJob.outPipe");
+		    _exit(1);
+		}
 	}
 	
 	/*
@@ -1369,7 +1404,10 @@ JobExec(Job *job, char **argv)
 	 * it before routing the shell's error output to the same place as
 	 * its standard output.
 	 */
-	(void)fcntl(1, F_SETFD, 0);
+	if (fcntl(1, F_SETFD, 0) == -1) {
+	    execError("clear close-on-exec", "stdout");
+	    _exit(1);
+	}
 	if (dup2(1, 2) == -1) {
 	    execError("dup2", "1, 2");
 	    _exit(1);
@@ -2562,12 +2600,7 @@ JobInterrupt(int runINTERRUPT, int signo)
 
 	gn = job->node;
 
-	if ((gn->type & (OP_JOIN|OP_PHONY)) == 0 && !Targ_Precious(gn)) {
-	    char *file = (gn->path == NULL ? gn->name : gn->path);
-	    if (!noExecute && eunlink(file) != -1) {
-		Error("*** %s removed", file);
-	    }
-	}
+	JobDeleteTarget(gn);
 	if (job->pid) {
 	    if (DEBUG(JOB)) {
 		(void)fprintf(debug_file,
@@ -2917,7 +2950,6 @@ Job_TokenWithdraw(void)
 	}
 	if (DEBUG(JOB))
 	    fprintf(debug_file, "(%d) blocked for token\n", getpid());
-	wantToken = 1;
 	return FALSE;
     }
 

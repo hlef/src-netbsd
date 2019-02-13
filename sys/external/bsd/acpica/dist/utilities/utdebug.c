@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -182,7 +182,9 @@ AcpiDebugPrint (
 {
     ACPI_THREAD_ID          ThreadId;
     va_list                 args;
-
+#ifdef ACPI_APPLICATION
+    int                     FillCount;
+#endif
 
     /* Check if debug output enabled */
 
@@ -226,10 +228,21 @@ AcpiDebugPrint (
         AcpiOsPrintf ("[%u] ", (UINT32) ThreadId);
     }
 
-    AcpiOsPrintf ("[%02ld] ", AcpiGbl_NestingLevel);
-#endif
+    FillCount = 48 - AcpiGbl_NestingLevel -
+        strlen (AcpiUtTrimFunctionName (FunctionName));
+    if (FillCount < 0)
+    {
+        FillCount = 0;
+    }
 
+    AcpiOsPrintf ("[%02ld] %*s",
+        AcpiGbl_NestingLevel, AcpiGbl_NestingLevel + 1, " ");
+    AcpiOsPrintf ("%s%*s: ",
+        AcpiUtTrimFunctionName (FunctionName), FillCount, " ");
+
+#else
     AcpiOsPrintf ("%-22.22s: ", AcpiUtTrimFunctionName (FunctionName));
+#endif
 
     va_start (args, Format);
     AcpiOsVprintf (Format, args);
@@ -707,34 +720,5 @@ AcpiTracePoint (
 
 ACPI_EXPORT_SYMBOL (AcpiTracePoint)
 
-#endif
 
-
-#ifdef ACPI_APPLICATION
-/*******************************************************************************
- *
- * FUNCTION:    AcpiLogError
- *
- * PARAMETERS:  Format              - Printf format field
- *              ...                 - Optional printf arguments
- *
- * RETURN:      None
- *
- * DESCRIPTION: Print error message to the console, used by applications.
- *
- ******************************************************************************/
-
-void  ACPI_INTERNAL_VAR_XFACE
-AcpiLogError (
-    const char              *Format,
-    ...)
-{
-    va_list                 Args;
-
-    va_start (Args, Format);
-    (void) AcpiUtFileVprintf (ACPI_FILE_ERR, Format, Args);
-    va_end (Args);
-}
-
-ACPI_EXPORT_SYMBOL (AcpiLogError)
 #endif

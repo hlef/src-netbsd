@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -343,7 +343,7 @@ DumpNode:
 
     else
     {
-        AcpiOsPrintf ("Object (%p) Pathname:  %s\n",
+        AcpiOsPrintf ("Object %p: Namespace Node - Pathname: %s\n",
             Node, (char *) RetBuf.Pointer);
     }
 
@@ -360,7 +360,7 @@ DumpNode:
     ObjDesc = AcpiNsGetAttachedObject (Node);
     if (ObjDesc)
     {
-        AcpiOsPrintf ("\nAttached Object (%p):\n", ObjDesc);
+        AcpiOsPrintf ("\nAttached Object %p:", ObjDesc);
         if (!AcpiOsReadable (ObjDesc, sizeof (ACPI_OPERAND_OBJECT)))
         {
             AcpiOsPrintf ("Invalid internal ACPI Object at address %p\n",
@@ -368,8 +368,33 @@ DumpNode:
             return;
         }
 
-        AcpiUtDebugDumpBuffer ((void *) ObjDesc,
-            sizeof (ACPI_OPERAND_OBJECT), Display, ACPI_UINT32_MAX);
+        if (ACPI_GET_DESCRIPTOR_TYPE (
+            ((ACPI_NAMESPACE_NODE *) ObjDesc)) == ACPI_DESC_TYPE_NAMED)
+        {
+            AcpiOsPrintf (" Namespace Node - ");
+            Status = AcpiGetName ((ACPI_NAMESPACE_NODE *) ObjDesc,
+                ACPI_FULL_PATHNAME_NO_TRAILING, &RetBuf);
+            if (ACPI_FAILURE (Status))
+            {
+                AcpiOsPrintf ("Could not convert name to pathname\n");
+            }
+            else
+            {
+                AcpiOsPrintf ("Pathname: %s",
+                    (char *) RetBuf.Pointer);
+            }
+
+            AcpiOsPrintf ("\n");
+            AcpiUtDebugDumpBuffer ((void *) ObjDesc,
+                sizeof (ACPI_NAMESPACE_NODE), Display, ACPI_UINT32_MAX);
+        }
+        else
+        {
+            AcpiOsPrintf ("\n");
+            AcpiUtDebugDumpBuffer ((void *) ObjDesc,
+                sizeof (ACPI_OPERAND_OBJECT), Display, ACPI_UINT32_MAX);
+        }
+
         AcpiExDumpObjectDescriptor (ObjDesc, 1);
     }
 }
@@ -687,9 +712,8 @@ AcpiDbDisplayObjectType (
         return;
     }
 
-    AcpiOsPrintf ("ADR: %8.8X%8.8X, STA: %8.8X, Flags: %X\n",
-        ACPI_FORMAT_UINT64 (Info->Address),
-        Info->CurrentStatus, Info->Flags);
+    AcpiOsPrintf ("ADR: %8.8X%8.8X, Flags: %X\n",
+        ACPI_FORMAT_UINT64 (Info->Address), Info->Flags);
 
     AcpiOsPrintf ("S1D-%2.2X S2D-%2.2X S3D-%2.2X S4D-%2.2X\n",
         Info->HighestDstates[0], Info->HighestDstates[1],

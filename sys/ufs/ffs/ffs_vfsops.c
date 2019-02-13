@@ -1,4 +1,4 @@
-/*	$NetBSD: ffs_vfsops.c,v 1.340 2016/07/28 08:24:58 martin Exp $	*/
+/*	$NetBSD: ffs_vfsops.c,v 1.358 2018/07/18 22:40:56 uwe Exp $	*/
 
 /*-
  * Copyright (c) 2008, 2009 The NetBSD Foundation, Inc.
@@ -61,7 +61,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ffs_vfsops.c,v 1.340 2016/07/28 08:24:58 martin Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ffs_vfsops.c,v 1.358 2018/07/18 22:40:56 uwe Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_ffs.h"
@@ -92,7 +92,6 @@ __KERNEL_RCSID(0, "$NetBSD: ffs_vfsops.c,v 1.340 2016/07/28 08:24:58 martin Exp 
 #include <sys/conf.h>
 #include <sys/kauth.h>
 #include <sys/wapbl.h>
-#include <sys/fstrans.h>
 #include <sys/module.h>
 
 #include <miscfs/genfs/genfs.h>
@@ -167,7 +166,7 @@ struct vfsops ffs_vfsops = {
 	.vfs_mountroot = ffs_mountroot,
 	.vfs_snapshot = ffs_snapshot,
 	.vfs_extattrctl = ffs_extattrctl,
-	.vfs_suspendctl = ffs_suspendctl,
+	.vfs_suspendctl = genfs_suspendctl,
 	.vfs_renamelock_enter = genfs_renamelock_enter,
 	.vfs_renamelock_exit = genfs_renamelock_exit,
 	.vfs_fsync = ffs_vfs_fsync,
@@ -179,6 +178,7 @@ static const struct genfs_ops ffs_genfsops = {
 	.gop_alloc = ufs_gop_alloc,
 	.gop_write = genfs_gop_write,
 	.gop_markupdate = ufs_gop_markupdate,
+	.gop_putrange = genfs_gop_putrange,
 };
 
 static const struct ufs_ops ffs_ufsops = {
@@ -378,8 +378,8 @@ ffs_mountroot(void)
 	 */
 	mp->mnt_flag |= MNT_FORCE;
 	if ((error = ffs_mountfs(rootvp, mp, l)) != 0) {
-		vfs_unbusy(mp, false, NULL);
-		vfs_destroy(mp);
+		vfs_unbusy(mp);
+		vfs_rele(mp);
 		return (error);
 	}
 	mp->mnt_flag &= ~MNT_FORCE;
@@ -389,7 +389,7 @@ ffs_mountroot(void)
 	memset(fs->fs_fsmnt, 0, sizeof(fs->fs_fsmnt));
 	(void)copystr(mp->mnt_stat.f_mntonname, fs->fs_fsmnt, MNAMELEN - 1, 0);
 	(void)ffs_statvfs(mp, &mp->mnt_stat);
-	vfs_unbusy(mp, false, NULL);
+	vfs_unbusy(mp);
 	setrootfstime((time_t)fs->fs_time);
 	return (0);
 }
@@ -419,12 +419,13 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		return EINVAL;
 	}
 
+	ump = VFSTOUFS(mp);
+	if ((mp->mnt_flag & (MNT_GETARGS|MNT_UPDATE)) && ump == NULL) {
+		DPRINTF("no ump");
+		return EIO;
+	}
+
 	if (mp->mnt_flag & MNT_GETARGS) {
-		ump = VFSTOUFS(mp);
-		if (ump == NULL) {
-			DPRINTF("no ump");
-			return EIO;
-		}
 		args->fspec = NULL;
 		*data_len = sizeof *args;
 		return 0;
@@ -433,7 +434,13 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	update = mp->mnt_flag & MNT_UPDATE;
 
 	/* Check arguments */
-	if (args->fspec != NULL) {
+	if (args->fspec == NULL) {
+		if (!update) {
+			/* New mounts must have a filename for the device */
+			DPRINTF("no filename for mount");
+			return EINVAL;
+		}
+	} else {
 		/*
 		 * Look up the name and verify that it's sane.
 		 */
@@ -444,48 +451,43 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 			return error;
 		}
 
-		if (!update) {
-			/*
-			 * Be sure this is a valid block device
-			 */
-			if (devvp->v_type != VBLK) {
-				DPRINTF("non block device %d", devvp->v_type);
-				error = ENOTBLK;
-			} else if (bdevsw_lookup(devvp->v_rdev) == NULL) {
-				DPRINTF("can't find block device 0x%jx",
-				    devvp->v_rdev);
-				error = ENXIO;
-			}
-		} else {
+		/*
+		 * Be sure this is a valid block device
+		 */
+		if (devvp->v_type != VBLK) {
+			DPRINTF("non block device %d", devvp->v_type);
+			error = ENOTBLK;
+			goto fail;
+		}
+
+		if (bdevsw_lookup(devvp->v_rdev) == NULL) {
+			DPRINTF("can't find block device 0x%jx",
+			    devvp->v_rdev);
+			error = ENXIO;
+			goto fail;
+		}
+
+		if (update) {
 			/*
 			 * Be sure we're still naming the same device
 			 * used for our initial mount
 			 */
-			ump = VFSTOUFS(mp);
-			if (devvp != ump->um_devvp) {
-				if (devvp->v_rdev != ump->um_devvp->v_rdev) {
-					DPRINTF("wrong device 0x%jx != 0x%jx",
-					    (uintmax_t)devvp->v_rdev,
-					    (uintmax_t)ump->um_devvp->v_rdev);
-					error = EINVAL;
-				} else {
-					vrele(devvp);
-					devvp = ump->um_devvp;
-					vref(devvp);
-				}
+			if (devvp != ump->um_devvp &&
+			    devvp->v_rdev != ump->um_devvp->v_rdev) {
+				DPRINTF("wrong device 0x%jx != 0x%jx",
+				    (uintmax_t)devvp->v_rdev,
+				    (uintmax_t)ump->um_devvp->v_rdev);
+				error = EINVAL;
+				goto fail;
 			}
+			vrele(devvp);
+			devvp = NULL;
 		}
-	} else {
-		if (!update) {
-			/* New mounts must have a filename for the device */
-			DPRINTF("no filename for mount");
-			return EINVAL;
-		} else {
-			/* Use the extant mount */
-			ump = VFSTOUFS(mp);
-			devvp = ump->um_devvp;
-			vref(devvp);
-		}
+	}
+
+	if (devvp == NULL) {
+		devvp = ump->um_devvp;
+		vref(devvp);
 	}
 
 	/*
@@ -496,30 +498,23 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	 * updating the mount is okay (for example, as far as securelevel goes)
 	 * which leaves us with the normal check.
 	 */
-	if (error == 0) {
-		accessmode = VREAD;
-		if (update ?
-		    (mp->mnt_iflag & IMNT_WANTRDWR) != 0 :
-		    (mp->mnt_flag & MNT_RDONLY) == 0)
-			accessmode |= VWRITE;
-		vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-		error = kauth_authorize_system(l->l_cred, KAUTH_SYSTEM_MOUNT,
-		    KAUTH_REQ_SYSTEM_MOUNT_DEVICE, mp, devvp,
-		    KAUTH_ARG(accessmode));
-		if (error) {
-			DPRINTF("kauth returned %d", error);
-		}
-		VOP_UNLOCK(devvp);
-	}
-
+	accessmode = VREAD;
+	if (update ? (mp->mnt_iflag & IMNT_WANTRDWR) != 0 :
+	    (mp->mnt_flag & MNT_RDONLY) == 0)
+		accessmode |= VWRITE;
+	vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
+	error = kauth_authorize_system(l->l_cred, KAUTH_SYSTEM_MOUNT,
+	    KAUTH_REQ_SYSTEM_MOUNT_DEVICE, mp, devvp, KAUTH_ARG(accessmode));
+	VOP_UNLOCK(devvp);
 	if (error) {
-		vrele(devvp);
-		return (error);
+		DPRINTF("kauth returned %d", error);
+		goto fail;
 	}
 
 #ifdef WAPBL
 	/* WAPBL can only be enabled on a r/w mount. */
-	if ((mp->mnt_flag & MNT_RDONLY) && !(mp->mnt_iflag & IMNT_WANTRDWR)) {
+	if (((mp->mnt_flag & MNT_RDONLY) && !(mp->mnt_iflag & IMNT_WANTRDWR)) ||
+	    (mp->mnt_iflag & IMNT_WANTRDONLY)) {
 		mp->mnt_flag &= ~MNT_LOG;
 	}
 #else /* !WAPBL */
@@ -565,7 +560,7 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 		ump = VFSTOUFS(mp);
 		fs = ump->um_fs;
-		if (fs->fs_ronly == 0 && (mp->mnt_flag & MNT_RDONLY)) {
+		if (fs->fs_ronly == 0 && (mp->mnt_iflag & IMNT_WANTRDONLY)) {
 			/*
 			 * Changing from r/w to r/o
 			 */
@@ -573,20 +568,23 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 			if (mp->mnt_flag & MNT_FORCE)
 				flags |= FORCECLOSE;
 			error = ffs_flushfiles(mp, flags, l);
-			if (error == 0)
-				error = UFS_WAPBL_BEGIN(mp);
-			if (error == 0 &&
-			    ffs_cgupdate(ump, MNT_WAIT) == 0 &&
+			if (error)
+				return error;
+
+			error = UFS_WAPBL_BEGIN(mp);
+			if (error) {
+				DPRINTF("wapbl %d", error);
+				return error;
+			}
+
+			if (ffs_cgupdate(ump, MNT_WAIT) == 0 &&
 			    fs->fs_clean & FS_WASCLEAN) {
 				if (mp->mnt_flag & MNT_SOFTDEP)
 					fs->fs_flags &= ~FS_DOSOFTDEP;
 				fs->fs_clean = FS_ISCLEAN;
 				(void) ffs_sbupdate(ump, MNT_WAIT);
 			}
-			if (error) {
-				DPRINTF("wapbl %d", error);
-				return error;
-			}
+
 			UFS_WAPBL_END(mp);
 		}
 
@@ -600,7 +598,7 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		}
 #endif /* WAPBL */
 
-		if (fs->fs_ronly == 0 && (mp->mnt_flag & MNT_RDONLY)) {
+		if (fs->fs_ronly == 0 && (mp->mnt_iflag & IMNT_WANTRDONLY)) {
 			/*
 			 * Finish change from r/w to r/o
 			 */
@@ -973,7 +971,7 @@ ffs_superblock_validate(struct fs *fs)
 	 * XXX: these values are just zero-checked to prevent obvious
 	 * bugs. We need more strict checks.
 	 */
-	if (fs->fs_size == 0)
+	if (fs->fs_size == 0 && fs->fs_old_size == 0)
 		return 0;
 	if (fs->fs_cssize == 0)
 		return 0;
@@ -1114,12 +1112,6 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 	}
 
 	ronly = (mp->mnt_flag & MNT_RDONLY) != 0;
-
-	error = fstrans_mount(mp);
-	if (error) {
-		DPRINTF("fstrans_mount returned %d", error);
-		return error;
-	}
 
 	ump = kmem_zalloc(sizeof(*ump), KM_SLEEP);
 	mutex_init(&ump->um_lock, MUTEX_DEFAULT, IPL_NONE);
@@ -1462,7 +1454,7 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 	mp->mnt_fs_bshift = fs->fs_bshift;
 	mp->mnt_dev_bshift = DEV_BSHIFT;	/* XXX */
 	mp->mnt_flag |= MNT_LOCAL;
-	mp->mnt_iflag |= IMNT_MPSAFE;
+	mp->mnt_iflag |= IMNT_MPSAFE | IMNT_CAN_RWTORO;
 #ifdef FFS_EI
 	if (needswap)
 		ump->um_flags |= UFS_NEEDSWAP;
@@ -1536,7 +1528,6 @@ out:
 	}
 #endif
 
-	fstrans_unmount(mp);
 	if (fs)
 		kmem_free(fs, fs->fs_sbsize);
 	spec_node_setmountedfs(devvp, NULL);
@@ -1739,7 +1730,6 @@ ffs_unmount(struct mount *mp, int mntflags)
 	kmem_free(ump, sizeof(*ump));
 	mp->mnt_data = NULL;
 	mp->mnt_flag &= ~MNT_LOCAL;
-	fstrans_unmount(mp);
 	return (0);
 }
 
@@ -1840,7 +1830,6 @@ ffs_statvfs(struct mount *mp, struct statvfs *sbp)
 
 struct ffs_sync_ctx {
 	int waitfor;
-	bool is_suspending;
 };
 
 static bool
@@ -1848,6 +1837,8 @@ ffs_sync_selector(void *cl, struct vnode *vp)
 {
 	struct ffs_sync_ctx *c = cl;
 	struct inode *ip;
+
+	KASSERT(mutex_owned(vp->v_interlock));
 
 	ip = VTOI(vp);
 	/*
@@ -1877,9 +1868,6 @@ ffs_sync_selector(void *cl, struct vnode *vp)
 	    UVM_OBJ_IS_CLEAN(&vp->v_uobj))))
 		return false;
 
-	if (vp->v_type == VBLK && c->is_suspending)
-		return false;
-
 	return true;
 }
 
@@ -1898,7 +1886,6 @@ ffs_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
 	struct fs *fs;
 	struct vnode_iterator *marker;
 	int error, allerror = 0;
-	bool is_suspending;
 	struct ffs_sync_ctx ctx;
 
 	fs = ump->um_fs;
@@ -1906,18 +1893,16 @@ ffs_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
 		panic("%s: rofs mod, fs=%s", __func__, fs->fs_fsmnt);
 	}
 
-	fstrans_start(mp, FSTRANS_SHARED);
-	is_suspending = (fstrans_getstate(mp) == FSTRANS_SUSPENDING);
 	/*
 	 * Write back each (modified) inode.
 	 */
 	vfs_vnode_iterator_init(mp, &marker);
 
 	ctx.waitfor = waitfor;
-	ctx.is_suspending = is_suspending;
 	while ((vp = vfs_vnode_iterator_next(marker, ffs_sync_selector, &ctx)))
 	{
-		error = vn_lock(vp, LK_EXCLUSIVE);
+		error = vn_lock(vp,
+		    LK_EXCLUSIVE | (waitfor == MNT_LAZY ? LK_NOWAIT : 0));
 		if (error) {
 			vrele(vp);
 			continue;
@@ -1972,13 +1957,12 @@ ffs_sync(struct mount *mp, int waitfor, kauth_cred_t cred)
 
 #ifdef WAPBL
 	if (mp->mnt_wapbl) {
-		error = wapbl_flush(mp->mnt_wapbl, 0);
+		error = wapbl_flush(mp->mnt_wapbl, (waitfor == MNT_WAIT));
 		if (error)
 			allerror = error;
 	}
 #endif
 
-	fstrans_done(mp);
 	return (allerror);
 }
 
@@ -2041,14 +2025,14 @@ ffs_deinit_vnode(struct ufsmount *ump, struct vnode *vp)
 {
 	struct inode *ip = VTOI(vp);
 
+	genfs_node_destroy(vp);
+	vp->v_data = NULL;
+
 	if (ump->um_fstype == UFS1)
 		pool_cache_put(ffs_dinode1_cache, ip->i_din.ffs1_din);
 	else
 		pool_cache_put(ffs_dinode2_cache, ip->i_din.ffs2_din);
 	pool_cache_put(ffs_inode_cache, ip);
-
-	genfs_node_destroy(vp);
-	vp->v_data = NULL;
 }
 
 /*
@@ -2143,7 +2127,7 @@ ffs_newvnode(struct mount *mp, struct vnode *dvp, struct vnode *vp,
 
 	ip = VTOI(vp);
 	if (ip->i_mode) {
-		panic("%s: dup alloc ino=%" PRId64 " on %s: mode %x/%x "
+		panic("%s: dup alloc ino=%" PRId64 " on %s: mode %o/%o "
 		    "gen %x/%x size %" PRIx64 " blocks %" PRIx64,
 		    __func__, ino, fs->fs_fsmnt, DIP(ip, mode), ip->i_mode,
 		    DIP(ip, gen), ip->i_gen, DIP(ip, size), DIP(ip, blocks));
@@ -2351,6 +2335,8 @@ ffs_cgupdate(struct ufsmount *mp, int waitfor)
 	void *space;
 	int i, size, error = 0, allerror = 0;
 
+	UFS_WAPBL_JLOCK_ASSERT(mp);
+
 	allerror = ffs_sbupdate(mp, waitfor);
 	blks = howmany(fs->fs_cssize, fs->fs_fsize);
 	space = fs->fs_csp;
@@ -2393,37 +2379,6 @@ ffs_extattrctl(struct mount *mp, int cmd, struct vnode *vp,
 		return (ufs_extattrctl(mp, cmd, vp, attrnamespace, attrname));
 #endif
 	return (vfs_stdextattrctl(mp, cmd, vp, attrnamespace, attrname));
-}
-
-int
-ffs_suspendctl(struct mount *mp, int cmd)
-{
-	int error;
-	struct lwp *l = curlwp;
-
-	switch (cmd) {
-	case SUSPEND_SUSPEND:
-		if ((error = fstrans_setstate(mp, FSTRANS_SUSPENDING)) != 0)
-			return error;
-		error = ffs_sync(mp, MNT_WAIT, l->l_proc->p_cred);
-		if (error == 0)
-			error = fstrans_setstate(mp, FSTRANS_SUSPENDED);
-#ifdef WAPBL
-		if (error == 0 && mp->mnt_wapbl)
-			error = wapbl_flush(mp->mnt_wapbl, 1);
-#endif
-		if (error != 0) {
-			(void) fstrans_setstate(mp, FSTRANS_NORMAL);
-			return error;
-		}
-		return 0;
-
-	case SUSPEND_RESUME:
-		return fstrans_setstate(mp, FSTRANS_NORMAL);
-
-	default:
-		return EINVAL;
-	}
 }
 
 /*

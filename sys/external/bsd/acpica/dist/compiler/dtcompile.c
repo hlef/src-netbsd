@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -44,7 +44,6 @@
 #define _DECLARE_DT_GLOBALS
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
 
 #define _COMPONENT          DT_COMPILER
         ACPI_MODULE_NAME    ("dtcompile")
@@ -173,7 +172,6 @@ DtDoCompile (
 CleanupAndExit:
 
     AcpiUtDeleteCaches ();
-    DtDeleteCaches ();
     CmCleanupAndExit ();
     return (Status);
 }
@@ -210,6 +208,8 @@ DtInitialize (
     {
         return (Status);
     }
+
+    AcpiUtSetIntegerWidth (2); /* Set width to 64 bits */
 
     Gbl_FieldList = NULL;
     Gbl_RootTable = NULL;
@@ -303,7 +303,7 @@ DtCompileDataTable (
         return (AE_ERROR);
     }
 
-    Gbl_Signature = UtStringCacheCalloc (strlen (Signature) + 1);
+    Gbl_Signature = UtLocalCacheCalloc (strlen (Signature) + 1);
     strcpy (Gbl_Signature, Signature);
 
     /*
@@ -346,7 +346,7 @@ DtCompileDataTable (
     DtInsertCompilerIds (*FieldList);
 
     Status = DtCompileTable (FieldList, AcpiDmTableInfoHeader,
-        &Gbl_RootTable, TRUE);
+        &Gbl_RootTable);
     if (ACPI_FAILURE (Status))
     {
         return (Status);
@@ -379,18 +379,21 @@ DtCompileDataTable (
     }
     else if (TableData->TableInfo)
     {
-        /* Simple table, just walk the info table */
+        /* Simple table, just walk the info table, unless its empty */
 
-        Subtable = NULL;
-        Status = DtCompileTable (FieldList, TableData->TableInfo,
-            &Subtable, TRUE);
-        if (ACPI_FAILURE (Status))
+        if (FieldList && *FieldList)
         {
-            return (Status);
-        }
+            Subtable = NULL;
+            Status = DtCompileTable (FieldList, TableData->TableInfo,
+                &Subtable);
+            if (ACPI_FAILURE (Status))
+            {
+                return (Status);
+            }
 
-        DtInsertSubtable (Gbl_RootTable, Subtable);
-        DtPopSubtable ();
+            DtInsertSubtable (Gbl_RootTable, Subtable);
+            DtPopSubtable ();
+        }
     }
     else
     {
@@ -421,7 +424,6 @@ FinishHeader:
  * PARAMETERS:  Field               - Current field list pointer
  *              Info                - Info table for this ACPI table
  *              RetSubtable         - Compile result of table
- *              Required            - If this subtable must exist
  *
  * RETURN:      Status
  *
@@ -433,8 +435,7 @@ ACPI_STATUS
 DtCompileTable (
     DT_FIELD                **Field,
     ACPI_DMTABLE_INFO       *Info,
-    DT_SUBTABLE             **RetSubtable,
-    BOOLEAN                 Required)
+    DT_SUBTABLE             **RetSubtable)
 {
     DT_FIELD                *LocalField;
     UINT32                  Length;
@@ -449,9 +450,17 @@ DtCompileTable (
     ACPI_STATUS             Status = AE_OK;
 
 
-    if (!Field || !*Field)
+    if (!Field)
     {
         return (AE_BAD_PARAMETER);
+    }
+    if (!*Field)
+    {
+        /*
+         * The field list is empty, this means that we are out of fields to
+         * parse. In other words, we are at the end of the table.
+         */
+        return (AE_END_OF_TABLE);
     }
 
     /* Ignore optional subtable if name does not match */
@@ -473,7 +482,7 @@ DtCompileTable (
 
     if (Length > 0)
     {
-        String = UtStringCacheCalloc (Length);
+        String = UtLocalCacheCalloc (Length);
         Subtable->Buffer = ACPI_CAST_PTR (UINT8, String);
     }
 
@@ -564,19 +573,19 @@ DtCompileTable (
             case ACPI_DMT_GAS:
 
                 Status = DtCompileTable (Field, AcpiDmTableInfoGas,
-                    &InlineSubtable, TRUE);
+                    &InlineSubtable);
                 break;
 
             case ACPI_DMT_HESTNTFY:
 
                 Status = DtCompileTable (Field, AcpiDmTableInfoHestNotify,
-                    &InlineSubtable, TRUE);
+                    &InlineSubtable);
                 break;
 
             case ACPI_DMT_IORTMEM:
 
                 Status = DtCompileTable (Field, AcpiDmTableInfoIortAcc,
-                    &InlineSubtable, TRUE);
+                    &InlineSubtable);
                 break;
 
             default:
@@ -665,7 +674,7 @@ DtCompileTwoSubtables (
     DT_FIELD                **PFieldList = (DT_FIELD **) List;
 
 
-    Status = DtCompileTable (PFieldList, TableInfo1, &Subtable, TRUE);
+    Status = DtCompileTable (PFieldList, TableInfo1, &Subtable);
     if (ACPI_FAILURE (Status))
     {
         return (Status);
@@ -676,7 +685,7 @@ DtCompileTwoSubtables (
 
     while (*PFieldList)
     {
-        Status = DtCompileTable (PFieldList, TableInfo2, &Subtable, FALSE);
+        Status = DtCompileTable (PFieldList, TableInfo2, &Subtable);
         if (ACPI_FAILURE (Status))
         {
             return (Status);
@@ -716,7 +725,7 @@ DtCompilePadding (
 
     if (Length > 0)
     {
-        String = UtStringCacheCalloc (Length);
+        String = UtLocalCacheCalloc (Length);
         Subtable->Buffer = ACPI_CAST_PTR (UINT8, String);
     }
 

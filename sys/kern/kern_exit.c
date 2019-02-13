@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_exit.c,v 1.258 2016/04/27 21:15:40 christos Exp $	*/
+/*	$NetBSD: kern_exit.c,v 1.272 2018/07/12 10:46:48 maxv Exp $	*/
 
 /*-
  * Copyright (c) 1998, 1999, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -67,11 +67,10 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.258 2016/04/27 21:15:40 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.272 2018/07/12 10:46:48 maxv Exp $");
 
 #include "opt_ktrace.h"
 #include "opt_dtrace.h"
-#include "opt_perfctrs.h"
 #include "opt_sysv.h"
 
 #include <sys/param.h>
@@ -89,9 +88,6 @@ __KERNEL_RCSID(0, "$NetBSD: kern_exit.c,v 1.258 2016/04/27 21:15:40 christos Exp
 #include <sys/syslog.h>
 #include <sys/pool.h>
 #include <sys/uidinfo.h>
-#if defined(PERFCTRS)
-#include <sys/pmc.h>
-#endif
 #include <sys/ptrace.h>
 #include <sys/acct.h>
 #include <sys/filedesc.h>
@@ -325,6 +321,7 @@ exit1(struct lwp *l, int exitcode, int signo)
 	 * we run at this moment, nothing runs in userland
 	 * anymore.
 	 */
+	ruspace(p);	/* Update our vm resource use */
 	uvm_proc_exit(p);
 
 	/*
@@ -343,21 +340,9 @@ exit1(struct lwp *l, int exitcode, int signo)
 	 */
 	mutex_enter(proc_lock);
 	if (p->p_lflag & PL_PPWAIT) {
-#if 0
-		lwp_t *lp;
-
-		l->l_lwpctl = NULL; /* was on loan from blocked parent */
-		p->p_lflag &= ~PL_PPWAIT;
-
-		lp = p->p_vforklwp;
-		p->p_vforklwp = NULL;
-		lp->l_pflag &= ~LP_VFORKWAIT; /* XXX */
-		cv_broadcast(&lp->l_waitcv);
-#else
 		l->l_lwpctl = NULL; /* was on loan from blocked parent */
 		p->p_lflag &= ~PL_PPWAIT;
 		cv_broadcast(&p->p_pptr->p_waitcv);
-#endif
 	}
 
 	if (SESS_LEADER(p)) {
@@ -432,17 +417,6 @@ exit1(struct lwp *l, int exitcode, int signo)
 		 (p->p_xsig ? CLD_KILLED : CLD_EXITED)),
 		0,0,0,0);
 
-#if PERFCTRS
-	/*
-	 * Save final PMC information in parent process & clean up.
-	 */
-	if (PMC_ENABLED(p)) {
-		pmc_save_context(p);
-		pmc_accumulate(p->p_pptr, p);
-		pmc_process_exit(p);
-	}
-#endif
-
 	/*
 	 * Reset p_opptr pointer of all former children which got
 	 * traced by another process and were reparented. We reset
@@ -454,6 +428,10 @@ exit1(struct lwp *l, int exitcode, int signo)
 	if (__predict_false(p->p_slflag & PSL_CHTRACED)) {
 		struct proc *q;
 		PROCLIST_FOREACH(q, &allproc) {
+			if (q->p_opptr == p)
+				q->p_opptr = NULL;
+		}
+		PROCLIST_FOREACH(q, &zombproc) {
 			if (q->p_opptr == p)
 				q->p_opptr = NULL;
 		}
@@ -477,7 +455,7 @@ exit1(struct lwp *l, int exitcode, int signo)
 		if (__predict_false(child->p_slflag & PSL_TRACED)) {
 			mutex_enter(p->p_lock);
 			child->p_slflag &=
-			    ~(PSL_TRACED|PSL_FSTRACE|PSL_SYSCALL);
+			    ~(PSL_TRACED|PSL_SYSCALL);
 			mutex_exit(p->p_lock);
 			if (child->p_opptr != child->p_pptr) {
 				struct proc *t = child->p_opptr;
@@ -534,8 +512,7 @@ exit1(struct lwp *l, int exitcode, int signo)
 	/* Reload parent pointer, since p may have been reparented above */
 	new_parent = p->p_pptr;
 
-	if (__predict_false((p->p_slflag & PSL_FSTRACE) == 0 &&
-	    p->p_exitsig != 0)) {
+	if (__predict_false(p->p_exitsig != 0)) {
 		exit_psignal(p, new_parent, &ksi);
 		kpsignal(new_parent, &ksi, NULL);
 	}
@@ -651,14 +628,14 @@ retry:
 	KASSERT(p->p_nlwps == 1);
 }
 
-static int
+int
 do_sys_waitid(idtype_t idtype, id_t id, int *pid, int *status, int options,
     struct wrusage *wru, siginfo_t *si)
 {
 	proc_t *child;
 	int error;
 
-	
+
 	if (wru != NULL)
 		memset(wru, 0, sizeof(*wru));
 	if (si != NULL)
@@ -684,9 +661,9 @@ do_sys_waitid(idtype_t idtype, id_t id, int *pid, int *status, int options,
 			proc_free(child, wru);
 		}
 	} else {
-		/* Child state must have been SSTOP. */
-		*status = child->p_xsig == SIGCONT ? W_CONTCODE() :
-		    W_STOPCODE(child->p_xsig);
+		/* Don't mark SIGCONT if we are being stopped */
+		*status = (child->p_xsig == SIGCONT && child->p_stat != SSTOP) ?
+		    W_CONTCODE() : W_STOPCODE(child->p_xsig);
 		mutex_exit(proc_lock);
 	}
 	return 0;
@@ -793,7 +770,7 @@ sys_wait6(struct lwp *l, const struct sys_wait6_args *uap, register_t *retval)
 	retval[0] = pid; 	/* tell userland who it was */
 
 #if 0
-	/* 
+	/*
 	 * should we copyout if there was no process, hence no useful data?
 	 * We don't for an old sytle wait4() (etc) but I believe
 	 * FreeBSD does for wait6(), so a tossup...  Go with FreeBSD for now.
@@ -822,7 +799,7 @@ sys_wait6(struct lwp *l, const struct sys_wait6_args *uap, register_t *retval)
  *	 2:	This is the only match
  */
 static int
-match_process(struct proc *pp, struct proc **q, idtype_t idtype, id_t id,
+match_process(const struct proc *pp, struct proc **q, idtype_t idtype, id_t id,
     int options, struct wrusage *wrusage, siginfo_t *siginfo)
 {
 	struct rusage *rup;
@@ -926,6 +903,66 @@ match_process(struct proc *pp, struct proc **q, idtype_t idtype, id_t id,
 }
 
 /*
+ * Determine if there are existing processes being debugged
+ * that used to be (and sometime later will be again) children
+ * of a specific parent (while matching wait criteria)
+ */
+static bool
+debugged_child_exists(idtype_t idtype, id_t id, int options, siginfo_t *si,
+    const struct proc *parent)
+{
+	struct proc *pp;
+
+	/*
+	 * If we are searching for a specific pid, we can optimise a little
+	 */
+	if (idtype == P_PID) {
+		/*
+		 * Check the specific process to see if its real parent is us
+		 */
+		pp = proc_find_raw((pid_t)id);
+		if (pp != NULL && pp->p_stat != SIDL && pp->p_opptr == parent) {
+			/*
+			 * using P_ALL here avoids match_process() doing the
+			 * same work that we just did, but incorrectly for
+			 * this scenario.
+			 */
+			if (match_process(parent, &pp, P_ALL, id, options,
+			    NULL, si))
+				return true;
+		}
+		return false;
+	}
+
+	/*
+	 * For the hard cases, just look everywhere to see if some
+	 * stolen (reparented) process is really our lost child.
+	 * Then check if that process could satisfy the wait conditions.
+	 */
+
+	/*
+	 * XXX inefficient, but hopefully fairly rare.
+	 * XXX should really use a list of reparented processes.
+	 */
+	PROCLIST_FOREACH(pp, &allproc) {
+		if (pp->p_stat == SIDL)		/* XXX impossible ?? */
+			continue;
+		if (pp->p_opptr == parent &&
+		    match_process(parent, &pp, idtype, id, options, NULL, si))
+			return true;
+	}
+	PROCLIST_FOREACH(pp, &zombproc) {
+		if (pp->p_stat == SIDL)		/* XXX impossible ?? */
+			continue;
+		if (pp->p_opptr == parent &&
+		    match_process(parent, &pp, idtype, id, options, NULL, si))
+			return true;
+	}
+
+	return false;
+}
+
+/*
  * Scan list of child processes for a child process that has stopped or
  * exited.  Used by sys_wait4 and 'compat' equivalents.
  *
@@ -940,14 +977,12 @@ find_stopped_child(struct proc *parent, idtype_t idtype, id_t id, int options,
 
 	KASSERT(mutex_owned(proc_lock));
 
-	if (options & ~(WUNTRACED|WNOHANG|WALTSIG|WALLSIG|WTRAPPED|WEXITED|
-	    WNOWAIT|WCONTINUED)
-	    && !(options & WOPTSCHECKED)) {
+	if (options & ~WALLOPTS) {
 		*child_p = NULL;
 		return EINVAL;
 	}
 
-	if ((options & (WEXITED|WUNTRACED|WCONTINUED|WTRAPPED)) == 0) {
+	if ((options & WSELECTOPTS) == 0) {
 		/*
 		 * We will be unable to find any matching processes,
 		 * because there are no known events to look for.
@@ -1036,7 +1071,7 @@ find_stopped_child(struct proc *parent, idtype_t idtype, id_t id, int options,
 				}
 				if (si) {
 					si->si_status = child->p_xsig;
-					si->si_code = 
+					si->si_code =
 					    (child->p_slflag & PSL_TRACED) ?
 					    CLD_TRAPPED : CLD_STOPPED;
 				}
@@ -1047,6 +1082,18 @@ find_stopped_child(struct proc *parent, idtype_t idtype, id_t id, int options,
 				break;
 			}
 		}
+
+		/*
+		 * If we found nothing, but we are the bereaved parent
+		 * of a stolen child, look and see if that child (or
+		 * one of them) meets our search criteria.   If so, then
+		 * we cannot succeed, but we can hang (wait...), 
+		 * or if WNOHANG, return 0 instead of ECHILD
+		 */
+		if (child == NULL && error == ECHILD && 
+		    (parent->p_slflag & PSL_CHTRACED) &&
+		    debugged_child_exists(idtype, id, options, si, parent))
+			error = 0;
 
 		if (child != NULL || error != 0 ||
 		    ((options & WNOHANG) != 0 && dead == NULL)) {
@@ -1097,7 +1144,7 @@ proc_free(struct proc *p, struct wrusage *wru)
 	 */
 	if ((p->p_slflag & PSL_TRACED) != 0 && p->p_opptr != parent) {
 		mutex_enter(p->p_lock);
-		p->p_slflag &= ~(PSL_TRACED|PSL_FSTRACE|PSL_SYSCALL);
+		p->p_slflag &= ~(PSL_TRACED|PSL_SYSCALL);
 		mutex_exit(p->p_lock);
 		parent = (p->p_opptr == NULL) ? initproc : p->p_opptr;
 		proc_reparent(p, parent);
@@ -1131,7 +1178,7 @@ proc_free(struct proc *p, struct wrusage *wru)
 	p->p_xexit = 0;
 
 	/*
-	 * At this point we are going to start freeing the final resources. 
+	 * At this point we are going to start freeing the final resources.
 	 * If anyone tries to access the proc structure after here they will
 	 * get a shock - bits are missing.  Attempt to make it hard!  We
 	 * don't bother with any further locking past this point.
@@ -1189,6 +1236,7 @@ proc_free(struct proc *p, struct wrusage *wru)
 	 */
 	if (p->p_textvp)
 		vrele(p->p_textvp);
+	kmem_strfree(p->p_path);
 
 	mutex_destroy(&p->p_auxlock);
 	mutex_obj_free(p->p_lock);
@@ -1198,6 +1246,33 @@ proc_free(struct proc *p, struct wrusage *wru)
 	rw_destroy(&p->p_reflock);
 
 	proc_free_mem(p);
+}
+
+/*
+ * Change the parent of a process for tracing purposes.
+ */
+void
+proc_changeparent(struct proc *t, struct proc *p)
+{
+	SET(t->p_slflag, PSL_TRACED);
+	t->p_opptr = t->p_pptr;
+	if (t->p_pptr == p)
+		return;
+	struct proc *parent = t->p_pptr;
+
+	if (parent->p_lock < t->p_lock) {
+		if (!mutex_tryenter(parent->p_lock)) {
+			mutex_exit(t->p_lock);
+			mutex_enter(parent->p_lock);
+			mutex_enter(t->p_lock);
+		}
+	} else if (parent->p_lock > t->p_lock) {
+		mutex_enter(parent->p_lock);
+	}
+	parent->p_slflag |= PSL_CHTRACED;
+	proc_reparent(t, p);
+	if (parent->p_lock != t->p_lock)
+		mutex_exit(parent->p_lock);
 }
 
 /*
@@ -1219,11 +1294,12 @@ proc_reparent(struct proc *child, struct proc *parent)
 		child->p_pptr->p_nstopchild--;
 		parent->p_nstopchild++;
 	}
-	if (parent == initproc)
+	if (parent == initproc) {
 		child->p_exitsig = SIGCHLD;
+		child->p_ppid = parent->p_pid;
+	}
 
 	LIST_REMOVE(child, p_sibling);
 	LIST_INSERT_HEAD(&parent->p_children, child, p_sibling);
 	child->p_pptr = parent;
-	child->p_ppid = parent->p_pid;
 }

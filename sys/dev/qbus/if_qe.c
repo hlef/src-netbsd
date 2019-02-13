@@ -1,4 +1,4 @@
-/*      $NetBSD: if_qe.c,v 1.75 2016/06/10 13:27:15 ozaki-r Exp $ */
+/*      $NetBSD: if_qe.c,v 1.79 2018/06/26 06:48:02 msaitoh Exp $ */
 /*
  * Copyright (c) 1999 Ludd, University of Lule}, Sweden. All rights reserved.
  *
@@ -10,12 +10,6 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *      This product includes software developed at Ludd, University of
- *      Lule}, Sweden and its contributors.
- * 4. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission
  *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
@@ -38,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_qe.c,v 1.75 2016/06/10 13:27:15 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_qe.c,v 1.79 2018/06/26 06:48:02 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -52,12 +46,10 @@ __KERNEL_RCSID(0, "$NetBSD: if_qe.c,v 1.75 2016/06/10 13:27:15 ozaki-r Exp $");
 #include <net/if.h>
 #include <net/if_ether.h>
 #include <net/if_dl.h>
+#include <net/bpf.h>
 
 #include <netinet/in.h>
 #include <netinet/if_inarp.h>
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 
@@ -496,7 +488,7 @@ qestart(struct ifnet *ifp)
 
 		IFQ_DEQUEUE(&ifp->if_snd, m);
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 		/*
 		 * m now points to a mbuf chain that can be loaded.
 		 * Loop around and set it.
@@ -595,7 +587,6 @@ qeintr(void *arg)
 			m->m_pkthdr.len = m->m_len = len;
 			if (++sc->sc_nextrx == RXDESCS)
 				sc->sc_nextrx = 0;
-			bpf_mtap(ifp, m);
 			if ((status1 & QE_ESETUP) == 0)
 				if_percpuq_enqueue(ifp->if_percpuq, m);
 			else

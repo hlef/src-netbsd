@@ -1,4 +1,4 @@
-/*	$NetBSD: ufs_inode.c,v 1.95 2015/06/13 14:56:45 hannken Exp $	*/
+/*	$NetBSD: ufs_inode.c,v 1.103 2018/01/28 10:01:18 hannken Exp $	*/
 
 /*
  * Copyright (c) 1991, 1993
@@ -37,7 +37,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: ufs_inode.c,v 1.95 2015/06/13 14:56:45 hannken Exp $");
+__KERNEL_RCSID(0, "$NetBSD: ufs_inode.c,v 1.103 2018/01/28 10:01:18 hannken Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_ffs.h"
@@ -54,7 +54,6 @@ __KERNEL_RCSID(0, "$NetBSD: ufs_inode.c,v 1.95 2015/06/13 14:56:45 hannken Exp $
 #include <sys/namei.h>
 #include <sys/kauth.h>
 #include <sys/wapbl.h>
-#include <sys/fstrans.h>
 #include <sys/kmem.h>
 
 #include <ufs/ufs/inode.h>
@@ -70,15 +69,13 @@ __KERNEL_RCSID(0, "$NetBSD: ufs_inode.c,v 1.95 2015/06/13 14:56:45 hannken Exp $
 
 #include <uvm/uvm.h>
 
-extern int prtactive;
-
 /*
  * Last reference to an inode.  If necessary, write or delete it.
  */
 int
 ufs_inactive(void *v)
 {
-	struct vop_inactive_args /* {
+	struct vop_inactive_v2_args /* {
 		struct vnode *a_vp;
 		struct bool *a_recycle;
 	} */ *ap = v;
@@ -91,18 +88,27 @@ ufs_inactive(void *v)
 
 	UFS_WAPBL_JUNLOCK_ASSERT(mp);
 
-	fstrans_start(mp, FSTRANS_LAZY);
 	/*
 	 * Ignore inodes related to stale file handles.
 	 */
 	if (ip->i_mode == 0)
 		goto out;
+
 	if (ip->i_nlink <= 0 && (mp->mnt_flag & MNT_RDONLY) == 0) {
 #ifdef UFS_EXTATTR
 		ufs_extattr_vnode_inactive(vp, curlwp);
 #endif
-		if (ip->i_size != 0)
-			allerror = ufs_truncate(vp, 0, NOCRED);
+
+		/*
+		 * All file blocks must be freed before we can let the vnode
+		 * be reclaimed, so can't postpone full truncating any further.
+		 */
+		if (ip->i_size != 0) {
+			allerror = ufs_truncate_retry(vp, 0, NOCRED);
+			if (allerror)
+				goto out;
+		}
+
 #if defined(QUOTA) || defined(QUOTA2)
 		error = UFS_WAPBL_BEGIN(mp);
 		if (error) {
@@ -142,8 +148,16 @@ out:
 	 * so that it can be reused immediately.
 	 */
 	*ap->a_recycle = (ip->i_mode == 0);
-	VOP_UNLOCK(vp);
-	fstrans_done(mp);
+
+	if (ip->i_mode == 0 && (DIP(ip, size) != 0 || DIP(ip, blocks) != 0)) {
+		printf("%s: unlinked ino %" PRId64 " on \"%s\" has"
+		    " non zero size %" PRIx64 " or blocks %" PRIx64
+		    " with allerror %d\n",
+		    __func__, ip->i_number, mp->mnt_stat.f_mntonname,
+		    DIP(ip, size), DIP(ip, blocks), allerror);
+		panic("%s: dirty filesystem?", __func__);
+	}
+
 	return (allerror);
 }
 
@@ -155,19 +169,11 @@ ufs_reclaim(struct vnode *vp)
 {
 	struct inode *ip = VTOI(vp);
 
-	if (prtactive && vp->v_usecount > 1)
-		vprint("ufs_reclaim: pushing active", vp);
-
 	if (!UFS_WAPBL_BEGIN(vp->v_mount)) {
 		UFS_UPDATE(vp, NULL, NULL, UPDATE_CLOSE);
 		UFS_WAPBL_END(vp->v_mount);
 	}
 	UFS_UPDATE(vp, NULL, NULL, UPDATE_CLOSE);
-
-	/*
-	 * Remove the inode from the vnode cache.
-	 */
-	vcache_remove(vp->v_mount, &ip->i_number, sizeof(ip->i_number));
 
 	if (ip->i_devvp) {
 		vrele(ip->i_devvp);
@@ -206,8 +212,8 @@ ufs_balloc_range(struct vnode *vp, off_t off, off_t len, kauth_cred_t cred,
 	struct vm_page **pgs;
 	size_t pgssize;
 	UVMHIST_FUNC("ufs_balloc_range"); UVMHIST_CALLED(ubchist);
-	UVMHIST_LOG(ubchist, "vp %p off 0x%x len 0x%x u_size 0x%x",
-		    vp, off, len, vp->v_size);
+	UVMHIST_LOG(ubchist, "vp %#jx off 0x%jx len 0x%jx u_size 0x%jx",
+		    (uintptr_t)vp, off, len, vp->v_size);
 
 	neweof = MAX(vp->v_size, off + len);
 	GOP_SIZE(vp, neweof, &neweob, 0);
@@ -285,49 +291,30 @@ ufs_balloc_range(struct vnode *vp, off_t off, off_t len, kauth_cred_t cred,
 	return error;
 }
 
-static int
-ufs_wapbl_truncate(struct vnode *vp, uint64_t newsize, kauth_cred_t cred)
+int
+ufs_truncate_retry(struct vnode *vp, uint64_t newsize, kauth_cred_t cred)
 {
 	struct inode *ip = VTOI(vp);
+	struct mount *mp = vp->v_mount;
 	int error = 0;
-	uint64_t base, incr;
 
-	base = UFS_NDADDR << vp->v_mount->mnt_fs_bshift;
-	incr = MNINDIR(ip->i_ump) << vp->v_mount->mnt_fs_bshift;/* Power of 2 */
-	while (ip->i_size > base + incr &&
-	    (newsize == 0 || ip->i_size > newsize + incr)) {
-		/*
-		 * round down to next full indirect
-		 * block boundary.
-		 */
-		uint64_t nsize = base + ((ip->i_size - base - 1) & ~(incr - 1));
-		error = UFS_TRUNCATE(vp, nsize, 0, cred);
+	UFS_WAPBL_JUNLOCK_ASSERT(mp);
+
+	/*
+	 * Truncate might temporarily fail, loop until done.
+	 */
+	do {
+		error = UFS_WAPBL_BEGIN(mp);
 		if (error)
-			break;
-		UFS_WAPBL_END(vp->v_mount);
-		error = UFS_WAPBL_BEGIN(vp->v_mount);
-		if (error)
-			return error;
-	}
-	return error;
-}
+			goto out;
 
-int
-ufs_truncate(struct vnode *vp, uint64_t newsize, kauth_cred_t cred)
-{
-	int error;
-
-	error = UFS_WAPBL_BEGIN(vp->v_mount);
-	if (error)
-		return error;
-
-	if (vp->v_mount->mnt_wapbl)
-		error = ufs_wapbl_truncate(vp, newsize, cred);
-
-	if (error == 0)
 		error = UFS_TRUNCATE(vp, newsize, 0, cred);
-	UFS_WAPBL_END(vp->v_mount);
+		UFS_WAPBL_END(mp);
 
+		if (error != 0 && error != EAGAIN)
+			goto out;
+	} while (ip->i_size != newsize);
+
+  out:
 	return error;
 }
-

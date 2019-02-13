@@ -1,4 +1,4 @@
-/*	$NetBSD: rtld.c,v 1.178 2016/05/24 20:32:33 christos Exp $	 */
+/*	$NetBSD: rtld.c,v 1.193 2018/10/17 23:36:58 joerg Exp $	 */
 
 /*
  * Copyright 1996 John D. Polstra.
@@ -40,7 +40,7 @@
 
 #include <sys/cdefs.h>
 #ifndef lint
-__RCSID("$NetBSD: rtld.c,v 1.178 2016/05/24 20:32:33 christos Exp $");
+__RCSID("$NetBSD: rtld.c,v 1.193 2018/10/17 23:36:58 joerg Exp $");
 #endif /* not lint */
 
 #include <sys/param.h>
@@ -259,6 +259,22 @@ _rtld_call_init_function(Obj_Entry *obj, sigset_t *mask, u_int cur_objgen)
 #endif /* HAVE_INITFINI_ARRAY */
 }
 
+static bool
+_rtld_call_ifunc_functions(sigset_t *mask, Obj_Entry *obj, u_int cur_objgen)
+{
+	if (obj->ifunc_remaining
+#if defined(IFUNC_NONPLT)
+	    || obj->ifunc_remaining_nonplt
+#endif
+	) {
+		_rtld_call_ifunc(obj, mask, cur_objgen);
+		if (_rtld_objgen != cur_objgen) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void
 _rtld_call_init_functions(sigset_t *mask)
 {
@@ -273,7 +289,26 @@ restart:
 	SIMPLEQ_INIT(&initlist);
 	_rtld_initlist_tsort(&initlist, 0);
 
-	/* First pass: objects marked with DF_1_INITFIRST. */
+	/* First pass: objects with IRELATIVE relocations. */
+	SIMPLEQ_FOREACH(elm, &initlist, link) {
+		if (_rtld_call_ifunc_functions(mask, elm->obj, cur_objgen)) {
+			dbg(("restarting init iteration"));
+			_rtld_objlist_clear(&initlist);
+			goto restart;
+		}
+	}
+	/*
+	 * XXX: For historic reasons, init/fini of the main object are called
+	 * from crt0. Don't introduce that mistake for ifunc, so look at
+	 * the head of _rtld_objlist that _rtld_initlist_tsort skipped.
+	 */
+	if (_rtld_call_ifunc_functions(mask, _rtld_objlist, cur_objgen)) {
+		dbg(("restarting init iteration"));
+		_rtld_objlist_clear(&initlist);
+		goto restart;
+	}
+
+	/* Second pass: objects marked with DF_1_INITFIRST. */
 	SIMPLEQ_FOREACH(elm, &initlist, link) {
 		Obj_Entry * const obj = elm->obj;
 		if (obj->z_initfirst) {
@@ -286,7 +321,7 @@ restart:
 		}
 	}
 
-	/* Second pass: all other objects. */
+	/* Third pass: all other objects. */
 	SIMPLEQ_FOREACH(elm, &initlist, link) {
 		_rtld_call_init_function(elm->obj, mask, cur_objgen);
 		if (_rtld_objgen != cur_objgen) {
@@ -733,6 +768,8 @@ _rtld(Elf_Addr *sp, Elf_Addr relocbase)
 	if (real___mainprog_obj)
 		*real___mainprog_obj = _rtld_objmain;
 
+	_rtld_debug_state();	/* say hello to gdb! */
+
 	_rtld_exclusive_enter(&mask);
 
 	dbg(("calling _init functions"));
@@ -748,10 +785,8 @@ _rtld(Elf_Addr *sp, Elf_Addr relocbase)
 	 * of stack.
 	 */
 
-	_rtld_debug_state();	/* say hello to gdb! */
-
 	((void **) osp)[0] = _rtld_exit;
-	((void **) osp)[1] = _rtld_objmain;
+	((void **) osp)[1] = __UNCONST(_rtld_compat_obj);
 	return (Elf_Addr) _rtld_objmain->entry;
 }
 
@@ -1071,10 +1106,17 @@ _rtld_objmain_sym(const char *name)
 }
 
 #ifdef __powerpc__
-static void *
+static __noinline void *
 hackish_return_address(void)
 {
+#if __GNUC_PREREQ__(6,0)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wframe-address"
+#endif
 	return __builtin_return_address(1);
+#if __GNUC_PREREQ__(6,0)
+#pragma GCC diagnostic pop
+#endif
 }
 #endif
 
@@ -1132,6 +1174,20 @@ do_dlsym(void *handle, const char *name, const Ver_Entry *ventry, void *retaddr)
 				    flags, ventry)) != NULL) {
 					defobj = obj;
 					break;
+				}
+			}
+			/*
+			 * Search the dynamic linker itself, and possibly
+			 * resolve the symbol from there if it is not defined
+			 * already or weak. This is how the application links
+			 * to dynamic linker services such as dlopen.
+			 */
+			if (!def || ELF_ST_BIND(def->st_info) == STB_WEAK) {
+				const Elf_Sym *symp = _rtld_symlook_obj(name,
+				    hash, &_rtld_objself, flags, ventry);
+				if (symp != NULL) {
+					def = symp;
+					defobj = &_rtld_objself;
 				}
 			}
 			break;
@@ -1388,8 +1444,7 @@ dl_iterate_phdr(int (*callback)(struct dl_phdr_info *, size_t, void *), void *pa
 	for (obj = _rtld_objlist;  obj != NULL;  obj = obj->next) {
 		phdr_info.dlpi_addr = (Elf_Addr)obj->relocbase;
 		/* XXX: wrong but not fixing it yet */
-		phdr_info.dlpi_name = SIMPLEQ_FIRST(&obj->names) ?
-		    SIMPLEQ_FIRST(&obj->names)->name : obj->path;
+		phdr_info.dlpi_name = obj->path;
 		phdr_info.dlpi_phdr = obj->phdr;
 		phdr_info.dlpi_phnum = obj->phsize / sizeof(obj->phdr[0]);
 #if defined(__HAVE_TLS_VARIANT_I) || defined(__HAVE_TLS_VARIANT_II)
@@ -1410,6 +1465,45 @@ dl_iterate_phdr(int (*callback)(struct dl_phdr_info *, size_t, void *), void *pa
 
 	_rtld_shared_exit();
 	return error;
+}
+
+void
+__dl_cxa_refcount(void *addr, ssize_t delta)
+{
+	sigset_t mask;
+	Obj_Entry *obj;
+
+	if (delta == 0)
+		return;
+
+	dbg(("__dl_cxa_refcount of %p with %zd", addr, delta));
+
+	_rtld_exclusive_enter(&mask);
+	obj = _rtld_obj_from_addr(addr);
+
+	if (obj == NULL) {
+		dbg(("__dl_cxa_refcont: address not found"));
+		_rtld_error("No shared object contains address");
+		_rtld_exclusive_exit(&mask);
+		return;
+	}
+	if (delta > 0 && obj->cxa_refcount > SIZE_MAX - delta)
+		_rtld_error("Reference count overflow");
+	else if (delta < 0 && obj->cxa_refcount < -1 + (size_t)-(delta + 1))
+		_rtld_error("Reference count underflow");
+	else {
+		if (obj->cxa_refcount == 0)
+			++obj->refcount;
+		obj->cxa_refcount += delta;
+		dbg(("new reference count: %zu", obj->cxa_refcount));
+		if (obj->cxa_refcount == 0) {
+			--obj->refcount;
+			if (obj->refcount == 0)
+				_rtld_unload_object(&mask, obj, true);
+		}
+	}
+
+	_rtld_exclusive_exit(&mask);
 }
 
 /*

@@ -1,4 +1,4 @@
-/*	$NetBSD: tty.c,v 1.271 2016/07/07 06:55:43 msaitoh Exp $	*/
+/*	$NetBSD: tty.c,v 1.277 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -63,7 +63,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tty.c,v 1.271 2016/07/07 06:55:43 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tty.c,v 1.277 2018/09/03 16:29:35 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_compat_netbsd.h"
@@ -302,8 +302,8 @@ sysctl_kern_tty_setup(void)
 	sysctl_createv(&kern_tkstat_sysctllog, 0, NULL, NULL,
 		       CTLFLAG_PERMANENT,
 		       CTLTYPE_NODE, "tkstat",
-		       SYSCTL_DESCR("Number of characters sent and and "
-				    "received on ttys"),
+		       SYSCTL_DESCR("Number of characters sent and received "
+				    "on ttys"),
 		       NULL, 0, NULL, 0,
 		       CTL_KERN, KERN_TKSTAT, CTL_EOL);
 
@@ -774,7 +774,7 @@ ttyinput_wlock(int c, struct tty *tp)
 			/*
 			 * Place the cursor over the '^' of the ^D.
 			 */
-			i = min(2, tp->t_column - i);
+			i = uimin(2, tp->t_column - i);
 			while (i > 0) {
 				(void)ttyoutput('\b', tp);
 				i--;
@@ -1240,12 +1240,14 @@ ttioctl(struct tty *tp, u_long cmd, void *data, int flag, struct lwp *l)
 		mutex_spin_exit(&tty_lock);
 		break;
 	case TIOCSTI:			/* simulate terminal input */
-		if (kauth_authorize_device_tty(l->l_cred, KAUTH_DEVICE_TTY_STI,
-		    tp) != 0) {
+		if ((error = kauth_authorize_device_tty(l->l_cred,
+		    KAUTH_DEVICE_TTY_STI, tp)) != 0) {
 			if (!ISSET(flag, FREAD))
-				return (EPERM);
+				return EPERM;
 			if (!isctty(p, tp))
-				return (EACCES);
+				return EACCES;
+			if (tp->t_session->s_leader->p_cred != p->p_cred)
+				return error;
 		}
 		(*tp->t_linesw->l_rint)(*(u_char *)data, tp);
 		break;
@@ -1514,10 +1516,19 @@ filt_ttywrite(struct knote *kn, long hint)
 	return (canwrite);
 }
 
-static const struct filterops ttyread_filtops =
-	{ 1, NULL, filt_ttyrdetach, filt_ttyread };
-static const struct filterops ttywrite_filtops =
-	{ 1, NULL, filt_ttywdetach, filt_ttywrite };
+static const struct filterops ttyread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_ttyrdetach,
+	.f_event = filt_ttyread,
+};
+
+static const struct filterops ttywrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_ttywdetach,
+	.f_event = filt_ttywrite,
+};
 
 int
 ttykqfilter(dev_t dev, struct knote *kn)
@@ -2174,7 +2185,7 @@ ttwrite(struct tty *tp, struct uio *uio, int flag)
 		 * leftover from last time.
 		 */
 		if (cc == 0) {
-			cc = min(uio->uio_resid, OBUFSIZ);
+			cc = uimin(uio->uio_resid, OBUFSIZ);
 			cp = obuf;
 			error = uiomove(cp, cc, uio);
 			if (error) {

@@ -1,4 +1,4 @@
-/*	$NetBSD: bus_dma.c,v 1.74 2015/10/27 18:49:26 christos Exp $	*/
+/*	$NetBSD: bus_dma.c,v 1.77 2017/07/31 19:29:19 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 1996, 1997, 1998, 2007 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: bus_dma.c,v 1.74 2015/10/27 18:49:26 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: bus_dma.c,v 1.77 2017/07/31 19:29:19 jdolecek Exp $");
 
 /*
  * The following is included because _bus_dma_uiomove is derived from
@@ -249,8 +249,7 @@ _bus_dmamem_alloc_range(bus_dma_tag_t t, bus_size_t size,
 			segs[curseg].ds_len += PAGE_SIZE;
 		} else {
 			curseg++;
-			if (curseg >= nsegs)
-				return EFBIG;
+			KASSERT(curseg < nsegs);
 			segs[curseg].ds_addr = curaddr;
 			segs[curseg].ds_len = PAGE_SIZE;
 		}
@@ -306,8 +305,6 @@ _bus_dmamap_create(bus_dma_tag_t t, bus_size_t size, int nsegments,
 	map->dm_mapsize = 0;		/* no valid mappings */
 	map->dm_nsegs = 0;
 
-	*dmamp = map;
-
 	if (t->_bounce_thresh == 0 || _BUS_AVAIL_END <= t->_bounce_thresh)
 		map->_dm_bounce_thresh = 0;
 	cookieflags = 0;
@@ -321,8 +318,10 @@ _bus_dmamap_create(bus_dma_tag_t t, bus_size_t size, int nsegments,
 	if (map->_dm_bounce_thresh != 0)
 		cookieflags |= X86_DMA_MIGHT_NEED_BOUNCE;
 
-	if ((cookieflags & X86_DMA_MIGHT_NEED_BOUNCE) == 0)
+	if ((cookieflags & X86_DMA_MIGHT_NEED_BOUNCE) == 0) {
+		*dmamp = map;
 		return 0;
+	}
 
 	cookiesize = sizeof(struct x86_bus_dma_cookie) +
 	    (sizeof(bus_dma_segment_t) * map->_dm_segcnt);
@@ -343,6 +342,8 @@ _bus_dmamap_create(bus_dma_tag_t t, bus_size_t size, int nsegments,
  out:
 	if (error)
 		_bus_dmamap_destroy(t, map);
+	else
+		*dmamp = map;
 
 	return (error);
 }
@@ -1652,10 +1653,6 @@ bus_dma_tag_create(bus_dma_tag_t obdt, const uint64_t present,
 		return EINVAL;
 
 	bdt = kmem_alloc(sizeof(struct x86_bus_dma_tag), KM_SLEEP);
-
-	if (bdt == NULL)
-		return ENOMEM;
-
 	*bdt = *obdt;
 	/* don't let bus_dmatag_destroy free these */
 	bdt->_tag_needs_free = 0;

@@ -1,5 +1,3 @@
-/*	$NetBSD: npf_conn.h,v 1.8 2014/12/20 16:19:43 rmind Exp $	*/
-
 /*-
  * Copyright (c) 2009-2014 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -32,7 +30,7 @@
 #ifndef _NPF_CONN_H_
 #define _NPF_CONN_H_
 
-#if !defined(_KERNEL)
+#if !defined(_KERNEL) && !defined(_NPF_STANDALONE)
 #error "kernel-level header only"
 #endif
 
@@ -44,13 +42,10 @@ typedef struct npf_connkey npf_connkey_t;
 
 #if defined(__NPF_CONN_PRIVATE)
 
-#include <sys/rbtree.h>
-
 /*
  * See npf_conn_conkey() function for the key layout description.
  */
 #define	NPF_CONN_NKEYWORDS	(2 + ((sizeof(npf_addr_t) * 2) >> 2))
-#define	NPF_CONN_MAXKEYLEN	(NPF_CONN_NKEYWORDS * sizeof(uint32_t))
 #define	NPF_CONN_GETALEN(key)	((key)->ck_key[0] & 0xffff)
 #define	NPF_CONN_KEYLEN(key)	(8 + (2 * NPF_CONN_GETALEN(key)))
 
@@ -90,7 +85,13 @@ struct npf_conn {
 	kmutex_t		c_lock;
 	npf_state_t		c_state;
 	u_int			c_refcnt;
-	struct timespec		c_atime;
+	uint64_t		c_atime;
+
+	/*
+	 * Save the matching rule ID and flags.
+	 */
+	uint64_t		c_rid;
+	u_int			c_retfl;
 };
 
 #endif
@@ -98,10 +99,10 @@ struct npf_conn {
 /*
  * Connection tracking interface.
  */
-void		npf_conn_sysinit(void);
-void		npf_conn_sysfini(void);
-void		npf_conn_tracking(bool);
-void		npf_conn_load(npf_conndb_t *, bool);
+void		npf_conn_init(npf_t *, int);
+void		npf_conn_fini(npf_t *);
+void		npf_conn_tracking(npf_t *, bool);
+void		npf_conn_load(npf_t *, npf_conndb_t *, bool);
 
 unsigned	npf_conn_conkey(const npf_cache_t *, npf_connkey_t *, bool);
 npf_conn_t *	npf_conn_lookup(const npf_cache_t *, const int, bool *);
@@ -109,15 +110,18 @@ npf_conn_t *	npf_conn_inspect(npf_cache_t *, const int, int *);
 npf_conn_t *	npf_conn_establish(npf_cache_t *, int, bool);
 void		npf_conn_release(npf_conn_t *);
 void		npf_conn_expire(npf_conn_t *);
-bool		npf_conn_pass(const npf_conn_t *, npf_rproc_t **);
-void		npf_conn_setpass(npf_conn_t *, npf_rproc_t *);
+bool		npf_conn_pass(const npf_conn_t *, npf_match_info_t *,
+		    npf_rproc_t **);
+void		npf_conn_setpass(npf_conn_t *, const npf_match_info_t *,
+		    npf_rproc_t *);
 int		npf_conn_setnat(const npf_cache_t *, npf_conn_t *,
 		    npf_nat_t *, u_int);
 npf_nat_t *	npf_conn_getnat(npf_conn_t *, const int, bool *);
-void		npf_conn_gc(npf_conndb_t *, bool, bool);
-int		npf_conn_import(npf_conndb_t *, prop_dictionary_t,
+void		npf_conn_gc(npf_t *, npf_conndb_t *, bool, bool);
+void		npf_conn_worker(npf_t *);
+int		npf_conn_import(npf_t *, npf_conndb_t *, const nvlist_t *,
 		    npf_ruleset_t *);
-prop_dictionary_t npf_conn_export(const npf_conn_t *);
+int		npf_conn_find(npf_t *, const nvlist_t *, nvlist_t **);
 void		npf_conn_print(const npf_conn_t *);
 
 /*
@@ -130,13 +134,13 @@ npf_conn_t *	npf_conndb_lookup(npf_conndb_t *, const npf_connkey_t *,
 		    bool *);
 bool		npf_conndb_insert(npf_conndb_t *, npf_connkey_t *,
 		    npf_conn_t *);
-npf_conn_t *	npf_conndb_remove(npf_conndb_t *, const npf_connkey_t *);
+npf_conn_t *	npf_conndb_remove(npf_conndb_t *, npf_connkey_t *);
 
 void		npf_conndb_enqueue(npf_conndb_t *, npf_conn_t *);
 void		npf_conndb_dequeue(npf_conndb_t *, npf_conn_t *,
 		    npf_conn_t *);
 npf_conn_t *	npf_conndb_getlist(npf_conndb_t *);
 void		npf_conndb_settail(npf_conndb_t *, npf_conn_t *);
-int		npf_conndb_export(prop_array_t);
+int		npf_conndb_export(npf_t *, nvlist_t *);
 
 #endif	/* _NPF_CONN_H_ */

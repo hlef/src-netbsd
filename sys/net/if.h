@@ -1,4 +1,4 @@
-/*	$NetBSD: if.h,v 1.222 2016/07/22 07:09:40 knakahara Exp $	*/
+/*	$NetBSD: if.h,v 1.266 2018/10/18 11:34:54 knakahara Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001 The NetBSD Foundation, Inc.
@@ -230,89 +230,116 @@ struct bridge_iflist;
 struct callout;
 struct krwlock;
 struct if_percpuq;
+struct if_deferred_start;
+struct in6_multi;
 
 typedef unsigned short if_index_t;
 
+/*
+ * Interface.  Field markings and the corresponding locks:
+ *
+ * i:	IFNET_LOCK (a.k.a., if_ioctl_lock)
+ * q:	ifq_lock (struct ifaltq)
+ * a:	if_afdata_lock
+ * 6:	in6_multilock (global lock)
+ * ::	unlocked, stable
+ * ?:	unkown, maybe unsafe
+ *
+ * Lock order: IFNET_LOCK => in6_multilock => if_afdata_lock => ifq_lock
+ *   Note that currently if_afdata_lock and ifq_lock aren't held
+ *   at the same time, but define the order anyway.
+ *
+ * Lock order of IFNET_LOCK with other locks:
+ *     softnet_lock => solock => IFNET_LOCK => ND6_LOCK, in_multilock
+ */
 typedef struct ifnet {
-	void	*if_softc;		/* lower-level data for this if */
+	void		*if_softc;	/* :: lower-level data for this if */
 	/* DEPRECATED. Keep it to avoid breaking kvm(3) users */
-	TAILQ_ENTRY(ifnet) if_list;	/* all struct ifnets are chained */
-	TAILQ_HEAD(, ifaddr) if_addrlist; /* linked list of addresses per if */
-	char	if_xname[IFNAMSIZ];	/* external name (name + unit) */
-	int	if_pcount;		/* number of promiscuous listeners */
-	struct bpf_if *if_bpf;		/* packet filter structure */
-	if_index_t	if_index;	/* numeric abbreviation for this if */
-	short	if_timer;		/* time 'til if_slowtimo called */
-	short	if_flags;		/* up/down, broadcast, etc. */
-	short	if_extflags;		/* if_output MP-safe, etc. */
-	struct	if_data if_data;	/* statistics and other data about if */
+	TAILQ_ENTRY(ifnet)
+			if_list;	/* i: all struct ifnets are chained */
+	TAILQ_HEAD(, ifaddr)
+			if_addrlist;	/* i: linked list of addresses per if */
+	char		if_xname[IFNAMSIZ];
+					/* :: external name (name + unit) */
+	int		if_pcount;	/* i: number of promiscuous listeners */
+	struct bpf_if	*if_bpf;	/* :: packet filter structure */
+	if_index_t	if_index;	/* :: numeric abbreviation for this if */
+	short		if_timer;	/* ?: time 'til if_slowtimo called */
+	unsigned short	if_flags;	/* i: up/down, broadcast, etc. */
+	short		if_extflags;	/* :: if_output MP-safe, etc. */
+	struct if_data	if_data;	/* ?: statistics and other data about if */
 	/*
 	 * Procedure handles.  If you add more of these, don't forget the
 	 * corresponding NULL stub in if.c.
 	 */
-	int	(*if_output)		/* output routine (enqueue) */
-		    (struct ifnet *, struct mbuf *, const struct sockaddr *,
-		     const struct rtentry *);
-	void	(*_if_input)		/* input routine (from h/w driver) */
-		    (struct ifnet *, struct mbuf *);
-	void	(*if_start)		/* initiate output routine */
-		    (struct ifnet *);
-	int	(*if_transmit)		/* output routine, must be MP-safe */
-		    (struct ifnet *, struct mbuf *);
-	int	(*if_ioctl)		/* ioctl routine */
-		    (struct ifnet *, u_long, void *);
-	int	(*if_init)		/* init routine */
-		    (struct ifnet *);
-	void	(*if_stop)		/* stop routine */
-		    (struct ifnet *, int);
-	void	(*if_slowtimo)		/* timer routine */
-		    (struct ifnet *);
+	int		(*if_output)	/* :: output routine (enqueue) */
+			    (struct ifnet *, struct mbuf *, const struct sockaddr *,
+			     const struct rtentry *);
+	void		(*_if_input)	/* :: input routine (from h/w driver) */
+			    (struct ifnet *, struct mbuf *);
+	void		(*if_start)	/* :: initiate output routine */
+			    (struct ifnet *);
+	int		(*if_transmit)	/* :: output routine, must be MP-safe */
+			    (struct ifnet *, struct mbuf *);
+	int		(*if_ioctl)	/* :: ioctl routine */
+			    (struct ifnet *, u_long, void *);
+	int		(*if_init)	/* :: init routine */
+			    (struct ifnet *);
+	void		(*if_stop)	/* :: stop routine */
+			    (struct ifnet *, int);
+	void		(*if_slowtimo)	/* :: timer routine */
+			    (struct ifnet *);
 #define	if_watchdog	if_slowtimo
-	void	(*if_drain)		/* routine to release resources */
-		    (struct ifnet *);
-	struct ifaltq if_snd;		/* output queue (includes altq) */
-	struct ifaddr	*if_dl;		/* identity of this interface. */
-	const struct	sockaddr_dl *if_sadl;	/* pointer to sockaddr_dl
-						 * of if_dl
-						 */
-	/* if_hwdl: h/w identity
-	 *
+	void		(*if_drain)	/* :: routine to release resources */
+			    (struct ifnet *);
+	struct ifaltq	if_snd;		/* q: output queue (includes altq) */
+	struct ifaddr	*if_dl;		/* i: identity of this interface. */
+	const struct sockaddr_dl
+			*if_sadl;	/* i: pointer to sockaddr_dl of if_dl */
+	/*
 	 * May be NULL.  If not NULL, it is the address assigned
 	 * to the interface by the manufacturer, so it very likely
 	 * to be unique.  It MUST NOT be deleted.  It is highly
 	 * suitable for deriving the EUI64 for the interface.
 	 */
-	struct ifaddr	*if_hwdl;
-	const uint8_t *if_broadcastaddr;/* linklevel broadcast bytestring */
-	struct bridge_softc	*if_bridge;	/* bridge glue */
-	struct bridge_iflist	*if_bridgeif;	/* shortcut to interface list entry */
-	int	if_dlt;			/* data link type (<net/dlt.h>) */
-	pfil_head_t *	if_pfil;	/* filtering point */
-	uint64_t if_capabilities;	/* interface capabilities */
-	uint64_t if_capenable;		/* capabilities enabled */
+	struct ifaddr	*if_hwdl;	/* i: h/w identity */
+	const uint8_t	*if_broadcastaddr;
+					/* :: linklevel broadcast bytestring */
+	struct bridge_softc
+			*if_bridge;	/* i: bridge glue */
+	struct bridge_iflist
+			*if_bridgeif;	/* i: shortcut to interface list entry */
+	int		if_dlt;		/* :: data link type (<net/dlt.h>) */
+	pfil_head_t *	if_pfil;	/* :: filtering point */
+	uint64_t	if_capabilities;
+					/* i: interface capabilities */
+	uint64_t	if_capenable;	/* i: capabilities enabled */
 	union {
 		void *		carp_s;	/* carp structure (used by !carp ifs) */
 		struct ifnet	*carp_d;/* ptr to carpdev (used by carp ifs) */
-	} if_carp_ptr;
+	}		if_carp_ptr;	/* ?: */
 #define if_carp		if_carp_ptr.carp_s
 #define if_carpdev	if_carp_ptr.carp_d
 	/*
 	 * These are pre-computed based on an interfaces enabled
 	 * capabilities, for speed elsewhere.
 	 */
-	int	if_csum_flags_tx;	/* M_CSUM_* flags for Tx */
-	int	if_csum_flags_rx;	/* M_CSUM_* flags for Rx */
+	int		if_csum_flags_tx;
+					/* i: M_CSUM_* flags for Tx */
+	int		if_csum_flags_rx;
+					/* i: M_CSUM_* flags for Rx */
 
-	void	*if_afdata[AF_MAX];
-	struct	mowner *if_mowner;	/* who owns mbufs for this interface */
+	void		*if_afdata[AF_MAX];
+					/* a: */
+	struct mowner	*if_mowner;	/* ?: who owns mbufs for this interface */
 
-	void	*if_agrprivate;		/* used only when #if NAGR > 0 */
+	void		*if_agrprivate;	/* ?: used only when #if NAGR > 0 */
 
 	/*
 	 * pf specific data, used only when #if NPF > 0.
 	 */
-	void	*if_pf_kif;		/* pf interface abstraction */
-	void	*if_pf_groups;		/* pf interface groups */
+	void		*if_pf_kif;	/* ?: pf interface abstraction */
+	void		*if_pf_groups;	/* ?: pf interface groups */
 	/*
 	 * During an ifnet's lifetime, it has only one if_index, but
 	 * and if_index is not sufficient to identify an ifnet
@@ -322,26 +349,40 @@ typedef struct ifnet {
 	 * is assigned when it if_attach()s.  Now, the kernel can use the
 	 * pair (if_index, if_index_gen) as a weak reference to an ifnet.
 	 */
-	uint64_t if_index_gen;		/* generation number for the ifnet
+	uint64_t	if_index_gen;	/* :: generation number for the ifnet
 					 * at if_index: if two ifnets' index
 					 * and generation number are both the
 					 * same, they are the same ifnet.
 					 */
-	struct sysctllog	*if_sysctl_log;
-	int (*if_initaddr)(struct ifnet *, struct ifaddr *, bool);
-	int (*if_mcastop)(struct ifnet *, const unsigned long,
-	    const struct sockaddr *);
-	int (*if_setflags)(struct ifnet *, const short);
-	kmutex_t	*if_ioctl_lock;
+	struct sysctllog
+			*if_sysctl_log;	/* :: */
+	int		(*if_initaddr)  /* :: */
+			    (struct ifnet *, struct ifaddr *, bool);
+	int		(*if_mcastop)	/* :: */
+			    (struct ifnet *, const unsigned long,
+			    const struct sockaddr *);
+	int		(*if_setflags)	/* :: */
+			    (struct ifnet *, const short);
+	kmutex_t	*if_ioctl_lock;	/* :: */
 #ifdef _KERNEL /* XXX kvm(3) */
-	struct callout *if_slowtimo_ch;
-	struct krwlock	*if_afdata_lock;
-	struct if_percpuq	*if_percpuq; /* We should remove it in the future */
-	void	*if_link_si;		/* softint to handle link state changes */
-	uint16_t	if_link_queue;	/* masked link state change queue */
-	struct pslist_entry	if_pslist_entry;
-	struct psref_target     if_psref;
-	struct pslist_head	if_addr_pslist;
+	struct callout	*if_slowtimo_ch;/* :: */
+	struct krwlock	*if_afdata_lock;/* :: */
+	struct if_percpuq
+			*if_percpuq;	/* :: we should remove it in the future */
+	void		*if_link_si;	/* :: softint to handle link state changes */
+	uint16_t	if_link_queue;	/* q: masked link state change queue */
+	struct pslist_entry
+			if_pslist_entry;/* i: */
+	struct psref_target
+			if_psref;	/* :: */
+	struct pslist_head
+			if_addr_pslist;	/* i: */
+	struct if_deferred_start
+			*if_deferred_start;
+					/* :: */
+	/* XXX should be protocol independent */
+	LIST_HEAD(, in6_multi)
+			if_multiaddrs;	/* 6: */
 #endif
 } ifnet_t;
  
@@ -364,6 +405,7 @@ typedef struct ifnet {
 #define	if_iqdrops	if_data.ifi_iqdrops
 #define	if_noproto	if_data.ifi_noproto
 #define	if_lastchange	if_data.ifi_lastchange
+#define	if_name(ifp)	((ifp)->if_xname)
 
 #define	IFF_UP		0x0001		/* interface is up */
 #define	IFF_BROADCAST	0x0002		/* broadcast address valid */
@@ -382,24 +424,63 @@ typedef struct ifnet {
 #define	IFF_LINK2	0x4000		/* per link layer defined bit */
 #define	IFF_MULTICAST	0x8000		/* supports multicast */
 
-#define	IFEF_OUTPUT_MPSAFE		__BIT(0)	/* if_output() can run parallel */
-#define	IFEF_START_MPSAFE		__BIT(1)	/* if_start() can run parallel */
-#define	IFEF_NO_LINK_STATE_CHANGE	__BIT(2)	/* doesn't use link state interrupts */
+#define	IFEF_MPSAFE			__BIT(0)	/* handlers can run in parallel (see below) */
+#define	IFEF_NO_LINK_STATE_CHANGE	__BIT(1)	/* doesn't use link state interrupts */
+
+/*
+ * The guidelines for converting an interface to IFEF_MPSAFE are as follows
+ *
+ * Enabling IFEF_MPSAFE on an interface suppresses taking KERNEL_LOCK when
+ * calling the following handlers:
+ * - if_start
+ *   - Note that if_transmit is always called without KERNEL_LOCK
+ * - if_output
+ * - if_ioctl
+ * - if_init
+ * - if_stop
+ *
+ * This means that an interface with IFEF_MPSAFE must make the above handlers
+ * MP-safe or take KERNEL_LOCK by itself inside handlers that aren't MP-safe
+ * yet.
+ *
+ * There are some additional restrictions to access member variables of struct
+ * ifnet:
+ * - if_flags
+ *   - Must be updated with holding IFNET_LOCK
+ *   - You cannot use the flag in Tx/Rx paths anymore because there is no
+ *     synchronization on the flag except for IFNET_LOCK
+ *   - Note that IFNET_LOCK can't be taken in softint because it's known
+ *     that it causes a deadlock
+ *     - Some synchronization mechanisms such as pserialize_perform are called
+ *       with IFNET_LOCK and also require context switches on every CPUs
+ *       that mean softints finish so trying to take IFNET_LOCK in softint
+ *       might block on IFNET_LOCK and prevent such synchronization mechanisms
+ *       from being completed
+ *     - Currently the deadlock occurs only if NET_MPSAFE is enabled, however,
+ *       we should deal with the restriction because NET_MPSAFE will be enabled
+ *       by default in the future
+ * - if_watchdog and if_timer
+ *   - The watchdog framework works only for non-IFEF_MPSAFE interfaces
+ *     that rely on KERNEL_LOCK
+ *   - Interfaces with IFEF_MPSAFE have to provide its own watchdog mechanism
+ *     if needed
+ *     - Keep if_watchdog NULL when calling if_attach
+ */
 
 #ifdef _KERNEL
-static inline bool
-if_output_is_mpsafe(struct ifnet *ifp)
+static __inline bool
+if_is_mpsafe(struct ifnet *ifp)
 {
 
-	return ((ifp->if_extflags & IFEF_OUTPUT_MPSAFE) != 0);
+	return ((ifp->if_extflags & IFEF_MPSAFE) != 0);
 }
 
-static inline int
+static __inline int
 if_output_lock(struct ifnet *cifp, struct ifnet *ifp, struct mbuf *m,
     const struct sockaddr *dst, const struct rtentry *rt)
 {
 
-	if (if_output_is_mpsafe(cifp)) {
+	if (if_is_mpsafe(cifp)) {
 		return (*cifp->if_output)(ifp, m, dst, rt);
 	} else {
 		int ret;
@@ -411,18 +492,11 @@ if_output_lock(struct ifnet *cifp, struct ifnet *ifp, struct mbuf *m,
 	}
 }
 
-static inline bool
-if_start_is_mpsafe(struct ifnet *ifp)
-{
-
-	return ((ifp->if_extflags & IFEF_START_MPSAFE) != 0);
-}
-
-static inline void
+static __inline void
 if_start_lock(struct ifnet *ifp)
 {
 
-	if (if_start_is_mpsafe(ifp)) {
+	if (if_is_mpsafe(ifp)) {
 		(*ifp->if_start)(ifp);
 	} else {
 		KERNEL_LOCK(1, NULL);
@@ -431,12 +505,70 @@ if_start_lock(struct ifnet *ifp)
 	}
 }
 
-static inline bool
+static __inline bool
 if_is_link_state_changeable(struct ifnet *ifp)
 {
 
 	return ((ifp->if_extflags & IFEF_NO_LINK_STATE_CHANGE) == 0);
 }
+
+#define KERNEL_LOCK_IF_IFP_MPSAFE(ifp)					\
+	do { if (if_is_mpsafe(ifp)) { KERNEL_LOCK(1, NULL); } } while (0)
+#define KERNEL_UNLOCK_IF_IFP_MPSAFE(ifp)				\
+	do { if (if_is_mpsafe(ifp)) { KERNEL_UNLOCK_ONE(NULL); } } while (0)
+
+#define KERNEL_LOCK_UNLESS_IFP_MPSAFE(ifp)				\
+	do { if (!if_is_mpsafe(ifp)) { KERNEL_LOCK(1, NULL); } } while (0)
+#define KERNEL_UNLOCK_UNLESS_IFP_MPSAFE(ifp)				\
+	do { if (!if_is_mpsafe(ifp)) { KERNEL_UNLOCK_ONE(NULL); } } while (0)
+
+#ifdef _KERNEL_OPT
+#include "opt_net_mpsafe.h"
+#endif
+
+/* XXX explore a better place to define */
+#ifdef NET_MPSAFE
+
+#define KERNEL_LOCK_UNLESS_NET_MPSAFE()		do { } while (0)
+#define KERNEL_UNLOCK_UNLESS_NET_MPSAFE()	do { } while (0)
+
+#define SOFTNET_LOCK_UNLESS_NET_MPSAFE()	do { } while (0)
+#define SOFTNET_UNLOCK_UNLESS_NET_MPSAFE()	do { } while (0)
+
+#define SOFTNET_LOCK_IF_NET_MPSAFE()					\
+	do { mutex_enter(softnet_lock); } while (0)
+#define SOFTNET_UNLOCK_IF_NET_MPSAFE()					\
+	do { mutex_exit(softnet_lock); } while (0)
+
+#else /* NET_MPSAFE */
+
+#define KERNEL_LOCK_UNLESS_NET_MPSAFE()					\
+	do { KERNEL_LOCK(1, NULL); } while (0)
+#define KERNEL_UNLOCK_UNLESS_NET_MPSAFE()				\
+	do { KERNEL_UNLOCK_ONE(NULL); } while (0)
+
+#define SOFTNET_LOCK_UNLESS_NET_MPSAFE()				\
+	do { mutex_enter(softnet_lock); } while (0)
+#define SOFTNET_UNLOCK_UNLESS_NET_MPSAFE()				\
+	do { mutex_exit(softnet_lock); } while (0)
+
+#define SOFTNET_LOCK_IF_NET_MPSAFE()		do { } while (0)
+#define SOFTNET_UNLOCK_IF_NET_MPSAFE()		do { } while (0)
+
+#endif /* NET_MPSAFE */
+
+#define SOFTNET_KERNEL_LOCK_UNLESS_NET_MPSAFE()				\
+	do {								\
+		SOFTNET_LOCK_UNLESS_NET_MPSAFE();			\
+		KERNEL_LOCK_UNLESS_NET_MPSAFE();			\
+	} while (0)
+
+#define SOFTNET_KERNEL_UNLOCK_UNLESS_NET_MPSAFE()			\
+	do {								\
+		KERNEL_UNLOCK_UNLESS_NET_MPSAFE();			\
+		SOFTNET_UNLOCK_UNLESS_NET_MPSAFE();			\
+	} while (0)
+
 #endif /* _KERNEL */
 
 #define	IFFBITS \
@@ -508,8 +640,6 @@ if_is_link_state_changeable(struct ifnet *ifp)
 	KASSERT(rw_read_held((ifp)->if_afdata_lock))
 #define	IF_AFDATA_WLOCK_ASSERT(ifp)	\
 	KASSERT(rw_write_held((ifp)->if_afdata_lock))
-#define	IF_AFDATA_UNLOCK_ASSERT(ifp)	\
-	KASSERT(!rw_lock_held((ifp)->if_afdata_lock))
 
 /*
  * Output queues (ifp->if_snd) and internetwork datagram level (pup level 1)
@@ -596,9 +726,13 @@ struct ifaddr {
 			               const struct sockaddr *);
 	uint32_t	*ifa_seqno;
 	int16_t	ifa_preference;	/* preference level for this address */
-	/* XXX adding variables here breaks kvm(3) users of struct *_ifaddr */
+#ifdef _KERNEL
+	struct pslist_entry     ifa_pslist_entry;
+	struct psref_target	ifa_psref;
+#endif
 };
 #define	IFA_ROUTE	RTF_UP	/* (0x01) route installed */
+#define	IFA_DESTROYING	0x2
 
 /*
  * Message format for use in obtaining information about interfaces from
@@ -631,10 +765,12 @@ struct ifa_msghdr {
 				/* to skip over non-understood messages */
 	u_char	ifam_version;	/* future binary compatibility */
 	u_char	ifam_type;	/* message type */
-	int	ifam_addrs;	/* like rtm_addrs */
-	int	ifam_flags;	/* value of ifa_flags */
-	int	ifam_metric;	/* value of ifa_metric */
 	u_short	ifam_index;	/* index for associated ifp */
+	int	ifam_flags;	/* value of ifa_flags */
+	int	ifam_addrs;	/* like rtm_addrs */
+	pid_t	ifam_pid;	/* identify sender */
+	int	ifam_addrflags;	/* family specific address flags */
+	int	ifam_metric;	/* value of ifa_metric */
 };
 
 /*
@@ -706,7 +842,7 @@ struct	ifreq {
 #define	ifreq_getdstaddr	ifreq_getaddr
 #define	ifreq_getbroadaddr	ifreq_getaddr
 
-static inline const struct sockaddr *
+static __inline const struct sockaddr *
 /*ARGSUSED*/
 ifreq_getaddr(u_long cmd, const struct ifreq *ifr)
 {
@@ -859,6 +995,7 @@ do {									\
 
 #define	IFQ_CLASSIFY(ifq, m, af)					\
 do {									\
+	KASSERT((m->m_flags & M_PKTHDR) != 0);				\
 	mutex_enter((ifq)->ifq_lock);					\
 	if (ALTQ_IS_ENABLED((ifq))) {					\
 		if (ALTQ_NEEDS_CLASSIFY((ifq)))				\
@@ -912,6 +1049,12 @@ do {									\
 
 #endif /* ALTQ */
 
+#define IFQ_LOCK_INIT(ifq)	(ifq)->ifq_lock =			\
+	    mutex_obj_alloc(MUTEX_DEFAULT, IPL_NET)
+#define IFQ_LOCK_DESTROY(ifq)	mutex_obj_free((ifq)->ifq_lock)
+#define IFQ_LOCK(ifq)		mutex_enter((ifq)->ifq_lock)
+#define IFQ_UNLOCK(ifq)		mutex_exit((ifq)->ifq_lock)
+
 #define	IFQ_IS_EMPTY(ifq)		IF_IS_EMPTY((ifq))
 #define	IFQ_INC_LEN(ifq)		((ifq)->ifq_len++)
 #define	IFQ_DEC_LEN(ifq)		(--(ifq)->ifq_len)
@@ -932,23 +1075,28 @@ void if_activate_sadl(struct ifnet *, struct ifaddr *,
     const struct sockaddr_dl *);
 void	if_set_sadl(struct ifnet *, const void *, u_char, bool);
 void	if_alloc_sadl(struct ifnet *);
-void	if_initialize(struct ifnet *);
+void	if_free_sadl(struct ifnet *, int);
+int	if_initialize(struct ifnet *);
 void	if_register(struct ifnet *);
-void	if_attach(struct ifnet *); /* Deprecated. Use if_initialize and if_register */
+int	if_attach(struct ifnet *); /* Deprecated. Use if_initialize and if_register */
 void	if_attachdomain(void);
 void	if_deactivate(struct ifnet *);
-bool	if_is_deactivated(struct ifnet *);
+bool	if_is_deactivated(const struct ifnet *);
 void	if_purgeaddrs(struct ifnet *, int, void (*)(struct ifaddr *));
 void	if_detach(struct ifnet *);
 void	if_down(struct ifnet *);
+void	if_down_locked(struct ifnet *);
 void	if_link_state_change(struct ifnet *, int);
+void	if_link_state_change_softint(struct ifnet *, int);
 void	if_up(struct ifnet *);
 void	ifinit(void);
 void	ifinit1(void);
+void	ifinit_post(void);
 int	ifaddrpref_ioctl(struct socket *, u_long, void *, struct ifnet *);
 extern int (*ifioctl)(struct socket *, u_long, void *, struct lwp *);
 int	ifioctl_common(struct ifnet *, u_long, void *);
 int	ifpromisc(struct ifnet *, int);
+int	ifpromisc_locked(struct ifnet *, int);
 int	if_addr_init(ifnet_t *, struct ifaddr *, bool);
 int	if_do_dad(struct ifnet *);
 int	if_mcast_op(ifnet_t *, const unsigned long, const struct sockaddr *);
@@ -958,11 +1106,16 @@ int	if_clone_list(int, char *, int *);
 struct	ifnet *ifunit(const char *);
 struct	ifnet *if_get(const char *, struct psref *);
 ifnet_t *if_byindex(u_int);
+ifnet_t *_if_byindex(u_int);
 ifnet_t *if_get_byindex(u_int, struct psref *);
+ifnet_t *if_get_bylla(const void *, unsigned char, struct psref *);
 void	if_put(const struct ifnet *, struct psref *);
-void	if_acquire_NOMPSAFE(struct ifnet *, struct psref *);
+void	if_acquire(struct ifnet *, struct psref *);
+#define	if_release	if_put
 
-static inline if_index_t
+int if_tunnel_check_nesting(struct ifnet *, struct mbuf *, int);
+
+static __inline if_index_t
 if_get_index(const struct ifnet *ifp)
 {
 
@@ -979,20 +1132,34 @@ void	if_percpuq_destroy(struct if_percpuq *);
 void
 	if_percpuq_enqueue(struct if_percpuq *, struct mbuf *);
 
+void	if_deferred_start_init(struct ifnet *, void (*)(struct ifnet *));
+void	if_schedule_deferred_start(struct ifnet *);
+
 void ifa_insert(struct ifnet *, struct ifaddr *);
 void ifa_remove(struct ifnet *, struct ifaddr *);
+
+void	ifa_psref_init(struct ifaddr *);
+void	ifa_acquire(struct ifaddr *, struct psref *);
+void	ifa_release(struct ifaddr *, struct psref *);
+bool	ifa_held(struct ifaddr *);
+bool	ifa_is_destroying(struct ifaddr *);
 
 void	ifaref(struct ifaddr *);
 void	ifafree(struct ifaddr *);
 
 struct	ifaddr *ifa_ifwithaddr(const struct sockaddr *);
+struct	ifaddr *ifa_ifwithaddr_psref(const struct sockaddr *, struct psref *);
 struct	ifaddr *ifa_ifwithaf(int);
 struct	ifaddr *ifa_ifwithdstaddr(const struct sockaddr *);
+struct	ifaddr *ifa_ifwithdstaddr_psref(const struct sockaddr *,
+	    struct psref *);
 struct	ifaddr *ifa_ifwithnet(const struct sockaddr *);
+struct	ifaddr *ifa_ifwithnet_psref(const struct sockaddr *, struct psref *);
 struct	ifaddr *ifa_ifwithladdr(const struct sockaddr *);
-struct	ifaddr *ifa_ifwithroute(int, const struct sockaddr *,
-					const struct sockaddr *);
+struct	ifaddr *ifa_ifwithladdr_psref(const struct sockaddr *, struct psref *);
 struct	ifaddr *ifaof_ifpforaddr(const struct sockaddr *, struct ifnet *);
+struct	ifaddr *ifaof_ifpforaddr_psref(const struct sockaddr *, struct ifnet *,
+	    struct psref *);
 void	link_rtrequest(int, struct rtentry *, const struct rt_addrinfo *);
 void	p2p_rtrequest(int, struct rtentry *, const struct rt_addrinfo *);
 
@@ -1006,9 +1173,9 @@ int	ifq_enqueue2(struct ifnet *, struct ifqueue *, struct mbuf *);
 
 int	loioctl(struct ifnet *, u_long, void *);
 void	loopattach(int);
+void	loopinit(void);
 int	looutput(struct ifnet *,
 	   struct mbuf *, const struct sockaddr *, const struct rtentry *);
-void	lortrequest(int, struct rtentry *, const struct rt_addrinfo *);
 
 /*
  * These are exported because they're an easy way to tell if
@@ -1051,7 +1218,6 @@ __END_DECLS
 					    &(__ifp)->if_addrlist, ifa_list, __nifa)
 #define	IFADDR_EMPTY(__ifp)		TAILQ_EMPTY(&(__ifp)->if_addrlist)
 
-#ifdef notyet
 #define IFADDR_ENTRY_INIT(__ifa)					\
 	PSLIST_ENTRY_INIT((__ifa), ifa_pslist_entry)
 #define IFADDR_ENTRY_DESTROY(__ifa)					\
@@ -1097,38 +1263,10 @@ __END_DECLS
 			}						\
 		}							\
 	} while (0)
-#else
-#define IFADDR_ENTRY_INIT(__ifa)					\
-	do {} while (0)
-#define IFADDR_ENTRY_DESTROY(__ifa)					\
-	do {} while (0)
-#define IFADDR_READER_EMPTY(__ifp)					\
-	IFADDR_EMPTY(__ifp)
-#define IFADDR_READER_FIRST(__ifp)					\
-	IFADDR_FIRST(__ifp)
-#define IFADDR_READER_NEXT(__ifa)					\
-	IFADDR_NEXT(__ifa)
-#define IFADDR_READER_FOREACH(__ifa, __ifp)				\
-	IFADDR_FOREACH(__ifa, __ifp)
-#define IFADDR_WRITER_INSERT_HEAD(__ifp, __ifa)				\
-	do {} while (0)
-#define IFADDR_WRITER_REMOVE(__ifa)					\
-	do {} while (0)
-#define IFADDR_WRITER_FOREACH(__ifa, __ifp)				\
-	IFADDR_FOREACH(__ifa, __ifp)
-#define IFADDR_WRITER_NEXT(__ifp)					\
-	IFADDR_NEXT(__ifa)
-#define IFADDR_WRITER_INSERT_AFTER(__ifp, __new)			\
-	do {} while (0)
-#define IFADDR_WRITER_EMPTY(__ifp)					\
-	IFADDR_EMPTY(__ifp)
-#define IFADDR_WRITER_INSERT_TAIL(__ifp, __new)				\
-	do {} while (0)
-#endif /* notyet */
 
-#define	IFNET_LOCK()			mutex_enter(&ifnet_mtx)
-#define	IFNET_UNLOCK()			mutex_exit(&ifnet_mtx)
-#define	IFNET_LOCKED()			mutex_owned(&ifnet_mtx)
+#define	IFNET_GLOBAL_LOCK()			mutex_enter(&ifnet_mtx)
+#define	IFNET_GLOBAL_UNLOCK()			mutex_exit(&ifnet_mtx)
+#define	IFNET_GLOBAL_LOCKED()			mutex_owned(&ifnet_mtx)
 
 #define IFNET_READER_EMPTY() \
 	(PSLIST_READER_FIRST(&ifnet_pslist, struct ifnet, if_pslist_entry) == NULL)
@@ -1168,8 +1306,14 @@ __END_DECLS
 		}							\
 	} while (0)
 
+#define IFNET_LOCK(ifp)		mutex_enter((ifp)->if_ioctl_lock)
+#define IFNET_UNLOCK(ifp)	mutex_exit((ifp)->if_ioctl_lock)
+#define IFNET_LOCKED(ifp)	mutex_owned((ifp)->if_ioctl_lock)
+
+#define IFNET_ASSERT_UNLOCKED(ifp)	\
+	KDASSERT(mutex_ownable((ifp)->if_ioctl_lock))
+
 extern struct pslist_head ifnet_pslist;
-extern struct psref_class *ifnet_psref_class;
 extern kmutex_t ifnet_mtx;
 
 extern struct ifnet *lo0ifp;
@@ -1181,24 +1325,11 @@ int	sysctl_ifq(int *name, u_int namelen, void *oldp,
 		       size_t *oldlenp, void *newp, size_t newlen,
 		       struct ifqueue *ifq);
 /* symbolic names for terminal (per-protocol) CTL_IFQ_ nodes */
-#define IFQCTL_LEN 1
-#define IFQCTL_MAXLEN 2
-#define IFQCTL_PEAK 3
-#define IFQCTL_DROPS 4
-#define IFQCTL_MAXID 5
+#define IFQCTL_LEN	1
+#define IFQCTL_MAXLEN	2
+#define IFQCTL_PEAK	3
+#define IFQCTL_DROPS	4
 
 #endif /* _KERNEL */
 
-#ifdef _NETBSD_SOURCE
-/*
- * sysctl for ifq (per-protocol packet input queue variant of ifqueue)
- */
-#define CTL_IFQ_NAMES  { \
-	{ 0, 0 }, \
-	{ "len", CTLTYPE_INT }, \
-	{ "maxlen", CTLTYPE_INT }, \
-	{ "peak", CTLTYPE_INT }, \
-	{ "drops", CTLTYPE_INT }, \
-}
-#endif /* _NETBSD_SOURCE */
 #endif /* !_NET_IF_H_ */

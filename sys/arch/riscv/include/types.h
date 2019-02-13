@@ -1,4 +1,4 @@
-/* $NetBSD: types.h,v 1.5 2016/01/23 22:31:20 christos Exp $ */
+/* $NetBSD: types.h,v 1.7 2018/07/12 10:46:46 maxv Exp $ */
 
 /*-
  * Copyright (c) 2014 The NetBSD Foundation, Inc.
@@ -61,9 +61,6 @@ typedef signed int register32_t;
 typedef unsigned int uregister32_t;
 #define PRIxREGISTER32	"x"
 
-typedef unsigned long	pmc_evid_t;
-#define PMC_INVALID_EVID	(-1)
-typedef unsigned long	pmc_ctr_t;
 typedef unsigned short	tlb_asid_t;
 #endif
 
@@ -99,6 +96,7 @@ typedef __int32_t	__register_t;
 
 //#define __HAVE_NEW_STYLE_BUS_H
 #define __HAVE_NO_BUS_DMA
+#define	__HAVE_COMPAT_NETBSD32
 
 //#if defined(_KERNEL)
 //#define __HAVE_RAS

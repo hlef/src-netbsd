@@ -1,12 +1,12 @@
 /******************************************************************************
  *
  * Name: acnetbsd.h - OS specific defines, etc.
- *       $Revision: 1.13 $
+ *       $Revision: 1.18 $
  *
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -45,10 +45,6 @@
 #ifndef __ACNETBSD_H__
 #define __ACNETBSD_H__
 
-/* NetBSD uses GCC */
-
-#include "acgcc.h"
-
 #define ACPI_UINTPTR_T          uintptr_t
 #define ACPI_USE_LOCAL_CACHE
 #define ACPI_CAST_PTHREAD_T(x)  ((ACPI_THREAD_ID) ACPI_TO_INTEGER (x))
@@ -74,6 +70,7 @@
 #define asm         __asm
 
 #define ACPI_USE_NATIVE_DIVIDE
+#define ACPI_USE_NATIVE_MATH64
 
 #define ACPI_ASM_MACROS         /* tell acenv.h */
 
@@ -117,6 +114,10 @@
 #endif /* DDB */
 #endif /* ACPI_DEBUG */
 
+#ifdef ACPI_REDUCED_HW
+#define ACPI_REDUCED_HARDWARE TRUE
+#endif /* ACPI_REDUCED_HW */
+
 #else /* defined(_KERNEL) || defined(_STANDALONE) */
 
 #include <ctype.h>
@@ -136,5 +137,6 @@
 /* Always use NetBSD code over our local versions */
 #define ACPI_USE_SYSTEM_CLIBRARY
 #define ACPI_USE_NATIVE_DIVIDE
+#define ACPI_USE_NATIVE_MATH64
 
 #endif /* __ACNETBSD_H__ */

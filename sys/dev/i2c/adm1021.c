@@ -1,4 +1,4 @@
-/*	$NetBSD: adm1021.c,v 1.12 2016/01/04 19:24:15 christos Exp $ */
+/*	$NetBSD: adm1021.c,v 1.19 2018/06/26 06:03:57 thorpej Exp $ */
 /*	$OpenBSD: adm1021.c,v 1.27 2007/06/24 05:34:35 dlg Exp $	*/
 
 /*
@@ -20,15 +20,15 @@
 /*
  * Driver for ADM1021 and compatible temperature sensors, including ADM1021,
  * ADM1021A, ADM1023, ADM1032, GL523SM, G781, LM84, MAX1617, MAX1617A,
- * NE1617A, and Xeon embedded temperature sensors.
+ * NE1617A, MAX6642 and Xeon embedded temperature sensors.
  *
  * Some sensors differ from the ADM1021/MAX1617/NE1617A:
- *                         ADM1021A ADM1023 ADM1032 G781 LM84 MAX1617A
- *   company/revision reg  X        X       X       X         X
- *   no negative temps     X        X       X       X
- *   11-bit remote temp             X       X       X
- *   no low limits                                       X
- *   therm (high) limits                    X       X
+ *                         ADM1021A ADM1023 ADM1032 G781 LM84 MAX1617A MAX6642
+ *   company/revision reg  X        X       X       X         X        X
+ *   no negative temps     X        X       X       X 
+ *   11-bit remote temp             X       X       X                  X
+ *   no low limits                                       X             X
+ *   therm (high) limits                    X       X                  X
  *
  * Registers 0x00 to 0x0f have separate read/write addresses, but
  * registers 0x10 and above have the same read/write address.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: adm1021.c,v 1.12 2016/01/04 19:24:15 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: adm1021.c,v 1.19 2018/06/26 06:03:57 thorpej Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -46,6 +46,14 @@ __KERNEL_RCSID(0, "$NetBSD: adm1021.c,v 1.12 2016/01/04 19:24:15 christos Exp $"
 #include <dev/sysmon/sysmonvar.h>
 
 #include <dev/i2c/i2cvar.h>
+
+#ifdef macppc
+#define HAVE_OF 1
+#endif
+
+#ifdef HAVE_OF
+#include <dev/ofw/openfirm.h>
+#endif
 
 /* Registers */
 #define ADM1021_INT_TEMP	0x00	/* Internal temperature value */
@@ -143,38 +151,30 @@ CFATTACH_DECL_NEW(admtemp, sizeof(struct admtemp_softc),
 	admtemp_match, admtemp_attach, NULL, NULL);
 
 /* XXX: add flags for compats to admtemp_setflags() */
-static const char * admtemp_compats[] = {
-	"i2c-max1617",
-	NULL
+static const struct device_compatible_entry compat_data[] = {
+	{ "i2c-max1617",		0 },
+	{ "max6642",			0 },
+	{ "max6690",			0 },
+	{ NULL,				0 }
 };
 
 int
 admtemp_match(device_t parent, cfdata_t match, void *aux)
 {
 	struct i2c_attach_args *ia = aux;
+	int match_result;
 
-	if (ia->ia_name == NULL) {
-		/*
-		 * Indirect config - not much we can do!
-		 * Check typical addresses.
-		 */
-		if (((ia->ia_addr >= 0x18) && (ia->ia_addr <= 0x1a)) ||
-		    ((ia->ia_addr >= 0x29) && (ia->ia_addr <= 0x2b)) ||
-		    ((ia->ia_addr >= 0x4c) && (ia->ia_addr <= 0x4e)))
-			return (1);
-	} else {
-		/*
-		 * Direct config - match via the list of compatible
-		 * hardware or simply match the device name.
-		 */
-		if (ia->ia_ncompat > 0) {
-			if (iic_compat_match(ia, admtemp_compats))
-				return 1;
-		} else {
-			if (strcmp(ia->ia_name, "admtemp") == 0)
-				return 1;
-		}
-	}
+	if (iic_use_direct_match(ia, match, compat_data, &match_result))
+		return match_result;
+	
+	/*
+	 * Indirect config - not much we can do!
+	 * Check typical addresses.
+	 */
+	if (((ia->ia_addr >= 0x18) && (ia->ia_addr <= 0x1a)) ||
+	    ((ia->ia_addr >= 0x29) && (ia->ia_addr <= 0x2b)) ||
+	    ((ia->ia_addr >= 0x48) && (ia->ia_addr <= 0x4e)))
+		return I2C_MATCH_ADDRESS_ONLY;
 
 	return 0;
 }
@@ -233,6 +233,18 @@ admtemp_setflags(struct admtemp_softc *sc, struct i2c_attach_args *ia,
 			strlcpy(name, "MAX1617A", ADMTEMP_NAMELEN);
 			return;
 		}
+		if (strcmp("max6642", ia->ia_compat[i]) == 0) {
+			sc->sc_noneg = 0;
+			sc->sc_nolow = 1;
+			strlcpy(name, "MAX6642", ADMTEMP_NAMELEN);
+			return;
+		}
+		if (strcmp("max6690", ia->ia_compat[i]) == 0) {
+			sc->sc_noneg = 0;
+			sc->sc_ext11 = 1;
+			strlcpy(name, "MAX6690", ADMTEMP_NAMELEN);
+			return;
+		}
 	}
 
 	/* Indirect config */
@@ -249,7 +261,22 @@ admtemp_setflags(struct admtemp_softc *sc, struct i2c_attach_args *ia,
 
 	if (*comp == ADM1021_COMPANY_MAXIM) {
 		sc->sc_noneg = 0;
-		strlcpy(name, "MAX1617A", ADMTEMP_NAMELEN);
+		/*
+		 * MAX6642 doesn't have a revision register
+		 * XXX this works only on macppc with iic at pmu because the
+		 * pmu doesn't return an error for nonexistant registers, it
+		 * just repeats previous data
+		 */
+		if (*comp == *rev) {		
+			sc->sc_therm = 0;	/* */
+			sc->sc_nolow = 1;
+			strlcpy(name, "MAX6642", ADMTEMP_NAMELEN);
+		} else if (*rev == 0) {
+			strlcpy(name, "MAX6690", ADMTEMP_NAMELEN);
+			sc->sc_ext11 = 1;
+		} else {
+			strlcpy(name, "MAX1617A", ADMTEMP_NAMELEN);
+		}
 	}
 
 	if (*comp == ADM1021_COMPANY_GMT) {
@@ -293,7 +320,10 @@ admtemp_attach(device_t parent, device_t self, void *aux)
 	struct i2c_attach_args *ia = aux;
 	uint8_t cmd, data, stat, comp, rev;
 	char name[ADMTEMP_NAMELEN];
-
+#ifdef HAVE_OF
+	char ename[64], iname[64];
+	int ch;
+#endif
 	sc->sc_tag = ia->ia_tag;
 	sc->sc_addr = ia->ia_addr;
 
@@ -355,10 +385,27 @@ admtemp_attach(device_t parent, device_t self, void *aux)
 	sc->sc_sensor[ADMTEMP_EXT].units = ENVSYS_STEMP;
 	sc->sc_sensor[ADMTEMP_INT].flags = ENVSYS_FMONLIMITS;
 	sc->sc_sensor[ADMTEMP_EXT].flags = ENVSYS_FMONLIMITS;
+#ifdef HAVE_OF
+	strcpy(iname, "internal");
+	strcpy(ename, "external");
+	ch = OF_child(ia->ia_cookie);
+	if (ch != 0) {
+		OF_getprop(ch, "location", iname, 64);
+		ch = OF_peer(ch);
+		if (ch != 0) {
+			OF_getprop(ch, "location", ename, 64);
+		}
+	}	
+	strlcpy(sc->sc_sensor[ADMTEMP_INT].desc, iname,
+	    sizeof(sc->sc_sensor[ADMTEMP_INT].desc));
+	strlcpy(sc->sc_sensor[ADMTEMP_EXT].desc, ename,
+	    sizeof(sc->sc_sensor[ADMTEMP_EXT].desc));
+#else
 	strlcpy(sc->sc_sensor[ADMTEMP_INT].desc, "internal",
 	    sizeof(sc->sc_sensor[ADMTEMP_INT].desc));
 	strlcpy(sc->sc_sensor[ADMTEMP_EXT].desc, "external",
 	    sizeof(sc->sc_sensor[ADMTEMP_EXT].desc));
+#endif
 	sc->sc_sme = sysmon_envsys_create();
 	if (sysmon_envsys_sensor_attach(
 	    sc->sc_sme, &sc->sc_sensor[ADMTEMP_INT])) {
