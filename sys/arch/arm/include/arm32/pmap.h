@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap.h,v 1.144 2016/07/14 05:00:51 skrll Exp $	*/
+/*	$NetBSD: pmap.h,v 1.156 2018/10/18 09:01:52 skrll Exp $	*/
 
 /*
  * Copyright (c) 2002, 2003 Wasabi Systems, Inc.
@@ -84,8 +84,8 @@
 #endif
 
 #ifdef ARM_MMU_EXTENDED
+#define PMAP_HWPAGEWALKER		1
 #define PMAP_TLB_MAX			1
-#define PMAP_TLB_HWPAGEWALKER		1
 #if PMAP_TLB_MAX > 1
 #define PMAP_TLB_NEED_SHOOTDOWN		1
 #endif
@@ -167,7 +167,7 @@
 
 #ifndef _LOCORE
 
-#ifndef PMAP_MMU_EXTENDED
+#ifndef ARM_MMU_EXTENDED
 struct l1_ttable;
 struct l2_dtable;
 
@@ -212,6 +212,18 @@ struct pmap_devmap {
 	vm_prot_t	pd_prot;	/* protection code */
 	int		pd_cache;	/* cache attributes */
 };
+
+#define	DEVMAP_ALIGN(a)	((a) & ~L1_S_OFFSET)
+#define	DEVMAP_SIZE(s)	roundup2((s), L1_S_SIZE)
+#define	DEVMAP_ENTRY(va, pa, sz)			\
+	{						\
+		.pd_va = DEVMAP_ALIGN(va),		\
+		.pd_pa = DEVMAP_ALIGN(pa),		\
+		.pd_size = DEVMAP_SIZE(sz),		\
+		.pd_prot = VM_PROT_READ|VM_PROT_WRITE,	\
+		.pd_cache = PTE_NOCACHE			\
+	}
+#define	DEVMAP_ENTRY_END	{ 0 }
 
 /*
  * The pmap structure itself
@@ -349,6 +361,8 @@ extern int		arm_poolpage_vmfreelist;
 u_int arm32_mmap_flags(paddr_t);
 #define ARM32_MMAP_WRITECOMBINE		0x40000000
 #define ARM32_MMAP_CACHEABLE		0x20000000
+#define ARM_MMAP_WRITECOMBINE		ARM32_MMAP_WRITECOMBINE
+#define ARM_MMAP_CACHEABLE		ARM32_MMAP_CACHEABLE
 #define pmap_mmap_flags(ppn)		arm32_mmap_flags(ppn)
 
 #define	PMAP_PTE			0x10000000 /* kenter_pa */
@@ -384,8 +398,7 @@ int	pmap_fault_fixup(pmap_t, vaddr_t, vm_prot_t, int);
 int	pmap_prefetchabt_fixup(void *);
 bool	pmap_get_pde_pte(pmap_t, vaddr_t, pd_entry_t **, pt_entry_t **);
 bool	pmap_get_pde(pmap_t, vaddr_t, pd_entry_t **);
-struct pcb;
-void	pmap_set_pcb_pagedir(pmap_t, struct pcb *);
+bool	pmap_extract_coherency(pmap_t, vaddr_t, paddr_t *, bool *);
 
 void	pmap_debug(int);
 void	pmap_postinit(void);
@@ -399,6 +412,7 @@ const struct pmap_devmap *pmap_devmap_find_va(vaddr_t, vsize_t);
 void	pmap_map_section(vaddr_t, vaddr_t, paddr_t, int, int);
 void	pmap_map_entry(vaddr_t, vaddr_t, paddr_t, int, int);
 vsize_t	pmap_map_chunk(vaddr_t, vaddr_t, paddr_t, vsize_t, int, int);
+void	pmap_unmap_chunk(vaddr_t, vaddr_t, vsize_t);
 void	pmap_link_l2pt(vaddr_t, vaddr_t, pv_addr_t *);
 void	pmap_devmap_bootstrap(vaddr_t, const struct pmap_devmap *);
 void	pmap_devmap_register(const struct pmap_devmap *);
@@ -480,15 +494,21 @@ vtophys(vaddr_t va)
 extern int pmap_needs_pte_sync;
 #if defined(_KERNEL_OPT)
 /*
+ * Perform compile time evaluation of PMAP_NEEDS_PTE_SYNC when only a
+ * single MMU type is selected.
+ *
  * StrongARM SA-1 caches do not have a write-through mode.  So, on these,
- * we need to do PTE syncs.  If only SA-1 is configured, then evaluate
- * this at compile time.
+ * we need to do PTE syncs. Additionally, V6 MMUs also need PTE syncs.
+ * Finally, MEMC, GENERIC and XSCALE MMUs do not need PTE syncs.
+ *
+ * Use run time evaluation for all other cases.
+ *
  */
-#if (ARM_MMU_SA1 + ARM_MMU_V6 != 0) && (ARM_NMMUS == 1)
+#if (ARM_NMMUS == 1)
+#if (ARM_MMU_SA1 + ARM_MMU_V6 != 0)
 #define	PMAP_INCLUDE_PTE_SYNC
-#if (ARM_MMU_V6 > 0)
 #define	PMAP_NEEDS_PTE_SYNC	1
-#elif (ARM_MMU_SA1 == 0)
+#elif (ARM_MMU_MEMC + ARM_MMU_GENERIC + ARM_MMU_XSCALE != 0)
 #define	PMAP_NEEDS_PTE_SYNC	0
 #endif
 #endif
@@ -710,8 +730,12 @@ extern void (*pmap_zero_page_func)(paddr_t);
  */
 #define	PMAP_DOMAINS		15	/* 15 'user' domains (1-15) */
 #define	PMAP_DOMAIN_KERNEL	0	/* The kernel pmap uses domain #0 */
+
 #ifdef ARM_MMU_EXTENDED
 #define	PMAP_DOMAIN_USER	1	/* User pmaps use domain #1 */
+#define	DOMAIN_DEFAULT		((DOMAIN_CLIENT << (PMAP_DOMAIN_KERNEL*2)) | (DOMAIN_CLIENT << (PMAP_DOMAIN_USER*2)))
+#else
+#define	DOMAIN_DEFAULT		((DOMAIN_CLIENT << (PMAP_DOMAIN_KERNEL*2)))
 #endif
 
 /*
@@ -918,8 +942,10 @@ extern void (*pmap_zero_page_func)(paddr_t);
 #define	L2_L_CACHE_MASK		L2_L_CACHE_MASK_armv6n
 #define	L2_S_CACHE_MASK		L2_S_CACHE_MASK_armv6n
 
-/* These prototypes make writeable mappings, while the other MMU types
- * make read-only mappings. */
+/*
+ * These prototypes make writeable mappings, while the other MMU types
+ * make read-only mappings.
+ */
 #define	L1_SS_PROTO		L1_SS_PROTO_armv6
 #define	L1_S_PROTO		L1_S_PROTO_armv6
 #define	L1_C_PROTO		L1_C_PROTO_armv6
@@ -1001,8 +1027,10 @@ extern void (*pmap_zero_page_func)(paddr_t);
 #define	L2_L_CACHE_MASK		L2_L_CACHE_MASK_armv7
 #define	L2_S_CACHE_MASK		L2_S_CACHE_MASK_armv7
 
-/* These prototypes make writeable mappings, while the other MMU types
- * make read-only mappings. */
+/*
+ * These prototypes make writeable mappings, while the other MMU types
+ * make read-only mappings.
+ */
 #define	L1_SS_PROTO		L1_SS_PROTO_armv7
 #define	L1_S_PROTO		L1_S_PROTO_armv7
 #define	L1_C_PROTO		L1_C_PROTO_armv7
@@ -1017,6 +1045,7 @@ extern void (*pmap_zero_page_func)(paddr_t);
  */
 #define l1pte_set_writable(pte)	(((pte) & ~L1_S_PROT_RO) | L1_S_PROT_W)
 #define l1pte_set_readonly(pte)	(((pte) & ~L1_S_PROT_W) | L1_S_PROT_RO)
+
 #define l2pte_set_writable(pte)	(((pte) & ~L2_S_PROT_RO) | L2_S_PROT_W)
 #define l2pte_set_readonly(pte)	(((pte) & ~L2_S_PROT_W) | L2_S_PROT_RO)
 
@@ -1028,14 +1057,33 @@ extern void (*pmap_zero_page_func)(paddr_t);
  * These macros return various bits based on kernel/user and protection.
  * Note that the compiler will usually fold these at compile time.
  */
-#define	L1_S_PROT(ku, pr)	((((ku) == PTE_USER) ? L1_S_PROT_U : 0) | \
-				 (((pr) & VM_PROT_WRITE) ? L1_S_PROT_W : L1_S_PROT_RO))
 
-#define	L2_L_PROT(ku, pr)	((((ku) == PTE_USER) ? L2_L_PROT_U : 0) | \
-				 (((pr) & VM_PROT_WRITE) ? L2_L_PROT_W : L2_L_PROT_RO))
+#define	L1_S_PROT(ku, pr)	(					   \
+	(((ku) == PTE_USER) ? 						   \
+	    L1_S_PROT_U | (((pr) & VM_PROT_WRITE) ? L1_S_PROT_W : 0)	   \
+	: 								   \
+	    (((L1_S_PROT_RO && 						   \
+		((pr) & (VM_PROT_READ | VM_PROT_WRITE)) == VM_PROT_READ) ? \
+		    L1_S_PROT_RO : L1_S_PROT_W)))			   \
+    )
 
-#define	L2_S_PROT(ku, pr)	((((ku) == PTE_USER) ? L2_S_PROT_U : 0) | \
-				 (((pr) & VM_PROT_WRITE) ? L2_S_PROT_W : L2_S_PROT_RO))
+#define	L2_L_PROT(ku, pr)	(					   \
+	(((ku) == PTE_USER) ?						   \
+	    L2_L_PROT_U | (((pr) & VM_PROT_WRITE) ? L2_L_PROT_W : 0)	   \
+	:								   \
+	    (((L2_L_PROT_RO && 						   \
+		((pr) & (VM_PROT_READ | VM_PROT_WRITE)) == VM_PROT_READ) ? \
+		    L2_L_PROT_RO : L2_L_PROT_W)))			   \
+    )
+
+#define	L2_S_PROT(ku, pr)	(					   \
+	(((ku) == PTE_USER) ?						   \
+	    L2_S_PROT_U | (((pr) & VM_PROT_WRITE) ? L2_S_PROT_W : 0)	   \
+	:								   \
+	    (((L2_S_PROT_RO &&						   \
+		((pr) & (VM_PROT_READ | VM_PROT_WRITE)) == VM_PROT_READ) ? \
+		    L2_S_PROT_RO : L2_S_PROT_W)))			   \
+    )
 
 /*
  * Macros to test if a mapping is mappable with an L1 SuperSection,
@@ -1049,6 +1097,12 @@ extern void (*pmap_zero_page_func)(paddr_t);
 
 #define	L2_L_MAPPABLE_P(va, pa, size)					\
 	((((va) | (pa)) & L2_L_OFFSET) == 0 && (size) >= L2_L_SIZE)
+
+#define	PMAP_MAPSIZE1	L2_L_SIZE
+#define	PMAP_MAPSIZE2	L1_S_SIZE
+#if (ARM_MMU_V6 + ARM_MMU_V7) > 0
+#define	PMAP_MAPSIZE3	L1_SS_SIZE
+#endif
 
 #ifndef _LOCORE
 /*

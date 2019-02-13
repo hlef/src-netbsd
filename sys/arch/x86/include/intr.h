@@ -1,4 +1,4 @@
-/*	$NetBSD: intr.h,v 1.49 2016/07/07 06:55:39 msaitoh Exp $	*/
+/*	$NetBSD: intr.h,v 1.56 2018/06/24 13:35:33 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 1998, 2001, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -32,8 +32,10 @@
 #ifndef _X86_INTR_H_
 #define _X86_INTR_H_
 
+#if !defined(XEN)
 #define	__HAVE_FAST_SOFTINTS
 #define	__HAVE_PREEMPTION
+#endif /*  !defined(XEN) */
 
 #ifdef _KERNEL
 #include <sys/types.h>
@@ -67,7 +69,9 @@
  */
 
 struct intrstub {
+#if !defined(XEN)
 	void *ist_entry;
+#endif
 	void *ist_recurse;
 	void *ist_resume;
 };
@@ -86,6 +90,10 @@ struct intrsource {
 	void *is_recurse;		/* entry for spllower */
 	void *is_resume;		/* entry for doreti */
 	lwp_t *is_lwp;			/* for soft interrupts */
+#if defined(XEN)
+	u_long ipl_evt_mask1;	/* pending events for this IPL */
+	u_long ipl_evt_mask2[NR_EVENT_CHANNELS];
+#endif
 	struct evcnt is_evcnt;		/* interrupt counter per cpu */
 	int is_flags;			/* see below */
 	int is_type;			/* level, edge */
@@ -109,6 +117,18 @@ struct intrsource {
  */
 
 struct intrhand {
+#if defined(XEN)
+	/*
+	 * Note: This is transitional and will go away.
+	 *
+	 * We ought to use a union here, but too much effort.
+	 * We use this field to tear down the cookie handed to us
+	 * via x86/intr.c:intr_disestablish();
+	 * Interestingly, the intr_establish_xname() function returns
+	 * a "void *" - so we abuse this for now.
+	 */
+	int	pic_type; /* Overloading wrt struct pintrhand */
+#endif
 	int	(*ih_fun)(void *);
 	void	*ih_arg;
 	int	ih_level;
@@ -118,6 +138,9 @@ struct intrhand {
 	struct	intrhand **ih_prevp;
 	int	ih_pin;
 	int	ih_slot;
+#if defined(XEN)
+	struct	intrhand *ih_evt_next;
+#endif
 	struct cpu_info *ih_cpu;
 };
 
@@ -171,12 +194,14 @@ splraiseipl(ipl_cookie_t icookie)
  */
 
 void Xsoftintr(void);
-void Xpreemptrecurse(void);
-void Xpreemptresume(void);
+void Xrecurse_preempt(void);
+void Xresume_preempt(void);
 
-extern struct intrstub i8259_stubs[];
+extern struct intrstub legacy_stubs[];
 extern struct intrstub ioapic_edge_stubs[];
 extern struct intrstub ioapic_level_stubs[];
+extern struct intrstub x2apic_edge_stubs[];
+extern struct intrstub x2apic_level_stubs[];
 
 struct cpu_info;
 
@@ -197,6 +222,7 @@ int intr_find_mpmapping(int, int, intr_handle_t *);
 struct pic *intr_findpic(int);
 void intr_printconfig(void);
 
+const char *intr_create_intrid(int, struct pic *, int, char *, size_t);
 struct intrsource *intr_allocate_io_intrsource(const char *);
 void intr_free_io_intrsource(const char *);
 
@@ -204,7 +230,9 @@ int x86_send_ipi(struct cpu_info *, int);
 void x86_broadcast_ipi(int);
 void x86_ipi_handler(void);
 
+#ifndef XEN
 extern void (* const ipifunc[X86_NIPI])(struct cpu_info *);
+#endif
 
 #endif /* _KERNEL */
 

@@ -1,5 +1,3 @@
-/*	$NetBSD: npf.h,v 1.47 2014/08/10 19:09:43 rmind Exp $	*/
-
 /*-
  * Copyright (c) 2009-2014 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -39,20 +37,28 @@
 #include <sys/param.h>
 #include <sys/types.h>
 
-#include <sys/ioctl.h>
-#include <prop/proplib.h>
+#define	NPF_VERSION		20
 
+#if defined(_NPF_STANDALONE)
+#include "npf_stand.h"
+#else
+#include <sys/ioctl.h>
 #include <netinet/in_systm.h>
 #include <netinet/in.h>
+#endif
 
-#define	NPF_VERSION		17
+struct npf;
+typedef struct npf npf_t;
 
 /*
- * Public declarations and definitions.
+ * Storage of address (both for IPv4 and IPv6) and netmask.
  */
+typedef union {
+	uint8_t			word8[16];
+	uint16_t		word16[8];
+	uint32_t		word32[4];
+} npf_addr_t;
 
-/* Storage of address (both for IPv4 and IPv6) and netmask */
-typedef struct in6_addr		npf_addr_t;
 typedef uint8_t			npf_netmask_t;
 
 #define	NPF_MAX_NETMASK		(128)
@@ -70,7 +76,11 @@ typedef uint8_t			npf_netmask_t;
 /* The number of words used. */
 #define	NPF_BPF_NWORDS		3
 
-#if defined(_KERNEL)
+/*
+ * In-kernel declarations and definitions.
+ */
+
+#if defined(_KERNEL) || defined(_NPF_STANDALONE)
 
 #define	NPF_DECISION_BLOCK	0
 #define	NPF_DECISION_PASS	1
@@ -92,16 +102,11 @@ typedef uint8_t			npf_netmask_t;
 
 #define	NBUF_DATAREF_RESET	0x01
 
-typedef struct {
-	struct mbuf *	nb_mbuf0;
-	struct mbuf *	nb_mbuf;
-	void *		nb_nptr;
-	const ifnet_t *	nb_ifp;
-	unsigned	nb_ifid;
-	int		nb_flags;
-} nbuf_t;
+struct mbuf;
+struct nbuf;
+typedef struct nbuf nbuf_t;
 
-void		nbuf_init(nbuf_t *, struct mbuf *, const ifnet_t *);
+void		nbuf_init(npf_t *, nbuf_t *, struct mbuf *, const ifnet_t *);
 void		nbuf_reset(nbuf_t *);
 struct mbuf *	nbuf_head_mbuf(nbuf_t *);
 
@@ -116,8 +121,8 @@ void *		nbuf_ensure_contig(nbuf_t *, size_t);
 void *		nbuf_ensure_writable(nbuf_t *, size_t);
 
 bool		nbuf_cksum_barrier(nbuf_t *, int);
-int		nbuf_add_tag(nbuf_t *, uint32_t, uint32_t);
-int		nbuf_find_tag(nbuf_t *, uint32_t, void **);
+int		nbuf_add_tag(nbuf_t *, uint32_t);
+int		nbuf_find_tag(nbuf_t *, uint32_t *);
 
 /*
  * Packet information cache.
@@ -135,10 +140,13 @@ int		nbuf_find_tag(nbuf_t *, uint32_t, void **);
 
 #define	NPC_ALG_EXEC	0x100	/* ALG execution. */
 
+#define	NPC_FMTERR	0x200	/* Format error. */
+
 #define	NPC_IP46	(NPC_IP4|NPC_IP6)
 
 typedef struct {
-	/* Information flags and the nbuf. */
+	/* NPF context, information flags and the nbuf. */
+	npf_t *			npc_ctx;
 	uint32_t		npc_info;
 	nbuf_t *		npc_nbuf;
 
@@ -150,7 +158,7 @@ typedef struct {
 	uint8_t			npc_alen;
 
 	/* IP header length and L4 protocol. */
-	uint8_t			npc_hlen;
+	uint32_t		npc_hlen;
 	uint16_t		npc_proto;
 
 	/* IPv4, IPv6. */
@@ -178,26 +186,6 @@ npf_iscached(const npf_cache_t *npc, const int inf)
 
 #define	NPF_SRC		0
 #define	NPF_DST		1
-
-/*
- * NPF extensions and rule procedure interface.
- */
-
-struct npf_rproc;
-typedef struct npf_rproc	npf_rproc_t;
-
-void		npf_rproc_assign(npf_rproc_t *, void *);
-
-typedef struct {
-	unsigned int	version;
-	void *		ctx;
-	int		(*ctor)(npf_rproc_t *, prop_dictionary_t);
-	void		(*dtor)(npf_rproc_t *, void *);
-	bool		(*proc)(npf_cache_t *, void *, int *);
-} npf_ext_ops_t;
-
-void *		npf_ext_register(const char *, const npf_ext_ops_t *);
-int		npf_ext_unregister(void *);
 
 /*
  * Misc.
@@ -261,6 +249,7 @@ bool		npf_autounload_p(void);
 
 /* XXX mbuf.h: just for now. */
 #define	PACKET_TAG_NPF			10
+#define	NPF_NTAG_PASS			0x0001
 
 /*
  * Rule commands (non-ioctl).
@@ -309,11 +298,22 @@ typedef struct npf_ioctl_table {
 
 #define	IOC_NPF_VERSION		_IOR('N', 100, int)
 #define	IOC_NPF_SWITCH		_IOW('N', 101, int)
-#define	IOC_NPF_LOAD		_IOWR('N', 102, struct plistref)
+#define	IOC_NPF_LOAD		_IOWR('N', 102, nvlist_ref_t)
 #define	IOC_NPF_TABLE		_IOW('N', 103, struct npf_ioctl_table)
 #define	IOC_NPF_STATS		_IOW('N', 104, void *)
-#define	IOC_NPF_SAVE		_IOR('N', 105, struct plistref)
-#define	IOC_NPF_RULE		_IOWR('N', 107, struct plistref)
+#define	IOC_NPF_SAVE		_IOR('N', 105, nvlist_ref_t)
+#define	IOC_NPF_RULE		_IOWR('N', 107, nvlist_ref_t)
+#define	IOC_NPF_CONN_LOOKUP	_IOWR('N', 108, nvlist_ref_t)
+
+/*
+ * NPF error report.
+ */
+
+typedef struct {
+	int64_t		id;
+	char *		source_file;
+	u_int		source_line;
+} npf_error_t;
 
 /*
  * Statistics counters.

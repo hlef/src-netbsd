@@ -1,4 +1,4 @@
-/*	$NetBSD: if_bnx.c,v 1.59 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_bnx.c,v 1.65 2018/06/26 06:48:01 msaitoh Exp $	*/
 /*	$OpenBSD: if_bnx.c,v 1.85 2009/11/09 14:32:41 dlg Exp $ */
 
 /*-
@@ -35,7 +35,7 @@
 #if 0
 __FBSDID("$FreeBSD: src/sys/dev/bce/if_bce.c,v 1.3 2006/04/13 14:12:26 ru Exp $");
 #endif
-__KERNEL_RCSID(0, "$NetBSD: if_bnx.c,v 1.59 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_bnx.c,v 1.65 2018/06/26 06:48:01 msaitoh Exp $");
 
 /*
  * The following controllers are supported by this driver:
@@ -792,7 +792,8 @@ bnx_attach(device_t parent, device_t self, void *aux)
 	    IFCAP_CSUM_UDPv4_Tx | IFCAP_CSUM_UDPv4_Rx;
 
 	/* Hookup IRQ last. */
-	sc->bnx_intrhand = pci_intr_establish(pc, ih, IPL_NET, bnx_intr, sc);
+	sc->bnx_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, bnx_intr,
+	    sc, device_xname(self));
 	if (sc->bnx_intrhand == NULL) {
 		aprint_error_dev(self, "couldn't establish interrupt");
 		if (intrstr != NULL)
@@ -846,6 +847,7 @@ bnx_attach(device_t parent, device_t self, void *aux)
 
 	/* Attach to the Ethernet interface list. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp,sc->eaddr);
 
 	callout_init(&sc->bnx_timeout, 0);
@@ -889,17 +891,7 @@ bnx_detach(device_t dev, int flags)
 
 	/* Stop and reset the controller. */
 	s = splnet();
-	if (ifp->if_flags & IFF_RUNNING)
-		bnx_stop(ifp, 1);
-	else {
-		/* Disable the transmit/receive blocks. */
-		REG_WR(sc, BNX_MISC_ENABLE_CLR_BITS, 0x5ffffff);
-		REG_RD(sc, BNX_MISC_ENABLE_CLR_BITS);
-		DELAY(20);
-		bnx_disable_intr(sc);
-		bnx_reset(sc, BNX_DRV_MSG_CODE_RESET);
-	}
-
+	bnx_stop(ifp, 1);
 	splx(s);
 
 	pmf_device_deregister(dev);
@@ -3370,10 +3362,11 @@ bnx_stop(struct ifnet *ifp, int disable)
 
 	DBPRINT(sc, BNX_VERBOSE_RESET, "Entering %s()\n", __func__);
 
-	if ((ifp->if_flags & IFF_RUNNING) == 0)
-		return;
-
-	callout_stop(&sc->bnx_timeout);
+	if (disable) {
+		sc->bnx_detaching = 1;
+		callout_halt(&sc->bnx_timeout, NULL);
+	} else
+		callout_stop(&sc->bnx_timeout);
 
 	mii_down(&sc->bnx_mii);
 
@@ -4632,19 +4625,11 @@ bnx_rx_intr(struct bnx_softc *sc)
 			 */
 			if ((status & L2_FHDR_STATUS_L2_VLAN_TAG) &&
 			    !(sc->rx_mode & BNX_EMAC_RX_MODE_KEEP_VLAN_TAG)) {
-				VLAN_INPUT_TAG(ifp, m,
-				    l2fhdr->l2_fhdr_vlan_tag,
-				    continue);
+				vlan_set_tag(m, l2fhdr->l2_fhdr_vlan_tag);
 			}
 
-			/*
-			 * Handle BPF listeners. Let the BPF
-			 * user see the packet.
-			 */
-			bpf_mtap(ifp, m);
-
 			/* Pass the mbuf off to the upper layers. */
-			ifp->if_ipackets++;
+
 			DBPRINT(sc, BNX_VERBOSE_RECV,
 			    "%s(): Passing received frame up.\n", __func__);
 			if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -4952,7 +4937,6 @@ bnx_tx_encap(struct bnx_softc *sc, struct mbuf *m)
 #endif
 	uint32_t		addr, prod_bseq;
 	int			i, error;
-	struct m_tag		*mtag;
 	static struct work	bnx_wk; /* Dummy work. Statically allocated. */
 
 	mutex_enter(&sc->tx_pkt_mtx);
@@ -4985,10 +4969,9 @@ bnx_tx_encap(struct bnx_softc *sc, struct mbuf *m)
 	}
 
 	/* Transfer any VLAN tags to the bd. */
-	mtag = VLAN_OUTPUT_TAG(&sc->bnx_ec, m);
-	if (mtag != NULL) {
+	if (vlan_has_tag(m)) {
 		flags |= TX_BD_FLAGS_VLAN_TAG;
-		vlan_tag = VLAN_TAG_VALUE(mtag);
+		vlan_tag = vlan_get_tag(m);
 	}
 
 	/* Map the mbuf into DMAable memory. */
@@ -5149,7 +5132,7 @@ bnx_start(struct ifnet *ifp)
 		count++;
 
 		/* Send a copy of the frame to any BPF listeners. */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 	}
 
 	if (count == 0) {
@@ -5305,7 +5288,7 @@ bnx_intr(void *xsc)
 	    BNX_PCICFG_MISC_STATUS_INTA_VALUE))
 		return 0;
 
-	/* Ack the interrupt and stop others from occuring. */
+	/* Ack the interrupt and stop others from occurring. */
 	REG_WR(sc, BNX_PCICFG_INT_ACK_CMD,
 	    BNX_PCICFG_INT_ACK_CMD_USE_INT_HC_PARAM |
 	    BNX_PCICFG_INT_ACK_CMD_MASK_INT);
@@ -5384,8 +5367,7 @@ bnx_intr(void *xsc)
 	    BNX_PCICFG_INT_ACK_CMD_INDEX_VALID | sc->last_status_idx);
 
 	/* Handle any frames that arrived while handling the interrupt. */
-	if (!IFQ_IS_EMPTY(&ifp->if_snd))
-		bnx_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	return 1;
 }
@@ -5704,9 +5686,6 @@ bnx_tick(void *xsc)
 	/* Update the statistics from the hardware statistics block. */
 	bnx_stats_update(sc);
 
-	/* Schedule the next tick. */
-	callout_reset(&sc->bnx_timeout, hz, bnx_tick, sc);
-
 	mii = &sc->bnx_mii;
 	mii_tick(mii);
 
@@ -5717,6 +5696,11 @@ bnx_tick(void *xsc)
 	bnx_get_buf(sc, &prod, &chain_prod, &prod_bseq);
 	sc->rx_prod = prod;
 	sc->rx_prod_bseq = prod_bseq;
+
+	/* Schedule the next tick. */
+	if (!sc->bnx_detaching)
+		callout_reset(&sc->bnx_timeout, hz, bnx_tick, sc);
+
 	splx(s);
 	return;
 }

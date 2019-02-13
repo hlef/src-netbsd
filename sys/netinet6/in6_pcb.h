@@ -1,4 +1,4 @@
-/*	$NetBSD: in6_pcb.h,v 1.46 2015/05/24 15:43:45 rtr Exp $	*/
+/*	$NetBSD: in6_pcb.h,v 1.49 2017/03/02 05:26:24 ozaki-r Exp $	*/
 /*	$KAME: in6_pcb.h,v 1.45 2001/02/09 05:59:46 itojun Exp $	*/
 
 /*
@@ -107,6 +107,10 @@ struct	in6pcb {
 #define in6p_faddr	in6p_ip6.ip6_dst
 #define in6p_laddr	in6p_ip6.ip6_src
 
+#define	in6p_lock(in6p)		solock((in6p)->in6p_socket)
+#define	in6p_unlock(in6p)	sounlock((in6p)->in6p_socket)
+#define	in6p_locked(in6p)	solocked((in6p)->in6p_socket)
+
 /* states in inp_state: */
 #define	IN6P_ATTACHED		INP_ATTACHED
 #define	IN6P_BOUND		INP_BOUND
@@ -179,6 +183,8 @@ int	in6_pcbsetport(struct sockaddr_in6 *, struct in6pcb *, struct lwp *);
 
 extern struct rtentry *
 	in6_pcbrtentry(struct in6pcb *);
+extern void
+	in6_pcbrtentry_unref(struct rtentry *, struct in6pcb *);
 extern struct in6pcb *in6_pcblookup_connect(struct inpcbtable *,
 					    const struct in6_addr *, u_int, const struct in6_addr *, u_int, int,
 					    struct vestigial_inpcb *);

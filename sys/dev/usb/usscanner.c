@@ -1,4 +1,4 @@
-/*	$NetBSD: usscanner.c,v 1.40 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: usscanner.c,v 1.43 2018/01/21 13:57:12 skrll Exp $	*/
 
 /*
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -47,7 +47,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: usscanner.c,v 1.40 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: usscanner.c,v 1.43 2018/01/21 13:57:12 skrll Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include "scsibus.h"
 #include <sys/param.h>
@@ -92,7 +96,7 @@ int	usscannerdebug = 0;
 #define USSCANNER_TIMEOUT 2000
 
 struct usscanner_softc {
- 	device_t		sc_dev;
+	device_t		sc_dev;
 	struct usbd_device	*sc_udev;
 	struct usbd_interface	*sc_iface;
 
@@ -277,8 +281,7 @@ usscanner_attach(device_t parent, device_t self, void *aux)
 
 	sc->sc_cmd_buffer = usbd_get_buffer(sc->sc_cmd_xfer);
 
-	error = usbd_create_xfer(sc->sc_intr_pipe, 1, USBD_SHORT_XFER_OK,
-	    0, &sc->sc_intr_xfer);
+	error = usbd_create_xfer(sc->sc_intr_pipe, 1, 0, 0, &sc->sc_intr_xfer);
 	if (error) {
 		aprint_error_dev(self, "alloc intr xfer failed, error=%d\n",
 		    error);
@@ -287,7 +290,7 @@ usscanner_attach(device_t parent, device_t self, void *aux)
 	}
 
 	error = usbd_create_xfer(sc->sc_in_pipe, USSCANNER_MAX_TRANSFER_SIZE,
-	    USBD_SHORT_XFER_OK, 0, &sc->sc_datain_xfer);
+	    0, 0, &sc->sc_datain_xfer);
 	if (error) {
 		aprint_error_dev(self, "alloc data xfer failed, error=%d\n",
 		    error);
@@ -297,7 +300,7 @@ usscanner_attach(device_t parent, device_t self, void *aux)
 	sc->sc_datain_buffer = usbd_get_buffer(sc->sc_datain_xfer);
 
 	error = usbd_create_xfer(sc->sc_out_pipe, USSCANNER_MAX_TRANSFER_SIZE,
-	    USBD_SHORT_XFER_OK, 0, &sc->sc_dataout_xfer);
+	    0, 0, &sc->sc_dataout_xfer);
 	if (error) {
 		aprint_error_dev(self, "alloc data xfer failed, err=%d\n", err);
 		usscanner_cleanup(sc);

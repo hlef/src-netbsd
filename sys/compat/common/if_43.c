@@ -1,4 +1,4 @@
-/*	$NetBSD: if_43.c,v 1.12 2016/07/25 08:30:19 ozaki-r Exp $	*/
+/*	$NetBSD: if_43.c,v 1.15 2018/09/06 06:41:59 maxv Exp $	*/
 
 /*
  * Copyright (c) 1982, 1986, 1989, 1990, 1993
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_43.c,v 1.12 2016/07/25 08:30:19 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_43.c,v 1.15 2018/09/06 06:41:59 maxv Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_compat_netbsd.h"
@@ -64,7 +64,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_43.c,v 1.12 2016/07/25 08:30:19 ozaki-r Exp $");
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
 #include <net/if_gre.h>
-#include <net/if_atm.h>
 #include <net/if_tap.h>
 #include <net80211/ieee80211_ioctl.h>
 #include <netinet6/in6_var.h>
@@ -73,7 +72,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_43.c,v 1.12 2016/07/25 08:30:19 ozaki-r Exp $");
 #include <compat/sys/sockio.h>
 
 #include <compat/common/compat_util.h>
-
+#include <compat/common/if_43.h>
 #include <uvm/uvm_extern.h>
 
 u_long 
@@ -179,7 +178,6 @@ compat_cvtcmd(u_long cmd)
 		case SIOCGIFPSRCADDR_IN6:
 		case SIOCGIFSTAT_ICMP6:
 		case SIOCGIFSTAT_IN6:
-		case SIOCGPVCSIF:
 		case SIOCGVH:
 		case SIOCIFCREATE:
 		case SIOCIFDESTROY:
@@ -199,7 +197,6 @@ compat_cvtcmd(u_long cmd)
 		case SIOCSIFNETMASK_IN6:
 		case SIOCSNDFLUSH_IN6:
 		case SIOCSPFXFLUSH_IN6:
-		case SIOCSPVCSIF:
 		case SIOCSRTRFLUSH_IN6:
 		case SIOCSVH:
 		case TAPGIFNAME:
@@ -280,3 +277,28 @@ compat_ifioctl(struct socket *so, u_long ocmd, u_long cmd, void *data,
 
 	return error;
 }
+
+#if defined(COMPAT_43)
+static u_long (*orig_compat_cvtcmd)(u_long);
+static int (*orig_compat_ifioctl)(struct socket *, u_long, u_long,
+    void *, struct lwp *);
+
+void
+if_43_init(void)
+{
+
+	orig_compat_cvtcmd = vec_compat_cvtcmd;
+	vec_compat_cvtcmd = compat_cvtcmd;
+
+	orig_compat_ifioctl = vec_compat_ifioctl;
+	vec_compat_ifioctl =  compat_ifioctl;
+}
+
+void
+if_43_fini(void)
+{
+
+	vec_compat_cvtcmd = orig_compat_cvtcmd;
+	vec_compat_ifioctl = orig_compat_ifioctl;
+}
+#endif /* defined(COMPAT_43) */

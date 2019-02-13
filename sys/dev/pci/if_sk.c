@@ -1,4 +1,4 @@
-/*	$NetBSD: if_sk.c,v 1.82 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_sk.c,v 1.89 2018/07/04 19:26:09 jdolecek Exp $	*/
 
 /*-
  * Copyright (c) 2003 The NetBSD Foundation, Inc.
@@ -115,7 +115,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_sk.c,v 1.82 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_sk.c,v 1.89 2018/07/04 19:26:09 jdolecek Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -552,8 +552,6 @@ sk_marv_miibus_statchg(struct ifnet *ifp)
 		     YUKON_GPCR)));
 }
 
-#define SK_HASH_BITS		6
-
 u_int32_t
 sk_xmac_hash(void *addr)
 {
@@ -985,11 +983,38 @@ sk_ifmedia_upd(struct ifnet *ifp)
 	return rc;
 }
 
+static void
+sk_promisc(struct sk_if_softc *sc_if, int on)
+{
+	struct sk_softc *sc = sc_if->sk_softc;
+	switch (sc->sk_type) {
+	case SK_GENESIS:
+		if (on)
+			SK_XM_SETBIT_4(sc_if, XM_MODE, XM_MODE_RX_PROMISC);
+		else
+			SK_XM_CLRBIT_4(sc_if, XM_MODE, XM_MODE_RX_PROMISC);
+		break;
+	case SK_YUKON:
+	case SK_YUKON_LITE:
+	case SK_YUKON_LP:
+		if (on)
+			SK_YU_CLRBIT_2(sc_if, YUKON_RCR,
+			    YU_RCR_UFLEN | YU_RCR_MUFLEN);
+		else
+			SK_YU_SETBIT_2(sc_if, YUKON_RCR,
+			    YU_RCR_UFLEN | YU_RCR_MUFLEN);
+		break;
+	default:
+		aprint_error_dev(sc_if->sk_dev, "Can't set promisc for %d\n",
+			sc->sk_type);
+		break;
+	}
+}
+
 int
 sk_ioctl(struct ifnet *ifp, u_long command, void *data)
 {
 	struct sk_if_softc *sc_if = ifp->if_softc;
-	struct sk_softc *sc = sc_if->sk_softc;
 	int s, error = 0;
 
 	/* DPRINTFN(2, ("sk_ioctl\n")); */
@@ -1002,45 +1027,20 @@ sk_ioctl(struct ifnet *ifp, u_long command, void *data)
 	        DPRINTFN(2, ("sk_ioctl IFFLAGS\n"));
 		if ((error = ifioctl_common(ifp, command, data)) != 0)
 			break;
-		if (ifp->if_flags & IFF_UP) {
-			if (ifp->if_flags & IFF_RUNNING &&
-			    ifp->if_flags & IFF_PROMISC &&
-			    !(sc_if->sk_if_flags & IFF_PROMISC)) {
-				switch (sc->sk_type) {
-				case SK_GENESIS:
-					SK_XM_SETBIT_4(sc_if, XM_MODE,
-					    XM_MODE_RX_PROMISC);
-					break;
-				case SK_YUKON:
-				case SK_YUKON_LITE:
-				case SK_YUKON_LP:
-					SK_YU_CLRBIT_2(sc_if, YUKON_RCR,
-					    YU_RCR_UFLEN | YU_RCR_MUFLEN);
-					break;
-				}
-				sk_setmulti(sc_if);
-			} else if (ifp->if_flags & IFF_RUNNING &&
-			    !(ifp->if_flags & IFF_PROMISC) &&
-			    sc_if->sk_if_flags & IFF_PROMISC) {
-				switch (sc->sk_type) {
-				case SK_GENESIS:
-					SK_XM_CLRBIT_4(sc_if, XM_MODE,
-					    XM_MODE_RX_PROMISC);
-					break;
-				case SK_YUKON:
-				case SK_YUKON_LITE:
-				case SK_YUKON_LP:
-					SK_YU_SETBIT_2(sc_if, YUKON_RCR,
-					    YU_RCR_UFLEN | YU_RCR_MUFLEN);
-					break;
-				}
-
+		switch (ifp->if_flags & (IFF_UP | IFF_RUNNING)) {
+		case IFF_RUNNING:
+			sk_stop(ifp, 1);
+			break;
+		case IFF_UP:
+			sk_init(ifp);
+			break;
+		case IFF_UP | IFF_RUNNING:
+			if ((ifp->if_flags ^ sc_if->sk_if_flags) == IFF_PROMISC)			{
+				sk_promisc(sc_if, ifp->if_flags & IFF_PROMISC);
 				sk_setmulti(sc_if);
 			} else
-				(void) sk_init(ifp);
-		} else {
-			if (ifp->if_flags & IFF_RUNNING)
-				sk_stop(ifp,0);
+				sk_init(ifp);
+			break;
 		}
 		sc_if->sk_if_flags = ifp->if_flags;
 		error = 0;
@@ -1458,11 +1458,14 @@ sk_attach(device_t parent, device_t self, void *aux)
 	 * Call MI attach routines.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 
 	ether_ifattach(ifp, sc_if->sk_enaddr);
 
-        rnd_attach_source(&sc->rnd_source, device_xname(sc->sk_dev),
-            RND_TYPE_NET, RND_FLAG_DEFAULT);
+	if (sc->rnd_attached++ == 0) {
+	        rnd_attach_source(&sc->rnd_source, device_xname(sc->sk_dev),
+		    RND_TYPE_NET, RND_FLAG_DEFAULT);
+	}
 
 	if (pmf_device_register(self, NULL, sk_resume))
 		pmf_class_network_register(self, ifp);
@@ -1628,7 +1631,8 @@ skc_attach(device_t parent, device_t self, void *aux)
 	}
 
 	intrstr = pci_intr_string(pc, ih, intrbuf, sizeof(intrbuf));
-	sc->sk_intrhand = pci_intr_establish(pc, ih, IPL_NET, sk_intr, sc);
+	sc->sk_intrhand = pci_intr_establish_xname(pc, ih, IPL_NET, sk_intr, sc,
+	    device_xname(sc->sk_dev));
 	if (sc->sk_intrhand == NULL) {
 		aprint_error(": couldn't establish interrupt");
 		if (intrstr != NULL)
@@ -1981,7 +1985,7 @@ sk_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 	}
 	if (pkts == 0)
 		return;
@@ -2113,9 +2117,6 @@ sk_rxeof(struct sk_if_softc *sc_if)
 			m->m_pkthdr.len = m->m_len = total_len;
 		}
 
-		ifp->if_ipackets++;
-
-		bpf_mtap(ifp, m);
 		/* pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 	}
@@ -2397,11 +2398,12 @@ sk_intr(void *xsc)
 
 	CSR_WRITE_4(sc, SK_IMR, sc->sk_intrmask);
 
-	if (ifp0 != NULL && !IFQ_IS_EMPTY(&ifp0->if_snd))
-		sk_start(ifp0);
-	if (ifp1 != NULL && !IFQ_IS_EMPTY(&ifp1->if_snd))
-		sk_start(ifp1);
+	if (ifp0 != NULL)
+		if_schedule_deferred_start(ifp0);
+	if (ifp1 != NULL)
+		if_schedule_deferred_start(ifp1);
 
+	KASSERT(sc->rnd_attached > 0);
 	rnd_add_uint32(&sc->rnd_source, status);
 
 	if (sc->sk_int_mod_pending)

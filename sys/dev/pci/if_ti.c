@@ -1,4 +1,4 @@
-/* $NetBSD: if_ti.c,v 1.99 2016/07/14 04:15:27 msaitoh Exp $ */
+/* $NetBSD: if_ti.c,v 1.105 2018/07/18 23:10:28 sevan Exp $ */
 
 /*
  * Copyright (c) 1997, 1998, 1999
@@ -81,7 +81,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ti.c,v 1.99 2016/07/14 04:15:27 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ti.c,v 1.105 2018/07/18 23:10:28 sevan Exp $");
 
 #include "opt_inet.h"
 
@@ -688,7 +688,7 @@ ti_jfree(struct mbuf *m, void *tbuf, size_t size, void *arg)
 
 
 /*
- * Intialize a standard receive ring descriptor.
+ * Initialize a standard receive ring descriptor.
  */
 static int
 ti_newbuf_std(struct ti_softc *sc, int i, struct mbuf *m, bus_dmamap_t dmamap)
@@ -1727,7 +1727,7 @@ ti_attach(device_t parent, device_t self, void *aux)
 	/*
 	 * A Tigon chip was detected. Inform the world.
 	 */
-	aprint_normal_dev(self, "Ethernet address: %s\n",ether_sprintf(eaddr));
+	aprint_normal_dev(self, "Ethernet address %s\n",ether_sprintf(eaddr));
 
 	sc->sc_dmat = pa->pa_dmat;
 
@@ -1866,6 +1866,7 @@ ti_attach(device_t parent, device_t self, void *aux)
 	 * Call MI attach routines.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, eaddr);
 
 	/*
@@ -1967,16 +1968,7 @@ ti_rxeof(struct ti_softc *sc)
 		}
 
 		m->m_pkthdr.len = m->m_len = cur_rx->ti_len;
-		ifp->if_ipackets++;
 		m_set_rcvif(m, ifp);
-
-		/*
-	 	 * Handle BPF listeners. Let the BPF user see the packet, but
-	 	 * don't pass it up to the ether_input() layer unless it's
-	 	 * a broadcast packet, multicast packet, matches our ethernet
-	 	 * address or the interface is in promiscuous mode.
-	 	 */
-		bpf_mtap(ifp, m);
 
 		eh = mtod(m, struct ether_header *);
 		switch (ntohs(eh->ether_type)) {
@@ -2026,10 +2018,8 @@ ti_rxeof(struct ti_softc *sc)
 		}
 
 		if (cur_rx->ti_flags & TI_BDFLAG_VLAN_TAG) {
-			VLAN_INPUT_TAG(ifp, m,
-			    /* ti_vlan_tag also has the priority, trim it */
-			    cur_rx->ti_vlan_tag & 4095,
-			    continue);
+			/* ti_vlan_tag also has the priority, trim it */
+			vlan_set_tag(m, cur_rx->ti_vlan_tag & 0x0fff);
 		}
 
 		if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -2164,7 +2154,7 @@ ti_intr(void *xsc)
 		return (0);
 #endif
 
-	/* Ack interrupt and stop others from occuring. */
+	/* Ack interrupt and stop others from occurring. */
 	CSR_WRITE_4(sc, TI_MB_HOSTINTR, 1);
 
 	if (ifp->if_flags & IFF_RUNNING) {
@@ -2180,9 +2170,8 @@ ti_intr(void *xsc)
 	/* Re-enable interrupts. */
 	CSR_WRITE_4(sc, TI_MB_HOSTINTR, 0);
 
-	if ((ifp->if_flags & IFF_RUNNING) != 0 &&
-	    IFQ_IS_EMPTY(&ifp->if_snd) == 0)
-		ti_start(ifp);
+	if ((ifp->if_flags & IFF_RUNNING) != 0)
+		if_schedule_deferred_start(ifp);
 
 	return (1);
 }
@@ -2218,7 +2207,6 @@ ti_encap_tigon1(struct ti_softc *sc, struct mbuf *m_head, u_int32_t *txidx)
 	struct txdmamap_pool_entry *dma;
 	bus_dmamap_t dmamap;
 	int error, i;
-	struct m_tag *mtag;
 	u_int16_t csum_flags = 0;
 
 	dma = SIMPLEQ_FIRST(&sc->txdma_list);
@@ -2274,9 +2262,9 @@ ti_encap_tigon1(struct ti_softc *sc, struct mbuf *m_head, u_int32_t *txidx)
 		TI_HOSTADDR(f->ti_addr) = dmamap->dm_segs[i].ds_addr;
 		f->ti_len = dmamap->dm_segs[i].ds_len;
 		f->ti_flags = csum_flags;
-		if ((mtag = VLAN_OUTPUT_TAG(&sc->ethercom, m_head))) {
+		if (vlan_has_tag(m_head)) {
 			f->ti_flags |= TI_BDFLAG_VLAN_TAG;
-			f->ti_vlan_tag = VLAN_TAG_VALUE(mtag);
+			f->ti_vlan_tag = vlan_get_tag(m_head);
 		} else {
 			f->ti_vlan_tag = 0;
 		}
@@ -2322,7 +2310,6 @@ ti_encap_tigon2(struct ti_softc *sc, struct mbuf *m_head, u_int32_t *txidx)
 	struct txdmamap_pool_entry *dma;
 	bus_dmamap_t dmamap;
 	int error, i;
-	struct m_tag *mtag;
 	u_int16_t csum_flags = 0;
 
 	dma = SIMPLEQ_FIRST(&sc->txdma_list);
@@ -2366,9 +2353,9 @@ ti_encap_tigon2(struct ti_softc *sc, struct mbuf *m_head, u_int32_t *txidx)
 		TI_HOSTADDR(f->ti_addr) = dmamap->dm_segs[i].ds_addr;
 		f->ti_len = dmamap->dm_segs[i].ds_len;
 		f->ti_flags = csum_flags;
-		if ((mtag = VLAN_OUTPUT_TAG(&sc->ethercom, m_head))) {
+		if (vlan_has_tag(m_head)) {
 			f->ti_flags |= TI_BDFLAG_VLAN_TAG;
-			f->ti_vlan_tag = VLAN_TAG_VALUE(mtag);
+			f->ti_vlan_tag = vlan_get_tag(m_head);
 		} else {
 			f->ti_vlan_tag = 0;
 		}
@@ -2444,7 +2431,7 @@ ti_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 	}
 
 	/* Transmit */

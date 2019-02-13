@@ -1,4 +1,4 @@
-/*	$NetBSD: utoppy.c,v 1.26 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: utoppy.c,v 1.31 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2006 The NetBSD Foundation, Inc.
@@ -30,7 +30,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: utoppy.c,v 1.26 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: utoppy.c,v 1.31 2018/09/03 16:29:34 riastradh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_usb.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -43,6 +47,8 @@ __KERNEL_RCSID(0, "$NetBSD: utoppy.c,v 1.26 2016/07/07 06:55:42 msaitoh Exp $");
 #include <sys/conf.h>
 #include <sys/vnode.h>
 #include <sys/bus.h>
+
+#include <lib/libkern/crc16.h>
 
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
@@ -313,7 +319,7 @@ utoppy_attach(device_t parent, device_t self, void *aux)
 	}
 
 	error = usbd_create_xfer(sc->sc_in_pipe, UTOPPY_FRAG_SIZE,
-	    USBD_SHORT_XFER_OK, 0, &sc->sc_in_xfer);
+	    0, 0, &sc->sc_in_xfer);
 	if (error) {
 		aprint_error_dev(self, "could not allocate bulk in xfer\n");
 		goto fail1;
@@ -387,43 +393,7 @@ utoppy_detach(device_t self, int flags)
 	return 0;
 }
 
-static const uint16_t utoppy_crc16_lookup[] = {
-	0x0000, 0xc0c1, 0xc181, 0x0140, 0xc301, 0x03c0, 0x0280, 0xc241,
-	0xc601, 0x06c0, 0x0780, 0xc741, 0x0500, 0xc5c1, 0xc481, 0x0440,
-	0xcc01, 0x0cc0, 0x0d80, 0xcd41, 0x0f00, 0xcfc1, 0xce81, 0x0e40,
-	0x0a00, 0xcac1, 0xcb81, 0x0b40, 0xc901, 0x09c0, 0x0880, 0xc841,
-	0xd801, 0x18c0, 0x1980, 0xd941, 0x1b00, 0xdbc1, 0xda81, 0x1a40,
-	0x1e00, 0xdec1, 0xdf81, 0x1f40, 0xdd01, 0x1dc0, 0x1c80, 0xdc41,
-	0x1400, 0xd4c1, 0xd581, 0x1540, 0xd701, 0x17c0, 0x1680, 0xd641,
-	0xd201, 0x12c0, 0x1380, 0xd341, 0x1100, 0xd1c1, 0xd081, 0x1040,
-	0xf001, 0x30c0, 0x3180, 0xf141, 0x3300, 0xf3c1, 0xf281, 0x3240,
-	0x3600, 0xf6c1, 0xf781, 0x3740, 0xf501, 0x35c0, 0x3480, 0xf441,
-	0x3c00, 0xfcc1, 0xfd81, 0x3d40, 0xff01, 0x3fc0, 0x3e80, 0xfe41,
-	0xfa01, 0x3ac0, 0x3b80, 0xfb41, 0x3900, 0xf9c1, 0xf881, 0x3840,
-	0x2800, 0xe8c1, 0xe981, 0x2940, 0xeb01, 0x2bc0, 0x2a80, 0xea41,
-	0xee01, 0x2ec0, 0x2f80, 0xef41, 0x2d00, 0xedc1, 0xec81, 0x2c40,
-	0xe401, 0x24c0, 0x2580, 0xe541, 0x2700, 0xe7c1, 0xe681, 0x2640,
-	0x2200, 0xe2c1, 0xe381, 0x2340, 0xe101, 0x21c0, 0x2080, 0xe041,
-	0xa001, 0x60c0, 0x6180, 0xa141, 0x6300, 0xa3c1, 0xa281, 0x6240,
-	0x6600, 0xa6c1, 0xa781, 0x6740, 0xa501, 0x65c0, 0x6480, 0xa441,
-	0x6c00, 0xacc1, 0xad81, 0x6d40, 0xaf01, 0x6fc0, 0x6e80, 0xae41,
-	0xaa01, 0x6ac0, 0x6b80, 0xab41, 0x6900, 0xa9c1, 0xa881, 0x6840,
-	0x7800, 0xb8c1, 0xb981, 0x7940, 0xbb01, 0x7bc0, 0x7a80, 0xba41,
-	0xbe01, 0x7ec0, 0x7f80, 0xbf41, 0x7d00, 0xbdc1, 0xbc81, 0x7c40,
-	0xb401, 0x74c0, 0x7580, 0xb541, 0x7700, 0xb7c1, 0xb681, 0x7640,
-	0x7200, 0xb2c1, 0xb381, 0x7340, 0xb101, 0x71c0, 0x7080, 0xb041,
-	0x5000, 0x90c1, 0x9181, 0x5140, 0x9301, 0x53c0, 0x5280, 0x9241,
-	0x9601, 0x56c0, 0x5780, 0x9741, 0x5500, 0x95c1, 0x9481, 0x5440,
-	0x9c01, 0x5cc0, 0x5d80, 0x9d41, 0x5f00, 0x9fc1, 0x9e81, 0x5e40,
-	0x5a00, 0x9ac1, 0x9b81, 0x5b40, 0x9901, 0x59c0, 0x5880, 0x9841,
-	0x8801, 0x48c0, 0x4980, 0x8941, 0x4b00, 0x8bc1, 0x8a81, 0x4a40,
-	0x4e00, 0x8ec1, 0x8f81, 0x4f40, 0x8d01, 0x4dc0, 0x4c80, 0x8c41,
-	0x4400, 0x84c1, 0x8581, 0x4540, 0x8701, 0x47c0, 0x4680, 0x8641,
-	0x8201, 0x42c0, 0x4380, 0x8341, 0x4100, 0x81c1, 0x8081, 0x4040
-};
-
-#define	UTOPPY_CRC16(ccrc,b)	\
-	(utoppy_crc16_lookup[((ccrc) ^ (b)) & 0xffu] ^ ((ccrc) >> 8))
+#define	UTOPPY_CRC16(ccrc,b)	crc16_byte((ccrc), (b)) /* from crc16.h */
 
 static const int utoppy_usbdstatus_lookup[] = {
 	0,		/* USBD_NORMAL_COMPLETION */
@@ -499,7 +469,7 @@ utoppy_dump_packet(const void *b, size_t len)
 	if (len == 0)
 		return;
 
-	len = min(len, 256);
+	len = uimin(len, 256);
 
 	printf("00: ");
 
@@ -625,14 +595,14 @@ utoppy_send_packet(struct utoppy_softc *sc, uint16_t cmd, uint32_t timeout)
 	do {
 		uint32_t thislen;
 
-		thislen = min(len, UTOPPY_FRAG_SIZE);
+		thislen = uimin(len, UTOPPY_FRAG_SIZE);
 
 		memcpy(sc->sc_out_buf, data, thislen);
 
 		err = utoppy_bulk_transfer(sc->sc_out_xfer, sc->sc_out_pipe,
 		    0, timeout, sc->sc_out_buf, &thislen);
 
-		if (thislen != min(len, UTOPPY_FRAG_SIZE)) {
+		if (thislen != uimin(len, UTOPPY_FRAG_SIZE)) {
 			DPRINTF(UTOPPY_DBG_SEND_PACKET, ("%s: "
 			    "utoppy_send_packet: sent %ld, err %d\n",
 			    device_xname(sc->sc_dev), (u_long)thislen, err));
@@ -668,7 +638,7 @@ utoppy_recv_packet(struct utoppy_softc *sc, uint16_t *respp, uint32_t timeout)
 	    device_xname(sc->sc_dev)));
 
 	do {
-		requested = thislen = min(bytesleft, UTOPPY_FRAG_SIZE);
+		requested = thislen = uimin(bytesleft, UTOPPY_FRAG_SIZE);
 
 		err = utoppy_bulk_transfer(sc->sc_in_xfer, sc->sc_in_pipe,
 		    USBD_SHORT_XFER_OK, timeout, sc->sc_in_buf,
@@ -1366,18 +1336,7 @@ utoppyopen(dev_t dev, int flag, int mode,
 	sc->sc_state = UTOPPY_STATE_OPENING;
 	sc->sc_turbo_mode = 0;
 	sc->sc_out_data = kmem_alloc(UTOPPY_BSIZE + 1, KM_SLEEP);
-	if (sc->sc_out_data == NULL) {
-		error = ENOMEM;
-		goto error;
-	}
-
 	sc->sc_in_data = kmem_alloc(UTOPPY_BSIZE + 1, KM_SLEEP);
-	if (sc->sc_in_data == NULL) {
-		kmem_free(sc->sc_out_data, UTOPPY_BSIZE + 1);
-		sc->sc_out_data = NULL;
-		error = ENOMEM;
-		goto error;
-	}
 
 	if ((error = utoppy_cancel(sc)) != 0)
 		goto error;
@@ -1500,7 +1459,7 @@ utoppyread(dev_t dev, struct uio *uio, int flags)
 				break;
 			}
 
-			len = min(uio->uio_resid, sc->sc_in_len);
+			len = uimin(uio->uio_resid, sc->sc_in_len);
 			if (len) {
 				err = uiomove(UTOPPY_IN_DATA(sc), len, uio);
 				if (err == 0) {
@@ -1565,9 +1524,9 @@ utoppywrite(dev_t dev, struct uio *uio, int flags)
 	    (u_long)uio->uio_resid, sc->sc_wr_size, sc->sc_wr_offset));
 
 	while (sc->sc_state == UTOPPY_STATE_WRITEFILE &&
-	    (len = min(uio->uio_resid, sc->sc_wr_size)) != 0) {
+	    (len = uimin(uio->uio_resid, sc->sc_wr_size)) != 0) {
 
-		len = min(len, UTOPPY_BSIZE - (UTOPPY_HEADER_SIZE +
+		len = uimin(len, UTOPPY_BSIZE - (UTOPPY_HEADER_SIZE +
 		    sizeof(uint64_t) + 3));
 
 		DPRINTF(UTOPPY_DBG_WRITE, ("%s: utoppywrite: uiomove(%ld)\n",

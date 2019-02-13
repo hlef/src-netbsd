@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_rwlock.c,v 1.45 2014/11/28 08:28:17 uebayasi Exp $	*/
+/*	$NetBSD: kern_rwlock.c,v 1.52 2018/08/31 01:23:57 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 2002, 2006, 2007, 2008, 2009 The NetBSD Foundation, Inc.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_rwlock.c,v 1.45 2014/11/28 08:28:17 uebayasi Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_rwlock.c,v 1.52 2018/08/31 01:23:57 ozaki-r Exp $");
 
 #define	__RWLOCK_PRIVATE
 
@@ -52,6 +52,7 @@ __KERNEL_RCSID(0, "$NetBSD: kern_rwlock.c,v 1.45 2014/11/28 08:28:17 uebayasi Ex
 #include <sys/cpu.h>
 #include <sys/atomic.h>
 #include <sys/lock.h>
+#include <sys/pserialize.h>
 
 #include <dev/lockstat.h>
 
@@ -72,8 +73,8 @@ __KERNEL_RCSID(0, "$NetBSD: kern_rwlock.c,v 1.45 2014/11/28 08:28:17 uebayasi Ex
 	    (uintptr_t)__builtin_return_address(0), op == RW_READER);
 #define	RW_DASSERT(rw, cond)						\
 do {									\
-	if (!(cond))							\
-		rw_abort(rw, __func__, "assertion failed: " #cond);	\
+	if (__predict_false(!(cond)))					\
+		rw_abort(__func__, __LINE__, rw, "assertion failed: " #cond);\
 } while (/* CONSTCOND */ 0);
 
 #else	/* LOCKDEBUG */
@@ -93,8 +94,8 @@ do {									\
 
 #define	RW_ASSERT(rw, cond)						\
 do {									\
-	if (!(cond))							\
-		rw_abort(rw, __func__, "assertion failed: " #cond);	\
+	if (__predict_false(!(cond)))					\
+		rw_abort(__func__, __LINE__, rw, "assertion failed: " #cond);\
 } while (/* CONSTCOND */ 0)
 
 #else
@@ -111,8 +112,8 @@ do {									\
 #define	RW_INHERITDEBUG(n, o)		/* nothing */
 #endif /* defined(LOCKDEBUG) */
 
-static void	rw_abort(krwlock_t *, const char *, const char *);
-static void	rw_dump(volatile void *);
+static void	rw_abort(const char *, size_t, krwlock_t *, const char *);
+static void	rw_dump(const volatile void *);
 static lwp_t	*rw_owner(wchan_t);
 
 static inline uintptr_t
@@ -148,17 +149,17 @@ __strong_alias(rw_tryenter,rw_vector_tryenter);
 #endif
 
 lockops_t rwlock_lockops = {
-	"Reader / writer lock",
-	LOCKOPS_SLEEP,
-	rw_dump
+	.lo_name = "Reader / writer lock",
+	.lo_type = LOCKOPS_SLEEP,
+	.lo_dump = rw_dump,
 };
 
 syncobj_t rw_syncobj = {
-	SOBJ_SLEEPQ_SORTED,
-	turnstile_unsleep,
-	turnstile_changepri,
-	sleepq_lendpri,
-	rw_owner,
+	.sobj_flag	= SOBJ_SLEEPQ_SORTED,
+	.sobj_unsleep	= turnstile_unsleep,
+	.sobj_changepri	= turnstile_changepri,
+	.sobj_lendpri	= sleepq_lendpri,
+	.sobj_owner	= rw_owner,
 };
 
 /*
@@ -167,9 +168,9 @@ syncobj_t rw_syncobj = {
  *	Dump the contents of a rwlock structure.
  */
 static void
-rw_dump(volatile void *cookie)
+rw_dump(const volatile void *cookie)
 {
-	volatile krwlock_t *rw = cookie;
+	const volatile krwlock_t *rw = cookie;
 
 	printf_nolog("owner/count  : %#018lx flags    : %#018x\n",
 	    (long)RW_OWNER(rw), (int)RW_FLAGS(rw));
@@ -183,13 +184,13 @@ rw_dump(volatile void *cookie)
  *	we ask the compiler to not inline it.
  */
 static void __noinline
-rw_abort(krwlock_t *rw, const char *func, const char *msg)
+rw_abort(const char *func, size_t line, krwlock_t *rw, const char *msg)
 {
 
 	if (panicstr != NULL)
 		return;
 
-	LOCKDEBUG_ABORT(rw, &rwlock_lockops, func, msg);
+	LOCKDEBUG_ABORT(func, line, rw, &rwlock_lockops, msg);
 }
 
 /*
@@ -197,16 +198,23 @@ rw_abort(krwlock_t *rw, const char *func, const char *msg)
  *
  *	Initialize a rwlock for use.
  */
+void _rw_init(krwlock_t *, uintptr_t);
 void
-rw_init(krwlock_t *rw)
+_rw_init(krwlock_t *rw, uintptr_t return_address)
 {
 	bool dodebug;
 
 	memset(rw, 0, sizeof(*rw));
 
-	dodebug = LOCKDEBUG_ALLOC(rw, &rwlock_lockops,
-	    (uintptr_t)__builtin_return_address(0));
+	dodebug = LOCKDEBUG_ALLOC(rw, &rwlock_lockops, return_address);
 	RW_SETDEBUG(rw, dodebug);
+}
+
+void
+rw_init(krwlock_t *rw)
+{
+
+	_rw_init(rw, (uintptr_t)__builtin_return_address(0));
 }
 
 /*
@@ -282,6 +290,7 @@ rw_vector_enter(krwlock_t *rw, const krw_t op)
 	RW_ASSERT(rw, !cpu_intr_p());
 	RW_ASSERT(rw, curthread != 0);
 	RW_WANTLOCK(rw, op);
+	KDASSERT(pserialize_not_in_read_section());
 
 	if (panicstr == NULL) {
 		LOCKDEBUG_BARRIER(&kernel_lock, 1);
@@ -338,7 +347,8 @@ rw_vector_enter(krwlock_t *rw, const krw_t op)
 			return;
 		}
 		if (__predict_false(RW_OWNER(rw) == curthread)) {
-			rw_abort(rw, __func__, "locking against myself");
+			rw_abort(__func__, __LINE__, rw,
+			    "locking against myself");
 		}
 		/*
 		 * If the lock owner is running on another CPU, and

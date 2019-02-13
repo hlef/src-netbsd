@@ -1,4 +1,4 @@
-/*	$NetBSD: tulip.c,v 1.188 2016/07/11 11:31:50 msaitoh Exp $	*/
+/*	$NetBSD: tulip.c,v 1.191 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 1998, 1999, 2000, 2002 The NetBSD Foundation, Inc.
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: tulip.c,v 1.188 2016/07/11 11:31:50 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: tulip.c,v 1.191 2018/06/26 06:48:00 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -524,6 +524,7 @@ tlp_attach(struct tulip_softc *sc, const uint8_t *enaddr)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 	ether_set_ifflags_cb(&sc->sc_ethercom, tlp_ifflags_cb);
 
@@ -873,7 +874,7 @@ tlp_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (txs == NULL || sc->sc_txfree == 0) {
@@ -1199,7 +1200,7 @@ tlp_intr(void *arg)
 	}
 
 	/* Try to get more packets going. */
-	tlp_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	if (handled)
 		rnd_add_uint32(&sc->sc_rnd_source, status);
@@ -1356,7 +1357,6 @@ tlp_rxintr(struct tulip_softc *sc)
 		    rxs->rxs_dmamap->dm_mapsize, BUS_DMASYNC_PREREAD);
 #endif /* __NO_STRICT_ALIGNMENT */
 
-		ifp->if_ipackets++;
 		eh = mtod(m, struct ether_header *);
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
@@ -1380,12 +1380,6 @@ tlp_rxintr(struct tulip_softc *sc)
 				m->m_pkthdr.len = m->m_len = len =
 				    ETHER_MAX_FRAME(ifp, etype, 0);
 		}
-
-		/*
-		 * Pass this up to any BPF listeners, but only
-		 * pass it up the stack if it's for us.
-		 */
-		bpf_mtap(ifp, m);
 
 		/*
 		 * We sometimes have to run the 21140 in Hash-Only

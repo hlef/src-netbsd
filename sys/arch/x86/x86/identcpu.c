@@ -1,4 +1,4 @@
-/*	$NetBSD: identcpu.c,v 1.50 2016/01/01 19:46:48 tls Exp $	*/
+/*	$NetBSD: identcpu.c,v 1.79 2018/07/04 07:55:57 maya Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2000, 2001, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: identcpu.c,v 1.50 2016/01/01 19:46:48 tls Exp $");
+__KERNEL_RCSID(0, "$NetBSD: identcpu.c,v 1.79 2018/07/04 07:55:57 maya Exp $");
 
 #include "opt_xen.h"
 
@@ -49,6 +49,10 @@ __KERNEL_RCSID(0, "$NetBSD: identcpu.c,v 1.50 2016/01/01 19:46:48 tls Exp $");
 #include <x86/cacheinfo.h>
 #include <x86/cpuvar.h>
 #include <x86/cpu_msr.h>
+#include <x86/fpu.h>
+
+#include <x86/x86/vmtreg.h>	/* for vmt_hvcall() */
+#include <x86/x86/vmtvar.h>	/* for vmt_hvcall() */
 
 static const struct x86_cache_info intel_cpuid_cache_info[] = INTEL_CACHE_INFO;
 
@@ -61,9 +65,9 @@ static const struct x86_cache_info amd_cpuid_l3cache_assoc_info[] =
 int cpu_vendor;
 char cpu_brand_string[49];
 
-int x86_fpu_save = FPU_SAVE_FSAVE;
-unsigned int x86_fpu_save_size = 512;
-uint64_t x86_xsave_features = 0;
+int x86_fpu_save __read_mostly;
+unsigned int x86_fpu_save_size __read_mostly = sizeof(struct save87);
+uint64_t x86_xsave_features __read_mostly = 0;
 
 /*
  * Note: these are just the ones that may not have a cpuid instruction.
@@ -186,6 +190,24 @@ cpu_probe_intel_cache(struct cpu_info *ci)
 }
 
 static void
+cpu_probe_intel_errata(struct cpu_info *ci)
+{
+	u_int family, model, stepping;
+
+	family = CPUID_TO_FAMILY(ci->ci_signature);
+	model = CPUID_TO_MODEL(ci->ci_signature);
+	stepping = CPUID_TO_STEPPING(ci->ci_signature);
+
+	if (family == 0x6 && model == 0x5C && stepping == 0x9) { /* Apollo Lake */
+		wrmsr(MSR_MISC_ENABLE,
+		    rdmsr(MSR_MISC_ENABLE) & ~IA32_MISC_MWAIT_EN);
+
+		cpu_feature[1] &= ~CPUID2_MONITOR;
+		ci->ci_feat_val[1] &= ~CPUID2_MONITOR;
+	}
+}
+
+static void
 cpu_probe_intel(struct cpu_info *ci)
 {
 
@@ -193,6 +215,7 @@ cpu_probe_intel(struct cpu_info *ci)
 		return;
 
 	cpu_probe_intel_cache(ci);
+	cpu_probe_intel_errata(ci);
 }
 
 static void
@@ -551,7 +574,19 @@ cpu_probe_c3(struct cpu_info *ci)
 			}
 		    }
 
-		    /* Actually do the enables. */
+		    /*
+		     * Actually do the enables.  It's a little gross,
+		     * but per the PadLock programming guide, "Enabling
+		     * PadLock", condition 3, we must enable SSE too or
+		     * else the first use of RNG or ACE instructions
+		     * will generate a trap.
+		     *
+		     * We must do this early because of kernel RNG
+		     * initialization but it is safe without the full
+		     * FPU-detect as all these CPUs have SSE.
+		     */
+		    lcr4(rcr4() | CR4_OSFXSR);
+
 		    if (rng_enable) {
 			msr = rdmsr(MSR_VIA_RNG);
 			msr |= MSR_VIA_RNG_ENABLE;
@@ -663,48 +698,30 @@ cpu_probe_vortex86(struct cpu_info *ci)
 	outl(PCI_MODE1_ADDRESS_REG, PCI_MODE1_ENABLE | 0x90);
 	reg = inl(PCI_MODE1_DATA_REG);
 
-	switch(reg) {
-	case 0x31504d44:
-		strcpy(cpu_brand_string, "Vortex86SX");
-		break;
-	case 0x32504d44:
-		strcpy(cpu_brand_string, "Vortex86DX");
-		break;
-	case 0x33504d44:
-		strcpy(cpu_brand_string, "Vortex86MX");
-		break;
-	case 0x37504d44:
-		strcpy(cpu_brand_string, "Vortex86EX");
-		break;
-	default:
-		strcpy(cpu_brand_string, "Unknown Vortex86");
-		break;
+	if ((reg & 0xf8ffffff) != 0x30504d44) {
+		reg = 0;
+	} else {
+		reg = (reg >> 24) & 7;
 	}
+
+	static const char *cpu_vortex86_flavor[] = {
+	    "??", "SX", "DX", "MX", "DX2", "MX+", "DX3", "EX",
+	};
+	snprintf(cpu_brand_string, sizeof(cpu_brand_string), "Vortex86%s",
+	    cpu_vortex86_flavor[reg]);
 
 #undef PCI_MODE1_ENABLE
 #undef PCI_MODE1_ADDRESS_REG
 #undef PCI_MODE1_DATA_REG
 }
 
-#if !defined(__i386__) || defined(XEN)
-#define cpu_probe_old_fpu(ci)
-#else
 static void
 cpu_probe_old_fpu(struct cpu_info *ci)
 {
-	uint16_t control;
+#if defined(__i386__) && !defined(XEN)
 
-	/* Check that there really is an fpu (496SX) */
 	clts();
 	fninit();
-	/* Read default control word */
-	fnstcw(&control);
-	if (control != __INITIAL_NPXCW__) {
-		/* Must be a 486SX, trap FP instructions */
-		lcr0((rcr0() & ~CR0_MP) | CR0_EM);
-		i386_fpu_present = 0;
-		return;
-	}
 
 	/* Check for 'FDIV' bug on the original Pentium */
 	if (npx586bug1(4195835, 3145727) != 0)
@@ -712,6 +729,50 @@ cpu_probe_old_fpu(struct cpu_info *ci)
 		i386_fpu_fdivbug = 1;
 
 	stts();
+#endif
+}
+
+#ifndef XEN
+static void
+cpu_probe_fpu_leak(struct cpu_info *ci)
+{
+	/*
+	 * INTEL-SA-00145. Affected CPUs are from Family 6.
+	 */
+	if (cpu_vendor != CPUVENDOR_INTEL) {
+		return;
+	}
+	if (CPUID_TO_FAMILY(ci->ci_signature) != 6) {
+		return;
+	}
+
+	switch (CPUID_TO_MODEL(ci->ci_signature)) {
+	/* Atom CPUs are not vulnerable. */
+	case 0x1c: /* Pineview */
+	case 0x26: /* Lincroft */
+	case 0x27: /* Penwell */
+	case 0x35: /* Cloverview */
+	case 0x36: /* Cedarview */
+	case 0x37: /* Baytrail / Valleyview (Silvermont) */
+	case 0x4d: /* Avaton / Rangely (Silvermont) */
+	case 0x4c: /* Cherrytrail / Brasswell */
+	case 0x4a: /* Merrifield */
+	case 0x5a: /* Moorefield */
+	case 0x5c: /* Goldmont */
+	case 0x5f: /* Denverton */
+	case 0x7a: /* Gemini Lake */
+		break;
+
+	/* Knights CPUs are not vulnerable. */
+	case 0x57: /* Knights Landing */
+	case 0x85: /* Knights Mill */
+		break;
+
+	/* The rest is vulnerable. */
+	default:
+		x86_fpu_eager = true;
+		break;
+	}
 }
 #endif
 
@@ -720,7 +781,13 @@ cpu_probe_fpu(struct cpu_info *ci)
 {
 	u_int descs[4];
 
-#ifdef i386 /* amd64 always has fxsave, sse and sse2 */
+#ifndef XEN
+	cpu_probe_fpu_leak(ci);
+#endif
+
+	x86_fpu_save = FPU_SAVE_FSAVE;
+
+#ifdef i386
 	/* If we have FXSAVE/FXRESTOR, use them. */
 	if ((ci->ci_feat_val[0] & CPUID_FXSR) == 0) {
 		i386_use_fxsave = 0;
@@ -741,31 +808,44 @@ cpu_probe_fpu(struct cpu_info *ci)
 #else
 	/*
 	 * For amd64 i386_use_fxsave, i386_has_sse and i386_has_sse2 are
-	 * #defined to 1.
+	 * #defined to 1, because fxsave/sse/sse2 are always present.
 	 */
-#endif	/* i386 */
+#endif
 
 	x86_fpu_save = FPU_SAVE_FXSAVE;
+	x86_fpu_save_size = sizeof(struct fxsave);
 
-	/* See if xsave (for AVX is supported) */
+	/* See if xsave (for AVX) is supported */
 	if ((ci->ci_feat_val[1] & CPUID2_XSAVE) == 0)
 		return;
 
+#ifdef XEN
+	/*
+	 * Xen kernel can disable XSAVE via "no-xsave" option, in that case
+	 * XSAVE instructions like xrstor become privileged and trigger
+	 * supervisor trap. OSXSAVE flag seems to be reliably set according
+	 * to whether XSAVE is actually available.
+	 */
+#ifdef XEN_USE_XSAVE
+	if ((ci->ci_feat_val[1] & CPUID2_OSXSAVE) == 0)
+#endif
+		return;
+#endif
+
 	x86_fpu_save = FPU_SAVE_XSAVE;
 
-	/* xsaveopt ought to be faster than xsave */
+#if 0 /* XXX PR 52966 */
 	x86_cpuid2(0xd, 1, descs);
 	if (descs[0] & CPUID_PES1_XSAVEOPT)
 		x86_fpu_save = FPU_SAVE_XSAVEOPT;
+#endif
 
 	/* Get features and maximum size of the save area */
 	x86_cpuid(0xd, descs);
-	/* XXX these probably ought to be per-cpu */
-	if (descs[2] > 512)
-	    x86_fpu_save_size = descs[2];
-#ifndef XEN
+	if (descs[2] > sizeof(struct fxsave))
+		x86_fpu_save_size = descs[2];
+
 	x86_xsave_features = (uint64_t)descs[3] << 32 | descs[0];
-#endif
 }
 
 void
@@ -830,8 +910,9 @@ cpu_probe(struct cpu_info *ci)
 
 		/* CLFLUSH line size is next 8 bits */
 		if (ci->ci_feat_val[0] & CPUID_CFLUSH)
-			ci->ci_cflush_lsize = ((miscbytes >> 8) & 0xff) << 3;
-		ci->ci_initapicid = (miscbytes >> 24) & 0xff;
+			ci->ci_cflush_lsize
+			    = __SHIFTOUT(miscbytes, CPUID_CLFLUSH_SIZE) << 3;
+		ci->ci_initapicid = __SHIFTOUT(miscbytes, CPUID_LOCAL_APIC_ID);
 	}
 
 	/*
@@ -871,6 +952,7 @@ cpu_probe(struct cpu_info *ci)
 		x86_cpuid(7, descs);
 		ci->ci_feat_val[5] = descs[1]; /* %ebx */
 		ci->ci_feat_val[6] = descs[2]; /* %ecx */
+		ci->ci_feat_val[7] = descs[3]; /* %edx */
 	}
 
 	cpu_probe_intel(ci);
@@ -898,6 +980,7 @@ cpu_probe(struct cpu_info *ci)
 		for (i = 0; i < __arraycount(cpu_feature); i++) {
 			cpu_feature[i] = ci->ci_feat_val[i];
 		}
+		identify_hypervisor();
 #ifndef XEN
 		/* Early patch of text segment. */
 		x86_patch(true);
@@ -935,7 +1018,8 @@ cpu_identify(struct cpu_info *ci)
 	if (ci->ci_signature != 0)
 		aprint_normal(", id 0x%x", ci->ci_signature);
 	aprint_normal("\n");
-
+	aprint_normal_dev(ci->ci_dev, "package %lu, core %lu, smt %lu\n",
+	    ci->ci_package_id, ci->ci_core_id, ci->ci_smt_id);
 	if (cpu_brand_string[0] == '\0') {
 		strlcpy(cpu_brand_string, cpu_getmodel(),
 		    sizeof(cpu_brand_string));
@@ -963,9 +1047,6 @@ cpu_identify(struct cpu_info *ci)
 #endif
 
 #ifdef i386
-	if (i386_fpu_present == 0)
-		aprint_normal_dev(ci->ci_dev, "no fpu\n");
-
 	if (i386_fpu_fdivbug == 1)
 		aprint_normal_dev(ci->ci_dev,
 		    "WARNING: Pentium FDIV bug detected!\n");
@@ -979,4 +1060,97 @@ cpu_identify(struct cpu_info *ci)
 	}
 #endif	/* i386 */
 
+}
+
+/*
+ * Hypervisor
+ */
+vm_guest_t vm_guest = VM_GUEST_NO;
+
+static const char * const vm_bios_vendors[] = {
+	"QEMU",				/* QEMU */
+	"Plex86",			/* Plex86 */
+	"Bochs",			/* Bochs */
+	"Xen",				/* Xen */
+	"BHYVE",			/* bhyve */
+	"Seabios",			/* KVM */
+};
+
+static const char * const vm_system_products[] = {
+	"VMware Virtual Platform",	/* VMWare VM */
+	"Virtual Machine",		/* Microsoft VirtualPC */
+	"VirtualBox",			/* Sun xVM VirtualBox */
+	"Parallels Virtual Platform",	/* Parallels VM */
+	"KVM",				/* KVM */
+};
+
+void
+identify_hypervisor(void)
+{
+	u_int regs[6];
+	char hv_vendor[12];
+	const char *p;
+	int i;
+
+	if (vm_guest != VM_GUEST_NO)
+		return;
+
+	/*
+	 * [RFC] CPUID usage for interaction between Hypervisors and Linux.
+	 * http://lkml.org/lkml/2008/10/1/246
+	 *
+	 * KB1009458: Mechanisms to determine if software is running in
+	 * a VMware virtual machine
+	 * http://kb.vmware.com/kb/1009458
+	 */
+	if (ISSET(cpu_feature[1], CPUID2_RAZ)) {
+		vm_guest = VM_GUEST_VM;
+		x86_cpuid(0x40000000, regs);
+		if (regs[0] >= 0x40000000) {
+			memcpy(&hv_vendor[0], &regs[1], sizeof(*regs));
+			memcpy(&hv_vendor[4], &regs[2], sizeof(*regs));
+			memcpy(&hv_vendor[8], &regs[3], sizeof(*regs));
+			if (memcmp(hv_vendor, "VMwareVMware", 12) == 0)
+				vm_guest = VM_GUEST_VMWARE;
+			else if (memcmp(hv_vendor, "Microsoft Hv", 12) == 0)
+				vm_guest = VM_GUEST_HV;
+			else if (memcmp(hv_vendor, "KVMKVMKVM\0\0\0", 12) == 0)
+				vm_guest = VM_GUEST_KVM;
+			/* FreeBSD bhyve: "bhyve bhyve " */
+			/* OpenBSD vmm:   "OpenBSDVMM58" */
+		}
+		return;
+	}
+
+	/*
+	 * Examine SMBIOS strings for older hypervisors.
+	 */
+	p = pmf_get_platform("system-serial");
+	if (p != NULL) {
+		if (strncmp(p, "VMware-", 7) == 0 || strncmp(p, "VMW", 3) == 0) {
+			vmt_hvcall(VM_CMD_GET_VERSION, regs);
+			if (regs[1] == VM_MAGIC) {
+				vm_guest = VM_GUEST_VMWARE;
+				return;
+			}
+		}
+	}
+	p = pmf_get_platform("bios-vendor");
+	if (p != NULL) {
+		for (i = 0; i < __arraycount(vm_bios_vendors); i++) {
+			if (strcmp(p, vm_bios_vendors[i]) == 0) {
+				vm_guest = VM_GUEST_VM;
+				return;
+			}
+		}
+	}
+	p = pmf_get_platform("system-product");
+	if (p != NULL) {
+		for (i = 0; i < __arraycount(vm_system_products); i++) {
+			if (strcmp(p, vm_system_products[i]) == 0) {
+				vm_guest = VM_GUEST_VM;
+				return;
+			}
+		}
+	}
 }

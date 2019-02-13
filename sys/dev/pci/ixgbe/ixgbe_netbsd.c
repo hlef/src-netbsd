@@ -1,4 +1,4 @@
-/* $NetBSD: ixgbe_netbsd.c,v 1.3 2015/02/04 09:05:53 msaitoh Exp $ */
+/* $NetBSD: ixgbe_netbsd.c,v 1.8 2018/07/31 09:19:34 msaitoh Exp $ */
 /*
  * Copyright (c) 2011 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -38,8 +38,9 @@
 #include <sys/mutex.h>
 #include <sys/queue.h>
 #include <sys/workqueue.h>
+#include <dev/pci/pcivar.h>
 
-#include "ixgbe_netbsd.h"
+#include "ixgbe.h"
 
 void
 ixgbe_dma_tag_destroy(ixgbe_dma_tag_t *dt)
@@ -56,9 +57,7 @@ ixgbe_dma_tag_create(bus_dma_tag_t dmat, bus_size_t alignment,
 
 	*dtp = NULL;
 
-	if ((dt = kmem_zalloc(sizeof(*dt), KM_SLEEP)) == NULL)
-		return ENOMEM;
-
+	dt = kmem_zalloc(sizeof(*dt), KM_SLEEP);
 	dt->dt_dmat = dmat;
 	dt->dt_alignment = alignment;
 	dt->dt_boundary = boundary;
@@ -138,9 +137,6 @@ ixgbe_newext(ixgbe_extmem_head_t *eh, bus_dma_tag_t dmat, size_t size)
 
 	em = kmem_zalloc(sizeof(*em), KM_SLEEP);
 
-	if (em == NULL)
-		return NULL;
-
 	rc = bus_dmamem_alloc(dmat, size, PAGE_SIZE, 0, &em->em_seg, 1, &nseg,
 	    BUS_DMA_WAITOK);
 
@@ -166,11 +162,12 @@ post_zalloc_err:
 }
 
 void
-ixgbe_jcl_reinit(ixgbe_extmem_head_t *eh, bus_dma_tag_t dmat, int nbuf,
-    size_t size)
+ixgbe_jcl_reinit(struct adapter *adapter, bus_dma_tag_t dmat,
+    struct rx_ring *rxr, int nbuf, size_t size)
 {
-	int i;
+	ixgbe_extmem_head_t *eh = &rxr->jcl_head;
 	ixgbe_extmem_t *em;
+	int i;
 
 	if (!eh->eh_initialized) {
 		TAILQ_INIT(&eh->eh_freelist);
@@ -178,6 +175,18 @@ ixgbe_jcl_reinit(ixgbe_extmem_head_t *eh, bus_dma_tag_t dmat, int nbuf,
 		eh->eh_initialized = true;
 	}
 
+	/*
+	 *  Check previous parameters. If it's not required to reinit, just
+	 * return.
+	 *
+	 *  Note that the num_rx_desc is currently fixed value. It's never
+	 * changed after device is attached.
+	 */
+	if ((rxr->last_rx_mbuf_sz == rxr->mbuf_sz)
+	    && (rxr->last_num_rx_desc == adapter->num_rx_desc))
+		return;
+
+	/* Free all dmamem */
 	while ((em = ixgbe_getext(eh, 0)) != NULL) {
 		KASSERT(em->em_vaddr != NULL);
 		bus_dmamem_unmap(dmat, em->em_vaddr, em->em_size);
@@ -194,6 +203,10 @@ ixgbe_jcl_reinit(ixgbe_extmem_head_t *eh, bus_dma_tag_t dmat, int nbuf,
 		}
 		ixgbe_putext(em);
 	}
+
+	/* Keep current parameters */
+	rxr->last_rx_mbuf_sz = adapter->rx_mbuf_sz;
+	rxr->last_num_rx_desc = adapter->num_rx_desc;
 }
 
 static void
@@ -247,4 +260,16 @@ ixgbe_getjcl(ixgbe_extmem_head_t *eh, int nowait /* M_DONTWAIT */,
 	}
 
 	return m;
+}
+
+void
+ixgbe_pci_enable_busmaster(pci_chipset_tag_t pc, pcitag_t tag)
+{
+	pcireg_t	pci_cmd_word;
+
+	pci_cmd_word = pci_conf_read(pc, tag, PCI_COMMAND_STATUS_REG);
+	if (!(pci_cmd_word & PCI_COMMAND_MASTER_ENABLE)) {
+		pci_cmd_word |= PCI_COMMAND_MASTER_ENABLE;
+		pci_conf_write(pc, tag, PCI_COMMAND_STATUS_REG, pci_cmd_word);
+	}
 }

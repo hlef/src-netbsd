@@ -1,9 +1,17 @@
-#	$NetBSD: bsd.lib.mk,v 1.367 2016/03/12 23:08:58 mrg Exp $
+#	$NetBSD: bsd.lib.mk,v 1.377 2018/07/25 23:34:25 kamil Exp $
 #	@(#)bsd.lib.mk	8.3 (Berkeley) 4/22/94
 
 .include <bsd.init.mk>
 .include <bsd.shlib.mk>
 .include <bsd.gcc.mk>
+
+# Rename the local function definitions to not conflict with libc/rt/pthread/m.
+.if ${MKSANITIZER:Uno} == "yes" && defined(SANITIZER_RENAME_SYMBOL)
+.	for _symbol in ${SANITIZER_RENAME_SYMBOL}
+CPPFLAGS+=	-D${_symbol}=__mksanitizer_${_symbol}
+.	endfor
+.endif
+
 # Pull in <bsd.sys.mk> here so we can override its .c.o rule
 .include <bsd.sys.mk>
 
@@ -42,7 +50,8 @@ realinstall:	checkver libinstall
 # XXX: This is needed for programs that link with .a libraries
 # Perhaps a more correct solution is to always generate _pic.a
 # files or always have a shared library.
-# XXX: This breaks profiling (__mcount relocation is wrong)
+# Another fix is to provide rcrt0.o like OpenBSD does and
+# do relocations for static PIE.
 .if defined(MKPIE) && (${MKPIE} != "no") && !defined(NOPIE)
 CFLAGS+=        ${PIE_CFLAGS}
 AFLAGS+=        ${PIE_AFLAGS}
@@ -148,7 +157,7 @@ SHLIB_FULLVERSION=${SHLIB_MAJOR}
 PICFLAGS ?= -fPIC
 
 .if ${MKPICLIB} != "no"
-CSHLIBFLAGS+= ${PICFLAGS}
+CSHLIBFLAGS+= ${PICFLAGS} ${SANITIZERFLAGS} ${LIBCSANITIZERFLAGS}
 .endif
 
 .if defined(CSHLIBFLAGS) && !empty(CSHLIBFLAGS)
@@ -170,6 +179,7 @@ CFLAGS+=	-g
 # Platform-independent linker flags for ELF shared libraries
 SHLIB_SOVERSION=	${SHLIB_MAJOR}
 SHLIB_SHFLAGS=		-Wl,-soname,${_LIB}.so.${SHLIB_SOVERSION}
+SHLIB_SHFLAGS+=		${SANITIZERFLAGS}
 .if !defined(SHLIB_WARNTEXTREL) || ${SHLIB_WARNTEXTREL} != "no"
 SHLIB_SHFLAGS+=		-Wl,--warn-shared-textrel
 .endif
@@ -525,8 +535,6 @@ _YLSRCS=	${SRCS:M*.[ly]:C/\..$/.c/} ${YHEADER:D${SRCS:M*.y:.y=.h}}
 
 realall: ${SRCS} ${ALLOBJS:O} ${_LIBS} ${_LIB.so.debug}
 
-MKARZERO?= ${MKREPRO:Uno}
-
 .if ${MKARZERO} == "yes"
 _ARFL=crsD
 _ARRANFL=sD
@@ -542,7 +550,7 @@ _INSTRANLIB=${empty(PRESERVE):?-a "${RANLIB} -t":}
 .if !target(__archivebuild)
 __archivebuild: .USE
 	${_MKTARGET_BUILD}
-	rm -f ${.TARGET}
+	@rm -f ${.TARGET}
 	${AR} ${_ARFL} ${.TARGET} `NM=${NM} ${LORDER} ${.ALLSRC:M*o} | ${TSORT}`
 .endif
 
@@ -556,6 +564,21 @@ __archiveinstall: .USE
 __archivesymlinkpic: .USE
 	${_MKTARGET_INSTALL}
 	${INSTALL_SYMLINK} ${.ALLSRC} ${.TARGET}
+
+.if !target(__buildstdlib)
+__buildstdlib: .USE
+	@echo building standard ${.TARGET:T:S/.o//:S/lib//} library
+	@rm -f ${.TARGET}
+	@${LINK.c:S/-nostdinc//} -nostdlib ${LDFLAGS} -r -o ${.TARGET} `NM=${NM} ${LORDER} ${.ALLSRC:M*o} | ${TSORT}`
+.endif
+
+.if !target(__buildproflib)
+__buildproflib: .USE
+	@echo building profiled ${.TARGET:T:S/.o//:S/lib//} library
+	${_MKTARGET_BUILD}
+	@rm -f ${.TARGET}
+	@${LINK.c:S/-nostdinc//} -nostdlib ${LDFLAGS} -r -o ${.TARGET} `NM=${NM} ${LORDER} ${.ALLSRC:M*po} | ${TSORT}`
+.endif
 
 DPSRCS+=	${_YLSRCS}
 CLEANFILES+=	${_YLSRCS}
@@ -578,6 +601,11 @@ _LIBLDOPTS+=	-Wl,-rpath,${SHLIBDIR} \
 .elif ${SHLIBINSTALLDIR} != "/usr/lib"
 _LIBLDOPTS+=	-Wl,-rpath-link,${DESTDIR}${SHLIBINSTALLDIR} \
 		-L=${SHLIBINSTALLDIR}
+.endif
+.if ${MKSTRIPSYM:Uyes} == "yes"
+_LIBLDOPTS+=	-Wl,-x
+.else
+_LIBLDOPTS+=	-Wl,-X
 .endif
 
 # gcc -shared now adds -lc automatically. For libraries other than libc and
@@ -629,7 +657,8 @@ ${_LIB.so.full}: ${_LIB.so.link} ${_LIB.so.debug}
 	${_MKTARGET_CREATE}
 	(  ${OBJCOPY} --strip-debug -p -R .gnu_debuglink \
 		--add-gnu-debuglink=${_LIB.so.debug} \
-		${_LIB.so.link} ${_LIB.so.full} \
+		${_LIB.so.link} ${_LIB.so.full}.tmp && \
+		mv -f ${_LIB.so.full}.tmp ${_LIB.so.full} \
 	) || (rm -f ${.TARGET}; false)
 ${_LIB.so.link}: ${_MAINLIBDEPS}
 .else # aka no MKDEBUG
@@ -637,10 +666,14 @@ ${_LIB.so.full}: ${_MAINLIBDEPS}
 .endif
 	${_MKTARGET_BUILD}
 	rm -f ${.TARGET}
-	${LIBCC} ${LDLIBC} -Wl,-x -shared ${SHLIB_SHFLAGS} \
-	    ${_LDFLAGS.${_LIB}} -o ${.TARGET} ${_LIBLDOPTS} \
+	${LIBCC} ${LDLIBC} -shared ${SHLIB_SHFLAGS} \
+	    ${_LDFLAGS.${_LIB}} -o ${.TARGET}.tmp ${_LIBLDOPTS} \
 	    -Wl,--whole-archive ${SOLIB} \
 	    -Wl,--no-whole-archive ${_LDADD.${_LIB}}
+.if ${MKSTRIPIDENT} != "no"
+	${OBJCOPY} -R .ident ${.TARGET}.tmp
+.endif
+	mv -f ${.TARGET}.tmp ${.TARGET}
 #  We don't use INSTALL_SYMLINK here because this is just
 #  happening inside the build directory/objdir. XXX Why does
 #  this spend so much effort on libraries that aren't live??? XXX
@@ -653,9 +686,6 @@ ${_LIB.so.full}: ${_MAINLIBDEPS}
 .endif
 	${HOST_LN} -sf ${_LIB.so.full} ${_LIB.so}.tmp
 	mv -f ${_LIB.so}.tmp ${_LIB.so}
-.if ${MKSTRIPIDENT} != "no"
-	${OBJCOPY} -R .ident ${.TARGET}
-.endif
 
 .if !empty(LOBJS)							# {
 LLIBS?=		-lc

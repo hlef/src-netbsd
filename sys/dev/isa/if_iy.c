@@ -1,4 +1,4 @@
-/*	$NetBSD: if_iy.c,v 1.97 2016/07/14 10:19:06 msaitoh Exp $	*/
+/*	$NetBSD: if_iy.c,v 1.103 2018/09/03 16:29:31 riastradh Exp $	*/
 /* #define IYDEBUG */
 /* #define IYMEMDEBUG */
 
@@ -39,7 +39,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_iy.c,v 1.97 2016/07/14 10:19:06 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_iy.c,v 1.103 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "opt_inet.h"
 
@@ -59,11 +59,9 @@ __KERNEL_RCSID(0, "$NetBSD: if_iy.c,v 1.97 2016/07/14 10:19:06 msaitoh Exp $");
 #include <net/if.h>
 #include <net/if_types.h>
 #include <net/if_dl.h>
+#include <net/bpf.h>
 
 #include <net/if_ether.h>
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -407,14 +405,14 @@ iystop(struct iy_softc *sc)
 		snprintb(sbuf, sizeof(sbuf),
 		    "\020\6MAX_COL\7HRT_BEAT\010TX_DEF\011UND_RUN"
 		    "\012JERR\013LST_CRS\014LTCOL\016TX_OK\020COLL", v);
-		printf("0x%s", sbuf);
+		printf("%s", sbuf);
 
 		p = le16toh(bus_space_read_stream_2(iot, ioh, MEM_PORT_REG));
 		printf(" 0x%04x", p);
 
 		v = le16toh(bus_space_read_stream_2(iot, ioh, MEM_PORT_REG));
 		snprintb(sbuf, sizeof(sbuf), "\020\020Ch", v);
-		printf(" 0x%s\n", sbuf);
+		printf(" %s\n", sbuf);
 
 	} while (v & 0x8000);
 #endif
@@ -499,7 +497,7 @@ iyinit(struct iy_softc *sc)
 		snprintb(sbuf, sizeof(sbuf),
 		    "\020\1LnkInDis\2PolCor\3TPE\4JabberDis\5NoAport\6BNC",
 		    temp);
-		printf("%s: media select was 0x%s ", device_xname(sc->sc_dev),
+		printf("%s: media select was %s ", device_xname(sc->sc_dev),
 		    sbuf);
 	}
 #endif
@@ -540,7 +538,7 @@ iyinit(struct iy_softc *sc)
 		snprintb(sbuf, sizeof(sbuf),
 		    "\020\1LnkInDis\2PolCor\3TPE\4JabberDis\5NoAport\6BNC",
 		    temp);
-		printf("changed to 0x%s\n", sbuf);
+		printf("changed to %s\n", sbuf);
 	}
 #endif
 
@@ -681,7 +679,7 @@ iystart(struct ifnet *ifp)
 			continue;
         	}
 
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 
 		avail = sc->tx_start - sc->tx_end;
 		if (avail <= 0)
@@ -774,7 +772,7 @@ iystart(struct ifnet *ifp)
 #endif
 			}
 
-			MFREE(m, m0);
+			m0 = m_free(m);
 		}
 
 		if (residual)
@@ -1020,7 +1018,7 @@ iyget(struct iy_softc *sc, bus_space_tag_t iot, bus_space_handle_t ioh,
 			}
 			len = MCLBYTES;
 		}
-		len = min(rxlen, len);
+		len = uimin(rxlen, len);
 		/*
 		 * XXX ALIGNMENT LOSSAGE HERE.
 		 */
@@ -1046,11 +1044,6 @@ iyget(struct iy_softc *sc, bus_space_tag_t iot, bus_space_handle_t ioh,
 	if (top == NULL)
 		return;
 
-	/* XXX receive the top here */
-	++ifp->if_ipackets;
-
-
-	bpf_mtap(ifp, top);
 	if_percpuq_enqueue(ifp->if_percpuq, top);
 	return;
 
@@ -1146,7 +1139,7 @@ iy_intr_tx(struct iy_softc *sc)
 			    "\011UND_RUN\012JERR\013LST_CRS"
 			    "\014LTCOL\016TX_OK\020COLL", txstat2);
 
-			printf("txstat 0x%x stat2 0x%s next 0x%x len 0x%x\n",
+			printf("txstat 0x%x stat2 %s next 0x%x len 0x%x\n",
 			       txstatus, sbuf, txnext, txlen);
 		}
 #endif

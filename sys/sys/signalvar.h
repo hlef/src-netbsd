@@ -1,4 +1,4 @@
-/*	$NetBSD: signalvar.h,v 1.86 2014/05/15 07:11:30 uebayasi Exp $	*/
+/*	$NetBSD: signalvar.h,v 1.91 2018/05/20 04:00:35 kamil Exp $	*/
 
 /*
  * Copyright (c) 1991, 1993
@@ -37,6 +37,7 @@
 #include <sys/siginfo.h>
 #include <sys/queue.h>
 #include <sys/mutex.h>
+#include <sys/stdbool.h>
 
 /*
  * Kernel signal definitions and data structures,
@@ -74,12 +75,12 @@ typedef struct sigpend {
  * Process signal state.
  */
 struct sigctx {
-	int		ps_signo;	/* for core dump/debugger XXX */
-	int		ps_code;	/* for core dump/debugger XXX */
-	int		ps_lwp;		/* for core dump/debugger XXX */
+	struct _ksiginfo ps_info;	/* for core dump/debugger XXX */
+	int		 ps_lwp;	/* for core dump/debugger XXX */
+	bool		 ps_faked;	/* for core dump/debugger XXX */
 	void		*ps_sigcode;	/* address of signal trampoline */
-	sigset_t	ps_sigignore;	/* Signals being ignored. */
-	sigset_t	ps_sigcatch;	/* Signals being caught by user. */
+	sigset_t	 ps_sigignore;	/* Signals being ignored. */
+	sigset_t	 ps_sigcatch;	/* Signals being caught by user. */
 };
 
 /* additional signal action values, used only temporarily/internally */
@@ -111,7 +112,7 @@ struct sigctx {
 
 #include <sys/systm.h>			/* for copyin_t/copyout_t */
 
-extern sigset_t contsigmask, sigcantmask;
+extern sigset_t contsigmask, stopsigmask, sigcantmask;
 
 struct vnode;
 struct coredump_iostate;
@@ -135,6 +136,8 @@ void	killproc(struct proc *, const char *);
 void	setsigvec(struct proc *, int, struct sigaction *);
 int	killpg1(struct lwp *, struct ksiginfo *, int, int);
 void	proc_unstop(struct proc *p);
+void	sigswitch(int, int, bool);
+
 
 int	sigaction1(struct lwp *, int, const struct sigaction *,
 	    struct sigaction *, const void *, int);
@@ -151,7 +154,7 @@ int	sigget(sigpend_t *, ksiginfo_t *, int, const sigset_t *);
 void	sigclear(sigpend_t *, const sigset_t *, ksiginfoq_t *);
 void	sigclearall(struct proc *, const sigset_t *, ksiginfoq_t *);
 
-void	kpsignal2(struct proc *, ksiginfo_t *);
+int	kpsignal2(struct proc *, ksiginfo_t *);
 
 void	signal_init(void);
 
@@ -194,7 +197,7 @@ extern int	(*coredump_vec)(struct lwp *, const char *);
  *
  * 	Return the first signal in a signal set.
  */
-static inline int
+static __inline int
 firstsig(const sigset_t *ss)
 {
 	int sig;
@@ -220,13 +223,13 @@ firstsig(const sigset_t *ss)
 	return (0);
 }
 
-static inline void
+static __inline void
 ksiginfo_queue_init(ksiginfoq_t *kq)
 {
 	TAILQ_INIT(kq);
 }
 
-static inline void
+static __inline void
 ksiginfo_queue_drain(ksiginfoq_t *kq)
 {
 	if (!TAILQ_EMPTY(kq))

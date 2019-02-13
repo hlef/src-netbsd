@@ -1,4 +1,4 @@
-/*	$NetBSD: snprintb.c,v 1.16 2014/08/02 11:19:01 ryo Exp $	*/
+/*	$NetBSD: snprintb.c,v 1.18 2018/07/26 00:33:26 kamil Exp $	*/
 
 /*-
  * Copyright (c) 2002 The NetBSD Foundation, Inc.
@@ -41,7 +41,7 @@
 
 #  include <sys/cdefs.h>
 #  if defined(LIBC_SCCS) && !defined(lint)
-__RCSID("$NetBSD: snprintb.c,v 1.16 2014/08/02 11:19:01 ryo Exp $");
+__RCSID("$NetBSD: snprintb.c,v 1.18 2018/07/26 00:33:26 kamil Exp $");
 #  endif
 
 #  include <sys/types.h>
@@ -51,7 +51,7 @@ __RCSID("$NetBSD: snprintb.c,v 1.16 2014/08/02 11:19:01 ryo Exp $");
 #  include <errno.h>
 # else /* ! _KERNEL */
 #  include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: snprintb.c,v 1.16 2014/08/02 11:19:01 ryo Exp $");
+__KERNEL_RCSID(0, "$NetBSD: snprintb.c,v 1.18 2018/07/26 00:33:26 kamil Exp $");
 #  include <sys/param.h>
 #  include <sys/inttypes.h>
 #  include <sys/systm.h>
@@ -175,7 +175,7 @@ snprintb_m(char *buf, size_t buflen, const char *bitfmt, uint64_t val,
 		/* old (standard) format. */
 		for (;(bit = *bitfmt) != 0;) {
 			cur_fmt = bitfmt++;
-			if (val & (1 << (bit - 1))) {
+			if (val & (1U << (bit - 1))) {
 				PUTSEP;
 				if (restart)
 					continue;
@@ -215,8 +215,10 @@ snprintb_m(char *buf, size_t buflen, const char *bitfmt, uint64_t val,
 				PUTSEP;
 				if (restart == 0)
 					sep = ',';
-				if (ch == 'F')	/* just extract */
+				if (ch == 'F') {	/* just extract */
+					bitfmt--;
 					break;
+				}
 				if (restart == 0)
 					PUTS(bitfmt);
 				if (restart == 0)

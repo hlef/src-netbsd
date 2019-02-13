@@ -1,4 +1,4 @@
-/*	$NetBSD: ehcivar.h,v 1.43 2016/04/23 10:15:31 skrll Exp $ */
+/*	$NetBSD: ehcivar.h,v 1.46 2018/09/18 02:00:06 mrg Exp $ */
 
 /*
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -91,7 +91,6 @@ typedef struct ehci_soft_itd {
 
 struct ehci_xfer {
 	struct usbd_xfer ex_xfer;
-	struct usb_task ex_aborttask;
 	TAILQ_ENTRY(ehci_xfer) ex_next; /* list of active xfers */
 	enum {
 		EX_NONE,
@@ -177,14 +176,21 @@ typedef struct ehci_softc {
 #define EHCIF_DROPPED_INTR_WORKAROUND	0x01
 #define EHCIF_ETTF			0x02 /* Emb. Transaction Translater func. */
 
-	char sc_vendor[32];		/* vendor string for root hub */
-	int sc_id_vendor;		/* vendor ID for root hub */
-
 	uint32_t sc_cmd;		/* shadow of cmd reg during suspend */
 
 	u_int sc_ncomp;
 	u_int sc_npcomp;
 	device_t sc_comps[EHCI_COMPANION_MAX];
+
+	/* This chunk to handle early RB_ASKNAME hand over. */
+	callout_t sc_compcallout;
+	kmutex_t sc_complock;
+	kcondvar_t sc_compcv;
+	enum {
+		CO_EARLY,
+		CO_SCHED,
+		CO_DONE,
+	} sc_comp_state;
 
 	usb_dma_t sc_fldma;
 	ehci_link_t *sc_flist;
@@ -211,8 +217,6 @@ typedef struct ehci_softc {
 	uint8_t sc_istthreshold;	/* ISOC Scheduling Threshold (uframes) */
 	struct usbd_xfer *sc_intrxfer;
 	char sc_isreset[EHCI_MAX_PORTS];
-	char sc_softwake;
-	kcondvar_t sc_softwake_cv;
 
 	uint32_t sc_eintrs;
 	ehci_soft_qh_t *sc_async_head;

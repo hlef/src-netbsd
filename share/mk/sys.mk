@@ -1,4 +1,4 @@
-#	$NetBSD: sys.mk,v 1.129 2016/03/30 17:35:43 martin Exp $
+#	$NetBSD: sys.mk,v 1.137 2018/08/13 13:07:04 christos Exp $
 #	@(#)sys.mk	8.2 (Berkeley) 3/21/94
 #
 # This file contains the basic rules for make(1) and is read first
@@ -37,9 +37,12 @@ DBG?=	-O2 ${"${.TARGET:M*.po}" == "":? -fomit-frame-pointer:}
 .else
 DBG?=	-O2
 .endif
+.if ${MKDTRACE:Uno} != "no"
+DTRACE_OPTS?=	-fno-omit-frame-pointer -fno-optimize-sibling-calls -fno-ipa-sra -fno-ipa-icf
+.endif
 CFLAGS?=	${DBG}
 LDFLAGS?=
-COMPILE.c?=	${CC} ${CFLAGS} ${CPPFLAGS} -c
+COMPILE.c?=	${CC} ${CFLAGS} ${DTRACE_OPTS} ${CPPFLAGS} -c
 LINK.c?=	${CC} ${CFLAGS} ${CPPFLAGS} ${LDFLAGS}
 
 # C Type Format data is required for DTrace
@@ -47,15 +50,22 @@ CTFFLAGS	?=	-g -L VERSION
 CTFMFLAGS	?=	-t -g -L VERSION
 
 CXX?=		c++
-CXXFLAGS?=	${CFLAGS:N-Wno-traditional:N-Wstrict-prototypes:N-Wmissing-prototypes:N-Wno-pointer-sign:N-ffreestanding:N-std=gnu[0-9][0-9]:N-Wold-style-definition:N-Wno-format-zero-length}
+# Strip flags unsupported by C++ compilers
+# Remove -Wsystem-headers because C++ headers aren't clean of warnings
+CXXFLAGS?=	${CFLAGS:N-Wno-traditional:N-Wstrict-prototypes:N-Wmissing-prototypes:N-Wno-pointer-sign:N-ffreestanding:N-std=gnu[0-9][0-9]:N-Wold-style-definition:N-Wno-format-zero-length:N-Wsystem-headers}
 
+# Use the sources, as the seed... Normalize all paths...
 __ALLSRC1=	${empty(DESTDIR):?${.ALLSRC}:${.ALLSRC:S|^${DESTDIR}|^destdir|}}
 __ALLSRC2=	${empty(MAKEOBJDIR):?${__ALLSRC1}:${__ALLSRC1:S|^${MAKEOBJDIR}|^obj|}}
 __ALLSRC3=	${empty(NETBSDSRCDIR):?${__ALLSRC2}:${__ALLSRC2:S|^${NETBSDSRCDIR}|^src|}}
-__BUILDSEED=	${BUILDSEED}/${__ALLSRC3:O}/${.TARGET}
+__ALLSRC4=	${empty(X11SRCDIR):?${__ALLSRC3}:${__ALLSRC3:S|^${X11SRCDIR}|^xsrc|}}
+# Skip paths that contain relative components and can't be normalized, sort..
+__INITSEED=	${__ALLSRC4:N*/../*:O}
+
+__BUILDSEED=	${BUILDSEED}/${__INITSEED}/${.TARGET}
 _CXXSEED?=	${BUILDSEED:D-frandom-seed=${__BUILDSEED:hash}}
 
-COMPILE.cc?=	${CXX} ${_CXXSEED} ${CXXFLAGS} ${CPPFLAGS} -c
+COMPILE.cc?=	${CXX} ${_CXXSEED} ${CXXFLAGS} ${DTRACE_OPTS} ${CPPFLAGS} -c
 LINK.cc?=	${CXX} ${CXXFLAGS} ${CPPFLAGS} ${LDFLAGS}
 
 OBJC?=		${CC}

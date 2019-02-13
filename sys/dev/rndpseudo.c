@@ -1,4 +1,4 @@
-/*	$NetBSD: rndpseudo.c,v 1.35 2015/08/20 14:40:17 christos Exp $	*/
+/*	$NetBSD: rndpseudo.c,v 1.37 2018/09/03 16:29:30 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1997-2013 The NetBSD Foundation, Inc.
@@ -31,7 +31,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rndpseudo.c,v 1.35 2015/08/20 14:40:17 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: rndpseudo.c,v 1.37 2018/09/03 16:29:30 riastradh Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_compat_netbsd.h"
@@ -133,6 +133,7 @@ static int rnd_close(struct file *);
 static int rnd_kqfilter(struct file *, struct knote *);
 
 const struct fileops rnd_fileops = {
+	.fo_name = "rnd",
 	.fo_read = rnd_read,
 	.fo_write = rnd_write,
 	.fo_ioctl = rnd_ioctl,
@@ -458,7 +459,7 @@ rnd_write(struct file *fp, off_t *offp, struct uio *uio,
 #endif
 			break;
 		}
-		n = min(RND_TEMP_BUFFER_SIZE, uio->uio_resid);
+		n = uimin(RND_TEMP_BUFFER_SIZE, uio->uio_resid);
 
 		ret = uiomove((void *)bf, n, uio);
 		if (ret != 0)

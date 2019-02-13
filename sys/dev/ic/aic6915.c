@@ -1,4 +1,4 @@
-/*	$NetBSD: aic6915.c,v 1.33 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: aic6915.c,v 1.36 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: aic6915.c,v 1.33 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: aic6915.c,v 1.36 2018/06/26 06:48:00 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -283,6 +283,7 @@ sf_attach(struct sf_softc *sc)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 	/*
@@ -462,7 +463,7 @@ sf_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->sc_txpending == (SF_NTXDESC - 1)) {
@@ -605,7 +606,7 @@ sf_intr(void *arg)
 			sf_init(&sc->sc_ethercom.ec_if);
 
 		/* Try and get more packets going. */
-		sf_start(&sc->sc_ethercom.ec_if);
+		if_schedule_deferred_start(&sc->sc_ethercom.ec_if);
 	}
 
 	return (handled);
@@ -789,11 +790,6 @@ sf_rxintr(struct sf_softc *sc)
 
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
-
-		/*
-		 * Pass this up to any BPF listeners.
-		 */
-		bpf_mtap(ifp, m);
 
 		/* Pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);

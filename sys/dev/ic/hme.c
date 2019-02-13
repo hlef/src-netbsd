@@ -1,4 +1,4 @@
-/*	$NetBSD: hme.c,v 1.93 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: hme.c,v 1.100 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: hme.c,v 1.93 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: hme.c,v 1.100 2018/09/03 16:29:31 riastradh Exp $");
 
 /* #define HMEDEBUG */
 
@@ -56,6 +56,7 @@ __KERNEL_RCSID(0, "$NetBSD: hme.c,v 1.93 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <net/if_dl.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <net/if_vlanvar.h>
@@ -67,10 +68,6 @@ __KERNEL_RCSID(0, "$NetBSD: hme.c,v 1.93 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #endif
-
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <dev/mii/mii.h>
 #include <dev/mii/miivar.h>
@@ -306,6 +303,7 @@ hme_config(struct hme_softc *sc)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr);
 
 	if (pmf_device_register1(sc->sc_dev, NULL, NULL, hme_shutdown))
@@ -665,13 +663,13 @@ hme_put(struct hme_softc *sc, int ri, struct mbuf *m)
 	for (; m; m = n) {
 		len = m->m_len;
 		if (len == 0) {
-			MFREE(m, n);
+			n = m_free(m);
 			continue;
 		}
 		memcpy(bp, mtod(m, void *), len);
 		bp += len;
 		tlen += len;
-		MFREE(m, n);
+		n = m_free(m);
 	}
 	return (tlen);
 }
@@ -720,7 +718,7 @@ hme_get(struct hme_softc *sc, int ri, uint32_t flags)
 			m->m_data = newdata;
 		}
 
-		m->m_len = len = min(totlen, len);
+		m->m_len = len = uimin(totlen, len);
 		memcpy(mtod(m, void *), bp, len);
 		bp += len;
 
@@ -752,7 +750,7 @@ hme_get(struct hme_softc *sc, int ri, uint32_t flags)
 			pktlen = m0->m_pkthdr.len - ETHER_HDR_LEN;
 		} else if (ntohs(eh->ether_type) == ETHERTYPE_VLAN) {
 			evh = (struct ether_vlan_header *)eh;
-			if (ntohs(evh->evl_proto != ETHERTYPE_IP))
+			if (ntohs(evh->evl_proto) != ETHERTYPE_IP)
 				goto swcsum;
 			ip = (struct ip *)((char *)eh + ETHER_HDR_LEN +
 			    ETHER_VLAN_ENCAP_LEN);
@@ -876,14 +874,6 @@ hme_read(struct hme_softc *sc, int ix, uint32_t flags)
 		return;
 	}
 
-	ifp->if_ipackets++;
-
-	/*
-	 * Check if there's a BPF listener on this interface.
-	 * If so, hand off the raw packet to BPF.
-	 */
-	bpf_mtap(ifp, m);
-
 	/* Pass the packet up. */
 	if_percpuq_enqueue(ifp->if_percpuq, m);
 }
@@ -913,7 +903,7 @@ hme_start(struct ifnet *ifp)
 		 * If BPF is listening on this interface, let it see the
 		 * packet before we commit it to the wire.
 		 */
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 #ifdef INET
 		/* collect bits for h/w csum, before hme_put frees the mbuf */
@@ -1029,7 +1019,7 @@ hme_tint(struct hme_softc *sc)
 	/* Update ring */
 	sc->sc_rb.rb_tdtail = ri;
 
-	hme_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	if (sc->sc_rb.rb_td_nbusy == 0)
 		ifp->if_timer = 0;

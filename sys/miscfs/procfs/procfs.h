@@ -1,4 +1,4 @@
-/*	$NetBSD: procfs.h,v 1.70 2014/07/27 16:47:26 hannken Exp $	*/
+/*	$NetBSD: procfs.h,v 1.74 2017/12/31 03:29:18 christos Exp $	*/
 
 /*
  * Copyright (c) 1993
@@ -88,13 +88,13 @@ typedef enum {
 	PFSmem,		/* the process's memory image */
 	PFSregs,	/* the process's register set */
 	PFSfpregs,	/* the process's FP register set */
-	PFSctl,		/* process control */
 	PFSstat,	/* process status (if -o linux) */
 	PFSstatus,	/* process status */
 	PFSnote,	/* process notifier */
 	PFSnotepg,	/* process group notifier */
 	PFSmap,		/* memory map */
 	PFScmdline,	/* process command line args */
+	PFSenviron,	/* process environment */
 	PFSmeminfo,	/* system memory info (if -o linux) */
 	PFScpuinfo,	/* CPU info (if -o linux) */
 	PFSmaps,	/* memory map, Linux style (if -o linux) */
@@ -110,6 +110,7 @@ typedef enum {
 	PFSstatm,	/* process memory info (if -o linux) */
 	PFSversion,	/* kernel version (if -o linux) */
 	PFStask,	/* task subdirector (if -o linux) */
+	PFSauxv,	/* ELF Auxiliary Vector */
 #ifdef __HAVE_PROCFS_MACHDEP
 	PROCFS_MACHDEP_NODE_TYPES
 #endif
@@ -135,7 +136,6 @@ struct pfsnode {
 };
 
 #define PROCFS_NOTELEN	64	/* max length of a note (/proc/$pid/note) */
-#define PROCFS_CTLLEN 	8	/* max length of a ctl msg (/proc/$pid/ctl */
 #define PROCFS_MAXNAMLEN	255
 
 #endif /* _KERNEL */
@@ -192,6 +192,7 @@ const vfs_namemap_t *vfs_findname(const vfs_namemap_t *, const char *, int);
 
 int procfs_proc_lock(int, struct proc **, int);
 void procfs_proc_unlock(struct proc *);
+struct mount;
 int procfs_allocvp(struct mount *, struct vnode **, pid_t, pfstype, int);
 int procfs_donote(struct lwp *, struct proc *, struct pfsnode *,
     struct uio *);
@@ -201,16 +202,14 @@ int procfs_dofpregs(struct lwp *, struct lwp *, struct pfsnode *,
     struct uio *);
 int procfs_domem(struct lwp *, struct lwp *, struct pfsnode *,
     struct uio *);
-int procfs_doctl(struct lwp *, struct lwp *, struct pfsnode *,
-    struct uio *);
 int procfs_do_pid_stat(struct lwp *, struct lwp *, struct pfsnode *,
     struct uio *);
 int procfs_dostatus(struct lwp *, struct lwp *, struct pfsnode *,
     struct uio *);
 int procfs_domap(struct lwp *, struct proc *, struct pfsnode *,
     struct uio *, int);
-int procfs_docmdline(struct lwp *, struct proc *, struct pfsnode *,
-    struct uio *);
+int procfs_doprocargs(struct lwp *, struct proc *, struct pfsnode *,
+    struct uio *, int);
 int procfs_domeminfo(struct lwp *, struct proc *, struct pfsnode *,
     struct uio *);
 int procfs_dodevices(struct lwp *, struct proc *, struct pfsnode *,
@@ -233,11 +232,14 @@ int procfs_doemul(struct lwp *, struct proc *, struct pfsnode *,
     struct uio *);
 int procfs_doversion(struct lwp *, struct proc *, struct pfsnode *,
     struct uio *);
+int procfs_doauxv(struct lwp *, struct proc *, struct pfsnode *,
+    struct uio *);
 
 void procfs_revoke_vnodes(struct proc *, void *);
 int procfs_getfp(struct pfsnode *, struct proc *, struct file **);
 
 /* functions to check whether or not files should be displayed */
+int procfs_validauxv(struct lwp *, struct mount *);
 int procfs_validfile(struct lwp *, struct mount *);
 int procfs_validfpregs(struct lwp *, struct mount *);
 int procfs_validregs(struct lwp *, struct mount *);

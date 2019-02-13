@@ -1,5 +1,3 @@
-/*	$NetBSD: npf_show.c,v 1.19 2015/06/03 23:36:05 rmind Exp $	*/
-
 /*-
  * Copyright (c) 2013 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -36,9 +34,10 @@
  */
 
 #include <sys/cdefs.h>
-__RCSID("$NetBSD: npf_show.c,v 1.19 2015/06/03 23:36:05 rmind Exp $");
+__RCSID("$NetBSD: npf_show.c,v 1.26 2018/09/29 14:41:36 rmind Exp $");
 
 #include <sys/socket.h>
+#define	__FAVOR_BSD
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <net/if.h>
@@ -64,14 +63,18 @@ typedef struct {
 	uint32_t	curmark;
 } npf_conf_info_t;
 
-static npf_conf_info_t	stdout_ctx = {
-	.fp = stdout,
-	.fpos = 0,
-	.flags = 0
-};
+static npf_conf_info_t	stdout_ctx;
 
 static void	print_indent(npf_conf_info_t *, u_int);
 static void	print_linesep(npf_conf_info_t *);
+
+void
+npfctl_show_init(void)
+{
+	stdout_ctx.fp = stdout;
+	stdout_ctx.fpos = 0;
+	stdout_ctx.flags = 0;
+}
 
 /*
  * Helper routines to print various pieces of information.
@@ -114,7 +117,7 @@ tcpflags2string(char *buf, u_int tfl)
 }
 
 static char *
-print_family(npf_conf_info_t *ctx, const uint32_t *words)
+print_family(npf_conf_info_t *ctx __unused, const uint32_t *words)
 {
 	const int af = words[0];
 
@@ -130,7 +133,7 @@ print_family(npf_conf_info_t *ctx, const uint32_t *words)
 }
 
 static char *
-print_address(npf_conf_info_t *ctx, const uint32_t *words)
+print_address(npf_conf_info_t *ctx __unused, const uint32_t *words)
 {
 	const int af = *words++;
 	const u_int mask = *words++;
@@ -148,11 +151,11 @@ print_address(npf_conf_info_t *ctx, const uint32_t *words)
 		errx(EXIT_FAILURE, "invalid byte-code mark (address)");
 	}
 	addr = (const npf_addr_t *)words;
-	return npfctl_print_addrmask(alen, addr, mask);
+	return npfctl_print_addrmask(alen, "%a", addr, mask);
 }
 
 static char *
-print_number(npf_conf_info_t *ctx, const uint32_t *words)
+print_number(npf_conf_info_t *ctx __unused, const uint32_t *words)
 {
 	char *p;
 	easprintf(&p, "%u", words[0]);
@@ -193,7 +196,7 @@ print_proto(npf_conf_info_t *ctx, const uint32_t *words)
 }
 
 static char *
-print_tcpflags(npf_conf_info_t *ctx, const uint32_t *words)
+print_tcpflags(npf_conf_info_t *ctx __unused, const uint32_t *words)
 {
 	const u_int tf = words[0], tf_mask = words[1];
 	char buf[16];
@@ -333,6 +336,13 @@ scan_marks(npf_conf_info_t *ctx, const struct mark_keyword_mapent *mk,
 }
 
 static void
+npfctl_print_id(npf_conf_info_t *ctx, nl_rule_t *rl)
+{
+	uint64_t id = id = npf_rule_getid(rl);
+	fprintf(ctx->fp, "# id=\"%" PRIx64 "\" ", id);
+}
+
+static void
 npfctl_print_filter(npf_conf_info_t *ctx, nl_rule_t *rl)
 {
 	const void *marks;
@@ -394,8 +404,7 @@ npfctl_print_rule(npf_conf_info_t *ctx, nl_rule_t *rl)
 
 	if ((attr & NPF_DYNAMIC_GROUP) == NPF_RULE_GROUP) {
 		/* Group; done. */
-		fputs("\n", ctx->fp);
-		return;
+		goto out;
 	}
 
 	/* Print filter criteria. */
@@ -406,12 +415,8 @@ npfctl_print_rule(npf_conf_info_t *ctx, nl_rule_t *rl)
 		fprintf(ctx->fp, "apply \"%s\" ", rproc);
 	}
 
-	/* If dynamic rule - print its ID. */
-	if ((attr & NPF_DYNAMIC_GROUP) == NPF_RULE_DYNAMIC) {
-		uint64_t id = npf_rule_getid(rl);
-		fprintf(ctx->fp, "# id = \"%" PRIx64 "\" ", id);
-	}
-
+out:
+	npfctl_print_id(ctx, rl);
 	fputs("\n", ctx->fp);
 }
 
@@ -432,7 +437,7 @@ npfctl_print_nat(npf_conf_info_t *ctx, nl_nat_t *nt)
 
 	/* Get the translation address (and port, if used). */
 	npf_nat_getmap(nt, &addr, &alen, &port);
-	seg = npfctl_print_addrmask(alen, &addr, NPF_NO_NETMASK);
+	seg = npfctl_print_addrmask(alen, "%a", &addr, NPF_NO_NETMASK);
 	if (port) {
 		char *p;
 		easprintf(&p, "%s port %u", seg, ntohs(port));
@@ -456,10 +461,13 @@ npfctl_print_nat(npf_conf_info_t *ctx, nl_nat_t *nt)
 	flags = npf_nat_getflags(nt);
 
 	/* Print out the NAT policy with the filter criteria. */
-	fprintf(ctx->fp, "map %s %s %s %s %s pass ",
+	fprintf(ctx->fp, "map %s %s %s%s%s %s %s pass ",
 	    ifname, (flags & NPF_NAT_STATIC) ? "static" : "dynamic",
+	    "" /* XXX algo, */,
+	    (flags & NPF_NAT_PORTS) ? "" : "no-ports ",
 	    seg1, arrow, seg2);
 	npfctl_print_filter(ctx, rl);
+	npfctl_print_id(ctx, rl);
 	fputs("\n", ctx->fp);
 	free(seg);
 }
@@ -488,20 +496,21 @@ npfctl_config_show(int fd)
 {
 	npf_conf_info_t *ctx = &stdout_ctx;
 	nl_config_t *ncf;
-	bool active, loaded;
+	bool loaded;
 
 	if (fd) {
-		ncf = npf_config_retrieve(fd, &active, &loaded);
+		ncf = npf_config_retrieve(fd);
 		if (ncf == NULL) {
 			return errno;
 		}
+		loaded = npf_config_loaded_p(ncf);
 		fprintf(ctx->fp, "# filtering:\t%s\n# config:\t%s\n",
-		    active ? "active" : "inactive",
+		    npf_config_active_p(ncf) ? "active" : "inactive",
 		    loaded ? "loaded" : "empty");
 		print_linesep(ctx);
 	} else {
-		npfctl_config_send(0, NULL);
 		ncf = npfctl_config_ref();
+		(void)npf_config_build(ncf);
 		loaded = true;
 	}
 	ctx->conf = ncf;

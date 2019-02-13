@@ -1,4 +1,4 @@
-/*	$NetBSD: subr_pserialize.c,v 1.8 2015/06/12 19:18:30 dholland Exp $	*/
+/*	$NetBSD: subr_pserialize.c,v 1.12 2018/08/14 01:06:01 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 2010, 2011 The NetBSD Foundation, Inc.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: subr_pserialize.c,v 1.8 2015/06/12 19:18:30 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: subr_pserialize.c,v 1.12 2018/08/14 01:06:01 ozaki-r Exp $");
 
 #include <sys/param.h>
 
@@ -73,6 +73,12 @@ static TAILQ_HEAD(, pserialize)	psz_queue0	__cacheline_aligned;
 static TAILQ_HEAD(, pserialize)	psz_queue1	__cacheline_aligned;
 static TAILQ_HEAD(, pserialize)	psz_queue2	__cacheline_aligned;
 
+#ifdef LOCKDEBUG
+#include <sys/percpu.h>
+
+static percpu_t		*psz_debug_nreads	__cacheline_aligned;
+#endif
+
 /*
  * pserialize_init:
  *
@@ -89,6 +95,9 @@ pserialize_init(void)
 	mutex_init(&psz_lock, MUTEX_DEFAULT, IPL_SCHED);
 	evcnt_attach_dynamic(&psz_ev_excl, EVCNT_TYPE_MISC, NULL,
 	    "pserialize", "exclusive access");
+#ifdef LOCKDEBUG
+	psz_debug_nreads = percpu_alloc(sizeof(uint32_t));
+#endif
 }
 
 /*
@@ -137,6 +146,7 @@ pserialize_destroy(pserialize_t psz)
 void
 pserialize_perform(pserialize_t psz)
 {
+	int n;
 	uint64_t xc;
 
 	KASSERT(!cpu_intr_p());
@@ -147,6 +157,11 @@ pserialize_perform(pserialize_t psz)
 	}
 	KASSERT(psz->psz_owner == NULL);
 	KASSERT(ncpu > 0);
+
+	if (__predict_false(mp_online == false)) {
+		psz_ev_excl.ev_count++;
+		return;
+	}
 
 	/*
 	 * Set up the object and put it onto the queue.  The lock
@@ -162,6 +177,7 @@ pserialize_perform(pserialize_t psz)
 	TAILQ_INSERT_TAIL(&psz_queue0, psz, psz_chain);
 	psz_work_todo++;
 
+	n = 0;
 	do {
 		mutex_spin_exit(&psz_lock);
 
@@ -169,9 +185,10 @@ pserialize_perform(pserialize_t psz)
 		 * Force some context switch activity on every CPU, as
 		 * the system may not be busy.  Pause to not flood.
 		 */
+		if (n++ > 1)
+			kpause("psrlz", false, 1, NULL);
 		xc = xc_broadcast(XC_HIGHPRI, (xcfunc_t)nullop, NULL, NULL);
 		xc_wait(xc);
-		kpause("psrlz", false, 1, NULL);
 
 		mutex_spin_enter(&psz_lock);
 	} while (!kcpuset_iszero(psz->psz_target));
@@ -185,15 +202,37 @@ pserialize_perform(pserialize_t psz)
 int
 pserialize_read_enter(void)
 {
+	int s;
 
 	KASSERT(!cpu_intr_p());
-	return splsoftserial();
+	s = splsoftserial();
+#ifdef LOCKDEBUG
+	{
+		uint32_t *nreads;
+		nreads = percpu_getref(psz_debug_nreads);
+		(*nreads)++;
+		if (*nreads == 0)
+			panic("nreads overflow");
+		percpu_putref(psz_debug_nreads);
+	}
+#endif
+	return s;
 }
 
 void
 pserialize_read_exit(int s)
 {
 
+#ifdef LOCKDEBUG
+	{
+		uint32_t *nreads;
+		nreads = percpu_getref(psz_debug_nreads);
+		(*nreads)--;
+		if (*nreads == UINT_MAX)
+			panic("nreads underflow");
+		percpu_putref(psz_debug_nreads);
+	}
+#endif
 	splx(s);
 }
 
@@ -260,4 +299,62 @@ pserialize_switchpoint(void)
 		psz_work_todo--;
 	}
 	mutex_spin_exit(&psz_lock);
+}
+
+/*
+ * pserialize_in_read_section:
+ *
+ *   True if the caller is in a pserialize read section.  To be used only
+ *   for diagnostic assertions where we want to guarantee the condition like:
+ *
+ *     KASSERT(pserialize_in_read_section());
+ */
+bool
+pserialize_in_read_section(void)
+{
+#ifdef LOCKDEBUG
+	uint32_t *nreads;
+	bool in;
+
+	/* Not initialized yet */
+	if (__predict_false(psz_debug_nreads == NULL))
+		return true;
+
+	nreads = percpu_getref(psz_debug_nreads);
+	in = *nreads != 0;
+	percpu_putref(psz_debug_nreads);
+
+	return in;
+#else
+	return true;
+#endif
+}
+
+/*
+ * pserialize_not_in_read_section:
+ *
+ *   True if the caller is not in a pserialize read section.  To be used only
+ *   for diagnostic assertions where we want to guarantee the condition like:
+ *
+ *     KASSERT(pserialize_not_in_read_section());
+ */
+bool
+pserialize_not_in_read_section(void)
+{
+#ifdef LOCKDEBUG
+	uint32_t *nreads;
+	bool notin;
+
+	/* Not initialized yet */
+	if (__predict_false(psz_debug_nreads == NULL))
+		return true;
+
+	nreads = percpu_getref(psz_debug_nreads);
+	notin = *nreads == 0;
+	percpu_putref(psz_debug_nreads);
+
+	return notin;
+#else
+	return true;
+#endif
 }

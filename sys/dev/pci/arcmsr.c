@@ -1,4 +1,4 @@
-/*	$NetBSD: arcmsr.c,v 1.36 2016/06/19 21:12:44 dholland Exp $ */
+/*	$NetBSD: arcmsr.c,v 1.38 2018/09/03 16:29:32 riastradh Exp $ */
 /*	$OpenBSD: arc.c,v 1.68 2007/10/27 03:28:27 dlg Exp $ */
 
 /*
@@ -21,7 +21,7 @@
 #include "bio.h"
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: arcmsr.c,v 1.36 2016/06/19 21:12:44 dholland Exp $");
+__KERNEL_RCSID(0, "$NetBSD: arcmsr.c,v 1.38 2018/09/03 16:29:32 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/buf.h>
@@ -241,6 +241,7 @@ arc_attach(device_t parent, device_t self, void *aux)
 	adapt->adapt_max_periph = adapt->adapt_openings;
 	adapt->adapt_minphys = arc_minphys;		
 	adapt->adapt_request = arc_scsi_cmd;
+	adapt->adapt_flags = SCSIPI_ADAPT_MPSAFE;
 
 	memset(chan, 0, sizeof(*chan));
 	chan->chan_adapter = adapt;
@@ -544,7 +545,7 @@ arc_scsi_cmd_done(struct arc_softc *sc, struct arc_ccb *ccb, uint32_t reg)
 		case SCSI_CHECK:
 			memset(&xs->sense, 0, sizeof(xs->sense));
 			memcpy(&xs->sense, cmd->sense_data,
-			    min(ARC_MSG_SENSELEN, sizeof(xs->sense)));
+			    uimin(ARC_MSG_SENSELEN, sizeof(xs->sense)));
 			xs->sense.scsi_sense.response_code =
 			    SSD_RCODE_VALID | 0x70;
 			xs->status = SCSI_CHECK;
@@ -624,6 +625,8 @@ arc_map_pci_resources(device_t self, struct pci_attach_args *pa)
 		aprint_error(": unable to map interrupt\n");
 		goto unmap;
 	}
+
+	pci_intr_setattr(pa->pa_pc, &ih, PCI_INTR_MPSAFE, true);
 
 	sc->sc_ih = pci_intr_establish(pa->pa_pc, ih, IPL_BIO,
 	    arc_intr, sc);

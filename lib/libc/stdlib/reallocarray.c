@@ -1,4 +1,4 @@
-/*	$NetBSD: reallocarray.c,v 1.7 2016/04/06 11:07:58 roy Exp $	*/
+/*	$NetBSD: reallocarray.c,v 1.10 2018/01/04 20:57:29 kamil Exp $	*/
 /*	$OpenBSD: reallocarray.c,v 1.1 2014/05/08 21:43:49 deraadt Exp $	*/
 
 /*-
@@ -31,7 +31,9 @@
  */
 
 #include <sys/cdefs.h>
-__RCSID("$NetBSD: reallocarray.c,v 1.7 2016/04/06 11:07:58 roy Exp $");
+__RCSID("$NetBSD: reallocarray.c,v 1.10 2018/01/04 20:57:29 kamil Exp $");
+
+#include "namespace.h"
 
 #define _OPENBSD_SOURCE
 #include <errno.h>

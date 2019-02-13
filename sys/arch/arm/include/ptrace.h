@@ -1,4 +1,4 @@
-/*	$NetBSD: ptrace.h,v 1.8 2015/09/25 16:05:17 christos Exp $	*/
+/*	$NetBSD: ptrace.h,v 1.12 2017/12/27 19:35:05 christos Exp $	*/
 
 /*
  * Copyright (c) 1995 Frank Lancaster
@@ -42,21 +42,34 @@
 /* 3 and 4 are for FPE registers */
 #define	PT_GETFPREGS	(PT_FIRSTMACH + 5)
 #define	PT_SETFPREGS	(PT_FIRSTMACH + 6)
+#ifndef _KERNEL
+#define PT_SETSTEP	(PT_FIRSTMACH + 7) /* Not implemented */
+#define PT_CLEARSTEP	(PT_FIRSTMACH + 8) /* Not implemented */
+#endif
 
 #define PT_MACHDEP_STRINGS \
-	"(unused)", \
+	"PT_STEP", \
 	"PT_GETREGS", \
 	"PT_SETREGS", \
 	"old PT_GETFPREGS", \
 	"old PT_SETFPREGS", \
 	"PT_GETFPREGS", \
-	"PT_SETFPREGS",
+	"PT_SETFPREGS", \
+	"PT_SETSTEP", \
+	"PT_CLEARSTEP",
 
 #include <machine/reg.h>
-#define PTRACE_REG_PC(r)	(r)->r_pc
-#define PTRACE_REG_SET_PC(r, v)	(r)->r_pc = (v)
-#define PTRACE_REG_SP(r)	(r)->r_sp
-#define PTRACE_REG_INTRV(r)	(r)->r[0]
+#define PTRACE_REG_PC(_r)		(_r)->r_pc
+#define PTRACE_REG_SET_PC(_r, _v)	(_r)->r_pc = (_v)
+#define PTRACE_REG_SP(_r)		(_r)->r_sp
+#define PTRACE_REG_INTRV(_r)		(_r)->r[0]
 
-#define PTRACE_BREAKPOINT	((const uint8_t[]) { 0xe7, 0xff, 0xff, 0xff })
+#ifdef __ARMEB__
+#define PTRACE_BREAKPOINT	((const uint8_t[]) { 0xfe, 0xde, 0xff, 0xe7 })
+#define PTRACE_BREAKPOINT_INSN	0xfedeffe7
+#else
+#define PTRACE_BREAKPOINT	((const uint8_t[]) { 0xe7, 0xff, 0xde, 0xfe })
+#define PTRACE_BREAKPOINT_INSN	0xe7ffdefe
+#endif
+#define PTRACE_BREAKPOINT_ASM	__asm __volatile (".word " ___STRING(PTRACE_BREAKPOINT_INSN) )
 #define PTRACE_BREAKPOINT_SIZE	4

@@ -1,4 +1,4 @@
-/*	$NetBSD: svr4_exec.c,v 1.66 2012/02/19 21:06:45 rmind Exp $	 */
+/*	$NetBSD: svr4_exec.c,v 1.69 2018/08/10 21:44:59 pgoyette Exp $	 */
 
 /*-
  * Copyright (c) 1994, 2000 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: svr4_exec.c,v 1.66 2012/02/19 21:06:45 rmind Exp $");
+__KERNEL_RCSID(0, "$NetBSD: svr4_exec.c,v 1.69 2018/08/10 21:44:59 pgoyette Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_syscall_debug.h"
@@ -53,6 +53,7 @@ __KERNEL_RCSID(0, "$NetBSD: svr4_exec.c,v 1.66 2012/02/19 21:06:45 rmind Exp $")
 
 extern char svr4_sigcode[], svr4_esigcode[];
 extern struct sysent svr4_sysent[];
+extern const uint32_t svr4_sysent_nomodbits[];
 extern const char * const svr4_syscallnames[];
 #ifndef __HAVE_SYSCALL_INTERN
 void syscall(void);
@@ -70,6 +71,7 @@ struct emul emul_svr4 = {
 	.e_nsysent =		SVR4_SYS_NSYSENT,
 #endif
 	.e_sysent =		svr4_sysent,
+	.e_nomodbits =		svr4_systent_nomodbits,
 #ifdef SYSCALL_DEBUG
 	.e_syscallnames =	svr4_syscallnames,
 #else
@@ -77,7 +79,6 @@ struct emul emul_svr4 = {
 #endif
 	.e_sendsig =		svr4_sendsig,
 	.e_trapsignal =		trapsignal,
-	.e_tracesig =		NULL,
 	.e_sigcode =		svr4_sigcode,
 	.e_esigcode =		svr4_esigcode,
 	.e_sigobject =		&emul_svr4_object,
@@ -93,7 +94,6 @@ struct emul emul_svr4 = {
 	.e_syscall_intern =	syscall,
 #endif
 	.e_sysctlovly =		NULL,
-	.e_fault =		NULL,
 	.e_vm_default_addr =	uvm_default_mapaddr,
 	.e_usertrap =		NULL,
 	.e_ucsize =		0,

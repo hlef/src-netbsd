@@ -5,7 +5,7 @@
  ******************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -79,7 +79,17 @@ AcpiDbDumpMethodInfo (
     ACPI_WALK_STATE         *WalkState)
 {
     ACPI_THREAD_STATE       *Thread;
+    ACPI_NAMESPACE_NODE     *Node;
 
+
+    Node = WalkState->MethodNode;
+
+    /* There are no locals or arguments for the module-level code case */
+
+    if (Node == AcpiGbl_RootNode)
+    {
+        return;
+    }
 
     /* Ignore control codes, they are not errors */
 
@@ -448,8 +458,15 @@ AcpiDbDecodeLocals (
     BOOLEAN                 DisplayLocals = FALSE;
 
 
+    Node = WalkState->MethodNode;
     ObjDesc = WalkState->MethodDesc;
-    Node    = WalkState->MethodNode;
+
+    /* There are no locals for the module-level code case */
+
+    if (Node == AcpiGbl_RootNode)
+    {
+        return;
+    }
 
     if (!Node)
     {
@@ -480,7 +497,7 @@ AcpiDbDecodeLocals (
 
     if (DisplayLocals)
     {
-        AcpiOsPrintf ("\nInitialized Local Variables for method [%4.4s]:\n",
+        AcpiOsPrintf ("\nInitialized Local Variables for Method [%4.4s]:\n",
             AcpiUtGetNodeName (Node));
 
         for (i = 0; i < ACPI_METHOD_NUM_LOCALS; i++)
@@ -496,7 +513,7 @@ AcpiDbDecodeLocals (
     else
     {
         AcpiOsPrintf (
-            "No Local Variables are initialized for method [%4.4s]\n",
+            "No Local Variables are initialized for Method [%4.4s]\n",
             AcpiUtGetNodeName (Node));
     }
 }
@@ -526,6 +543,13 @@ AcpiDbDecodeArguments (
 
     Node = WalkState->MethodNode;
     ObjDesc = WalkState->MethodDesc;
+
+    /* There are no arguments for the module-level code case */
+
+    if (Node == AcpiGbl_RootNode)
+    {
+        return;
+    }
 
     if (!Node)
     {
@@ -559,7 +583,7 @@ AcpiDbDecodeArguments (
         AcpiOsPrintf (
             "Initialized Arguments for Method [%4.4s]:  "
             "(%X arguments defined for method invocation)\n",
-            AcpiUtGetNodeName (Node), ObjDesc->Method.ParamCount);
+            AcpiUtGetNodeName (Node), Node->Object->Method.ParamCount);
 
         for (i = 0; i < ACPI_METHOD_NUM_ARGS; i++)
         {

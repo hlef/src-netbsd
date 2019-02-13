@@ -1,4 +1,4 @@
-/*	$NetBSD: vfs_vnops.c,v 1.193 2015/02/04 07:09:37 msaitoh Exp $	*/
+/*	$NetBSD: vfs_vnops.c,v 1.198 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2009 The NetBSD Foundation, Inc.
@@ -66,7 +66,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: vfs_vnops.c,v 1.193 2015/02/04 07:09:37 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: vfs_vnops.c,v 1.198 2018/09/03 16:29:35 riastradh Exp $");
 
 #include "veriexec.h"
 
@@ -123,6 +123,7 @@ static int vn_mmap(struct file *, off_t *, size_t, int, int *, int *,
 		   struct uvm_object **, int *);
 
 const struct fileops vnops = {
+	.fo_name = "vn",
 	.fo_read = vn_read,
 	.fo_write = vn_write,
 	.fo_ioctl = vn_ioctl,
@@ -210,12 +211,14 @@ vn_open(struct nameidata *ndp, int fmode, int cmode)
 				 va.va_vaflags |= VA_EXCLUSIVE;
 			error = VOP_CREATE(ndp->ni_dvp, &ndp->ni_vp,
 					   &ndp->ni_cnd, &va);
-			vput(ndp->ni_dvp);
-			if (error)
+			if (error) {
+				vput(ndp->ni_dvp);
 				goto out;
+			}
 			fmode &= ~O_TRUNC;
 			vp = ndp->ni_vp;
 			vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+			vput(ndp->ni_dvp);
 		} else {
 			VOP_ABORTOP(ndp->ni_dvp, &ndp->ni_cnd);
 			if (ndp->ni_dvp == ndp->ni_vp)
@@ -297,6 +300,9 @@ vn_openchk(struct vnode *vp, kauth_cred_t cred, int fflags)
 	if ((fflags & O_DIRECTORY) != 0 && vp->v_type != VDIR)
 		return ENOTDIR;
 
+	if ((fflags & O_REGULAR) != 0 && vp->v_type != VREG)
+		return EFTYPE;
+
 	if ((fflags & FREAD) != 0) {
 		permbits = VREAD;
 	}
@@ -374,13 +380,13 @@ vn_close(struct vnode *vp, int flags, kauth_cred_t cred)
 {
 	int error;
 
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	if (flags & FWRITE) {
 		mutex_enter(vp->v_interlock);
 		KASSERT(vp->v_writecount > 0);
 		vp->v_writecount--;
 		mutex_exit(vp->v_interlock);
 	}
-	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	error = VOP_CLOSE(vp, flags, cred);
 	vput(vp);
 	return (error);
@@ -476,7 +482,7 @@ vn_readdir(file_t *fp, char *bf, int segflg, u_int count, int *done,
 	int error, eofflag;
 
 	/* Limit the size on any kernel buffers used by VOP_READDIR */
-	count = min(MAXBSIZE, count);
+	count = uimin(MAXBSIZE, count);
 
 unionread:
 	if (vp->v_type != VDIR)

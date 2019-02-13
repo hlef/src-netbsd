@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -44,7 +44,6 @@
 #define _DECLARE_PR_GLOBALS
 
 #include "aslcompiler.h"
-#include "dtcompiler.h"
 
 /*
  * TBDs:
@@ -1089,7 +1088,7 @@ PrPushDirective (
     Info->Next = Gbl_DirectiveStack;
     Info->Directive = Directive;
     Info->IgnoringThisCodeBlock = Gbl_IgnoringThisCodeBlock;
-    strncpy (Info->Argument, Argument, MAX_ARGUMENT_LENGTH);
+    AcpiUtSafeStrncpy (Info->Argument, Argument, MAX_ARGUMENT_LENGTH);
 
     DbgPrint (ASL_DEBUG_OUTPUT,
         "Pr(%.4u) - [%u %s] %*s Pushed [#%s %s]: IgnoreFlag = %s\n",

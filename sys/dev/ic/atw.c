@@ -1,4 +1,4 @@
-/*	$NetBSD: atw.c,v 1.160 2016/06/10 13:27:13 ozaki-r Exp $  */
+/*	$NetBSD: atw.c,v 1.164 2018/06/26 06:48:00 msaitoh Exp $  */
 
 /*-
  * Copyright (c) 1998, 1999, 2000, 2002, 2003, 2004 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: atw.c,v 1.160 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: atw.c,v 1.164 2018/06/26 06:48:00 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -50,6 +50,7 @@ __KERNEL_RCSID(0, "$NetBSD: atw.c,v 1.160 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <sys/kauth.h>
 #include <sys/time.h>
 #include <sys/proc.h>
+#include <sys/atomic.h>
 #include <lib/libkern/libkern.h>
 
 #include <machine/endian.h>
@@ -201,6 +202,7 @@ void	atw_txdrain(struct atw_softc *);
 void	atw_reset(struct atw_softc *);
 
 /* Interrupt handlers */
+void	atw_softintr(void *);
 void	atw_linkintr(struct atw_softc *, u_int32_t);
 void	atw_rxintr(struct atw_softc *);
 void	atw_txintr(struct atw_softc *, uint32_t);
@@ -512,12 +514,18 @@ atw_attach(struct atw_softc *sc)
 	};
 	struct ieee80211com *ic = &sc->sc_ic;
 	struct ifnet *ifp = &sc->sc_if;
-	int country_code, error, i, nrate, srom_major;
+	int country_code, error, i, srom_major;
 	u_int32_t reg;
 	static const char *type_strings[] = {"Intersil (not supported)",
 	    "RFMD", "Marvel (not supported)"};
 
 	pmf_self_suspensor_init(sc->sc_dev, &sc->sc_suspensor, &sc->sc_qual);
+
+	sc->sc_soft_ih = softint_establish(SOFTINT_NET, atw_softintr, sc);
+	if (sc->sc_soft_ih == NULL) {
+		aprint_error_dev(sc->sc_dev, "unable to establish softint\n");
+		goto fail_0;
+	}
 
 	sc->sc_txth = atw_txthresh_tab_lo;
 
@@ -613,7 +621,7 @@ atw_attach(struct atw_softc *sc)
 	atw_reset(sc);
 
 	if (atw_read_srom(sc) == -1)
-		return;
+		goto fail_5;
 
 	sc->sc_rftype = __SHIFTOUT(sc->sc_srom[ATW_SR_CSR20],
 	    ATW_SR_RFTYPE_MASK);
@@ -623,14 +631,14 @@ atw_attach(struct atw_softc *sc)
 
 	if (sc->sc_rftype >= __arraycount(type_strings)) {
 		aprint_error_dev(sc->sc_dev, "unknown RF\n");
-		return;
+		goto fail_5;
 	}
 	if (sc->sc_bbptype >= __arraycount(type_strings)) {
 		aprint_error_dev(sc->sc_dev, "unknown BBP\n");
-		return;
+		goto fail_5;
 	}
 
-	printf("%s: %s RF, %s BBP", device_xname(sc->sc_dev),
+	aprint_normal_dev(sc->sc_dev, "%s RF, %s BBP",
 	    type_strings[sc->sc_rftype], type_strings[sc->sc_bbptype]);
 
 	/* XXX There exists a Linux driver which seems to use RFType = 0 for
@@ -666,8 +674,8 @@ atw_attach(struct atw_softc *sc)
 	case ATW_BBPTYPE_MARVEL:
 		break;
 	case ATW_C_BBPTYPE_RFMD:
-		printf("%s: ADM8211C MAC/RFMD BBP not supported yet.\n",
-		    device_xname(sc->sc_dev));
+		aprint_error_dev(sc->sc_dev,
+		    "ADM8211C MAC/RFMD BBP not supported yet.\n");
 		break;
 	}
 
@@ -749,11 +757,12 @@ atw_attach(struct atw_softc *sc)
 	ic->ic_myaddr[5] = __SHIFTOUT(reg, ATW_PAR1_PAB5_MASK);
 
 	if (IEEE80211_ADDR_EQ(ic->ic_myaddr, empty_macaddr)) {
-		printf(" could not get mac address, attach failed\n");
-		return;
+		aprint_error_dev(sc->sc_dev,
+		    "could not get mac address, attach failed\n");
+		goto fail_5;
 	}
 
-	printf(" 802.11 address %s\n", ether_sprintf(ic->ic_myaddr));
+	aprint_normal(" 802.11 address %s\n", ether_sprintf(ic->ic_myaddr));
 
 	memcpy(ifp->if_xname, device_xname(sc->sc_dev), IFNAMSIZ);
 	ifp->if_softc = sc;
@@ -772,19 +781,22 @@ atw_attach(struct atw_softc *sc)
 	ic->ic_caps = IEEE80211_C_PMGT | IEEE80211_C_IBSS |
 	    IEEE80211_C_HOSTAP | IEEE80211_C_MONITOR;
 
-	nrate = 0;
-	ic->ic_sup_rates[IEEE80211_MODE_11B].rs_rates[nrate++] = 2;
-	ic->ic_sup_rates[IEEE80211_MODE_11B].rs_rates[nrate++] = 4;
-	ic->ic_sup_rates[IEEE80211_MODE_11B].rs_rates[nrate++] = 11;
-	ic->ic_sup_rates[IEEE80211_MODE_11B].rs_rates[nrate++] = 22;
-	ic->ic_sup_rates[IEEE80211_MODE_11B].rs_nrates = nrate;
+	ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
 
 	/*
 	 * Call MI attach routines.
 	 */
 
-	if_attach(ifp);
+	error = if_initialize(ifp);
+	if (error != 0) {
+		aprint_error_dev(sc->sc_dev, "if_initialize failed(%d)\n",
+		    error);
+		goto fail_5;
+	}
 	ieee80211_ifattach(ic);
+	/* Use common softint-based if_input */
+	ifp->if_percpuq = if_percpuq_create(ifp);
+	if_register(ifp);
 
 	atw_evcnt_attach(sc);
 
@@ -853,7 +865,10 @@ atw_attach(struct atw_softc *sc)
  fail_1:
 	bus_dmamem_free(sc->sc_dmat, &sc->sc_cdseg, sc->sc_cdnseg);
  fail_0:
-	return;
+	if (sc->sc_soft_ih != NULL) {
+		softint_disestablish(sc->sc_soft_ih);
+		sc->sc_soft_ih = NULL;
+	}
 }
 
 static struct ieee80211_node *
@@ -2721,6 +2736,11 @@ atw_detach(struct atw_softc *sc)
 
 	atw_evcnt_detach(sc);
 
+	if (sc->sc_soft_ih != NULL) {
+		softint_disestablish(sc->sc_soft_ih);
+		sc->sc_soft_ih = NULL;
+	}
+
 	return (0);
 }
 
@@ -2763,8 +2783,7 @@ atw_intr(void *arg)
 {
 	struct atw_softc *sc = arg;
 	struct ifnet *ifp = &sc->sc_if;
-	u_int32_t status, rxstatus, txstatus, linkstatus;
-	int handled = 0, txthresh;
+	uint32_t status;
 
 #ifdef DEBUG
 	if (!device_activation(sc->sc_dev, DEVACT_LEVEL_DRIVER))
@@ -2778,6 +2797,34 @@ atw_intr(void *arg)
 	if ((ifp->if_flags & IFF_RUNNING) == 0 ||
 	    !device_activation(sc->sc_dev, DEVACT_LEVEL_DRIVER))
 		return (0);
+
+	status = ATW_READ(sc, ATW_STSR);
+	if (status == 0)
+		return 0;
+
+	if ((status & sc->sc_inten) == 0) {
+		ATW_WRITE(sc, ATW_STSR, status);
+		return 0;
+	}
+
+	/* Disable interrupts */
+	ATW_WRITE(sc, ATW_IER, 0);
+
+	softint_schedule(sc->sc_soft_ih);
+	return 1;
+}
+
+void
+atw_softintr(void *arg)
+{
+	struct atw_softc *sc = arg;
+	struct ifnet *ifp = &sc->sc_if;
+	uint32_t status, rxstatus, txstatus, linkstatus;
+	int txthresh, s;
+
+	if ((ifp->if_flags & IFF_RUNNING) == 0 ||
+	    !device_activation(sc->sc_dev, DEVACT_LEVEL_DRIVER))
+		return;
 
 	for (;;) {
 		status = ATW_READ(sc, ATW_STSR);
@@ -2824,8 +2871,6 @@ atw_intr(void *arg)
 
 		if ((status & sc->sc_inten) == 0)
 			break;
-
-		handled = 1;
 
 		rxstatus = status & sc->sc_rxint_mask;
 		txstatus = status & sc->sc_txint_mask;
@@ -2898,13 +2943,17 @@ atw_intr(void *arg)
 			if (status & ATW_INTR_RPS)
 				printf("%s: receive process stopped\n",
 				    device_xname(sc->sc_dev));
+			s = splnet();
 			(void)atw_init(ifp);
+			splx(s);
 			break;
 		}
 
 		if (status & ATW_INTR_FBE) {
 			aprint_error_dev(sc->sc_dev, "fatal bus error\n");
+			s = splnet();
 			(void)atw_init(ifp);
+			splx(s);
 			break;
 		}
 
@@ -2924,9 +2973,12 @@ atw_intr(void *arg)
 	}
 
 	/* Try to get more packets going. */
+	s = splnet();
 	atw_start(ifp);
+	splx(s);
 
-	return (handled);
+	/* Enable interrupts */
+	ATW_WRITE(sc, ATW_IER, sc->sc_inten);
 }
 
 /*
@@ -3053,7 +3105,7 @@ atw_rxintr(struct atw_softc *sc)
 	struct atw_rxsoft *rxs;
 	struct mbuf *m;
 	u_int32_t rxstat;
-	int i, len, rate, rate0;
+	int i, s, len, rate, rate0;
 	u_int32_t rssi, ctlrssi;
 
 	for (i = sc->sc_rxptr;; i = sc->sc_rxptr) {
@@ -3157,6 +3209,8 @@ atw_rxintr(struct atw_softc *sc)
 		else
 			rssi = ctlrssi;
 
+		s = splnet();
+
 		/* Pass this up to any BPF listeners. */
 		if (sc->sc_radiobpf != NULL) {
 			struct atw_rx_radiotap_header *tap = &sc->sc_rxtap;
@@ -3174,7 +3228,7 @@ atw_rxintr(struct atw_softc *sc)
 				tap->ar_flags |= IEEE80211_RADIOTAP_F_BADFCS;
 
 			bpf_mtap2(sc->sc_radiobpf, tap, sizeof(sc->sc_rxtapu),
-			    m);
+			    m, BPF_D_IN);
  		}
 
 		sc->sc_recv_ev.ev_count++;
@@ -3192,6 +3246,7 @@ atw_rxintr(struct atw_softc *sc)
 				sc->sc_sige_ev.ev_count++;
 			ifp->if_ierrors++;
 			m_freem(m);
+			splx(s);
 			continue;
 		}
 
@@ -3208,6 +3263,7 @@ atw_rxintr(struct atw_softc *sc)
 #endif
 		ieee80211_input(ic, m, ni, (int)rssi, 0);
 		ieee80211_free_node(ni);
+		splx(s);
 	}
 }
 
@@ -3223,9 +3279,12 @@ atw_txintr(struct atw_softc *sc, uint32_t status)
 	struct ifnet *ifp = &sc->sc_if;
 	struct atw_txsoft *txs;
 	u_int32_t txstat;
+	int s;
 
 	DPRINTF3(sc, ("%s: atw_txintr: sc_flags 0x%08x\n",
 	    device_xname(sc->sc_dev), sc->sc_flags));
+
+	s = splnet();
 
 	/*
 	 * Go through our Tx list and free mbufs for those
@@ -3318,6 +3377,8 @@ atw_txintr(struct atw_softc *sc, uint32_t status)
 	}
 
 	KASSERT(txs != NULL || (ifp->if_flags & IFF_OACTIVE) == 0);
+
+	splx(s);
 }
 
 /*
@@ -3499,7 +3560,7 @@ atw_start(struct ifnet *ifp)
 			IFQ_DEQUEUE(&ifp->if_snd, m0);
 			if (m0 == NULL)
 				break;
-			bpf_mtap(ifp, m0);
+			bpf_mtap(ifp, m0, BPF_D_OUT);
 			ni = ieee80211_find_txnode(ic,
 			    mtod(m0, struct ether_header *)->ether_dhost);
 			if (ni == NULL) {
@@ -3550,7 +3611,7 @@ atw_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap3(ic->ic_rawbpf, m0);
+		bpf_mtap3(ic->ic_rawbpf, m0, BPF_D_OUT);
 
 		if (sc->sc_radiobpf != NULL) {
 			struct atw_tx_radiotap_header *tap = &sc->sc_txtap;
@@ -3558,7 +3619,7 @@ atw_start(struct ifnet *ifp)
 			tap->at_rate = rate;
 
 			bpf_mtap2(sc->sc_radiobpf, tap, sizeof(sc->sc_txtapu),
-			    m0);
+			    m0, BPF_D_OUT);
 		}
 
 		M_PREPEND(m0, offsetof(struct atw_frame, atw_ihdr), M_DONTWAIT);

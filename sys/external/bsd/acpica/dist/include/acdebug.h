@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -233,8 +233,8 @@ AcpiDbDisassembleAml (
     ACPI_PARSE_OBJECT       *Op);
 
 void
-AcpiDbBatchExecute (
-    char                    *CountArg);
+AcpiDbEvaluatePredefinedNames (
+    void);
 
 
 /*
@@ -344,6 +344,12 @@ AcpiDbExecute (
     UINT32                  Flags);
 
 void
+AcpiDbCreateExecutionThread (
+    char                    *MethodNameArg,
+    char                    **Arguments,
+    ACPI_OBJECT_TYPE        *Types);
+
+void
 AcpiDbCreateExecutionThreads (
     char                    *NumThreadsArg,
     char                    *NumLoopsArg,
@@ -421,8 +427,7 @@ AcpiDbExecuteThread (
 
 ACPI_STATUS
 AcpiDbUserCommands (
-    char                    Prompt,
-    ACPI_PARSE_OBJECT       *Op);
+    void);
 
 char *
 AcpiDbGetNextToken (

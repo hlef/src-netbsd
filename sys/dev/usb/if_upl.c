@@ -1,4 +1,4 @@
-/*	$NetBSD: if_upl.c,v 1.56 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: if_upl.c,v 1.62 2018/06/26 06:48:02 msaitoh Exp $	*/
 /*
  * Copyright (c) 2000 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -34,10 +34,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_upl.c,v 1.56 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_upl.c,v 1.62 2018/06/26 06:48:02 msaitoh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
+#include "opt_usb.h"
 #endif
 
 #include <sys/param.h>
@@ -227,6 +228,7 @@ upl_attach(device_t parent, device_t self, void *aux)
 	usb_interface_descriptor_t	*id;
 	usb_endpoint_descriptor_t	*ed;
 	int			i;
+	int			rv;
 
 	DPRINTFN(5,(" : upl_attach: sc=%p, dev=%p", sc, dev));
 
@@ -294,7 +296,7 @@ upl_attach(device_t parent, device_t self, void *aux)
 	ifp->if_ioctl = upl_ioctl;
 	ifp->if_start = upl_start;
 	ifp->if_watchdog = upl_watchdog;
-	strncpy(ifp->if_xname, device_xname(sc->sc_dev), IFNAMSIZ);
+	strlcpy(ifp->if_xname, device_xname(sc->sc_dev), IFNAMSIZ);
 
 	ifp->if_type = IFT_OTHER;
 	ifp->if_addrlen = 0;
@@ -306,7 +308,12 @@ upl_attach(device_t parent, device_t self, void *aux)
 	IFQ_SET_READY(&ifp->if_snd);
 
 	/* Attach the interface. */
-	if_initialize(ifp);
+	rv = if_initialize(ifp);
+	if (rv != 0) {
+		aprint_error_dev(self, "if_initialize failed(%d)\n", rv);
+		splx(s);
+		return;
+	}
 	if_register(ifp);
 	if_alloc_sadl(ifp);
 
@@ -435,7 +442,7 @@ upl_rx_list_init(struct upl_softc *sc)
 			return ENOBUFS;
 		if (c->upl_xfer == NULL) {
 			int error = usbd_create_xfer(sc->sc_ep[UPL_ENDPT_RX],
-			    UPL_BUFSZ, USBD_SHORT_XFER_OK, 0, &c->upl_xfer);
+			    UPL_BUFSZ, 0, 0, &c->upl_xfer);
 			if (error)
 				return error;
 			c->upl_buf = usbd_get_buffer(c->upl_xfer);
@@ -515,7 +522,6 @@ upl_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 	m = c->upl_mbuf;
 	memcpy(mtod(c->upl_mbuf, char *), c->upl_buf, total_len);
 
-	ifp->if_ipackets++;
 	m->m_pkthdr.len = m->m_len = total_len;
 
 	m_set_rcvif(m, ifp);
@@ -527,14 +533,6 @@ upl_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		ifp->if_ierrors++;
 		goto done1;
 	}
-
-	/*
-	 * Handle BPF listeners. Let the BPF user see the packet, but
-	 * don't pass it up to the ether_input() layer unless it's
-	 * a broadcast packet, multicast packet, matches our ethernet
-	 * address or the interface is in promiscuous mode.
-	 */
-	bpf_mtap(ifp, m);
 
 	DPRINTFN(10,("%s: %s: deliver %d\n", device_xname(sc->sc_dev),
 		    __func__, m->m_len));
@@ -672,7 +670,7 @@ upl_start(struct ifnet *ifp)
 	 * If there's a BPF listener, bounce a copy of this frame
 	 * to him.
 	 */
-	bpf_mtap(ifp, m_head);
+	bpf_mtap(ifp, m_head, BPF_D_OUT);
 
 	ifp->if_flags |= IFF_OACTIVE;
 

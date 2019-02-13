@@ -1,4 +1,4 @@
-/*	$NetBSD: lance.c,v 1.50 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: lance.c,v 1.54 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1997, 1998 The NetBSD Foundation, Inc.
@@ -65,7 +65,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: lance.c,v 1.50 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: lance.c,v 1.54 2018/09/03 16:29:31 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -82,10 +82,7 @@ __KERNEL_RCSID(0, "$NetBSD: lance.c,v 1.50 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <net/if_dl.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
-
-
 #include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <dev/ic/lancereg.h>
 #include <dev/ic/lancevar.h>
@@ -343,13 +340,13 @@ lance_put(struct lance_softc *sc, int boff, struct mbuf *m)
 	for (; m; m = n) {
 		len = m->m_len;
 		if (len == 0) {
-			MFREE(m, n);
+			n = m_free(m);
 			continue;
 		}
 		(*sc->sc_copytobuf)(sc, mtod(m, void *), boff, len);
 		boff += len;
 		tlen += len;
-		MFREE(m, n);
+		n = m_free(m);
 	}
 	if (tlen < LEMINSIZE) {
 		(*sc->sc_zerobuf)(sc, boff, LEMINSIZE - tlen);
@@ -394,7 +391,7 @@ lance_get(struct lance_softc *sc, int boff, int totlen)
 			m->m_data = newdata;
 		}
 
-		m->m_len = len = min(totlen, len);
+		m->m_len = len = uimin(totlen, len);
 		(*sc->sc_copyfrombuf)(sc, mtod(m, void *), boff, len);
 		boff += len;
 
@@ -444,8 +441,6 @@ lance_read(struct lance_softc *sc, int boff, int len)
 		return;
 	}
 
-	ifp->if_ipackets++;
-
 	eh = mtod(m, struct ether_header *);
 
 #ifdef LANCE_REVC_BUG
@@ -471,12 +466,6 @@ lance_read(struct lance_softc *sc, int boff, int len)
 		m_freem(m);
 		return;
 	}
-
-	/*
-	 * Check if there's a BPF listener on this interface.
-	 * If so, hand off the raw packet to BPF.
-	 */
-	bpf_mtap(ifp, m);
 
 	/* Pass the packet up. */
 	if_percpuq_enqueue(ifp->if_percpuq, m);
@@ -775,14 +764,14 @@ lance_copytobuf_gap16(struct lance_softc *sc, void *fromv, int boff, int len)
 
 	bptr = buf + ((boff << 1) & ~0x1f);
 	boff &= 0xf;
-	xfer = min(len, 16 - boff);
+	xfer = uimin(len, 16 - boff);
 	while (len > 0) {
 		memcpy(bptr + boff, from, xfer);
 		from += xfer;
 		bptr += 32;
 		boff = 0;
 		len -= xfer;
-		xfer = min(len, 16);
+		xfer = uimin(len, 16);
 	}
 }
 
@@ -796,14 +785,14 @@ lance_copyfrombuf_gap16(struct lance_softc *sc, void *tov, int boff, int len)
 
 	bptr = buf + ((boff << 1) & ~0x1f);
 	boff &= 0xf;
-	xfer = min(len, 16 - boff);
+	xfer = uimin(len, 16 - boff);
 	while (len > 0) {
 		memcpy(to, bptr + boff, xfer);
 		to += xfer;
 		bptr += 32;
 		boff = 0;
 		len -= xfer;
-		xfer = min(len, 16);
+		xfer = uimin(len, 16);
 	}
 }
 
@@ -816,13 +805,13 @@ lance_zerobuf_gap16(struct lance_softc *sc, int boff, int len)
 
 	bptr = buf + ((boff << 1) & ~0x1f);
 	boff &= 0xf;
-	xfer = min(len, 16 - boff);
+	xfer = uimin(len, 16 - boff);
 	while (len > 0) {
 		memset(bptr + boff, 0, xfer);
 		bptr += 32;
 		boff = 0;
 		len -= xfer;
-		xfer = min(len, 16);
+		xfer = uimin(len, 16);
 	}
 }
 #endif /* Example only */

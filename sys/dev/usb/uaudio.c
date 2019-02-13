@@ -1,4 +1,4 @@
-/*	$NetBSD: uaudio.c,v 1.147 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: uaudio.c,v 1.157 2018/09/03 16:29:34 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1999, 2012 The NetBSD Foundation, Inc.
@@ -37,7 +37,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uaudio.c,v 1.147 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uaudio.c,v 1.157 2018/09/03 16:29:34 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_usb.h"
@@ -504,6 +504,9 @@ uaudio_attach(device_t parent, device_t self, void *aux)
 	DPRINTF("%s", "doing audio_attach_mi\n");
 	sc->sc_audiodev = audio_attach_mi(&uaudio_hw_if, sc, sc->sc_dev);
 
+	if (!pmf_device_register(self, NULL, NULL))
+		aprint_error_dev(self, "couldn't establish power handler\n");
+
 	return;
 }
 
@@ -534,9 +537,10 @@ int
 uaudio_detach(device_t self, int flags)
 {
 	struct uaudio_softc *sc = device_private(self);
-	int rv;
+	int rv = 0;
 
-	rv = 0;
+	pmf_device_deregister(self);
+
 	/* Wait for outstanding requests to complete. */
 	usbd_delay_ms(sc->sc_udev, UAUDIO_NCHANBUFS * UAUDIO_NFRAMES);
 
@@ -603,10 +607,6 @@ uaudio_mixer_add_ctl(struct uaudio_softc *sc, struct mixerctl *mc)
 	}
 	len = sizeof(*mc) * (sc->sc_nctls + 1);
 	nmc = kmem_alloc(len, KM_SLEEP);
-	if (nmc == NULL) {
-		aprint_error("uaudio_mixer_add_ctl: no memory\n");
-		return;
-	}
 	/* Copy old data, if there was any */
 	if (sc->sc_nctls != 0) {
 		memcpy(nmc, sc->sc_ctls, sizeof(*mc) * (sc->sc_nctls));
@@ -1540,10 +1540,6 @@ uaudio_add_alt(struct uaudio_softc *sc, const struct as_info *ai)
 
 	len = sizeof(*ai) * (sc->sc_nalts + 1);
 	nai = kmem_alloc(len, KM_SLEEP);
-	if (nai == NULL) {
-		aprint_error("uaudio_add_alt: no memory\n");
-		return;
-	}
 	/* Copy old data, if there was any */
 	if (sc->sc_nalts != 0) {
 		memcpy(nai, sc->sc_alts, sizeof(*ai) * (sc->sc_nalts));
@@ -1589,7 +1585,7 @@ uaudio_process_as(struct uaudio_softc *sc, const char *tbuf, int *offsp,
 		return USBD_INVAL;
 
 	if (asf1d->bFormatType != FORMAT_TYPE_I) {
-		aprint_error_dev(sc->sc_dev,
+		aprint_normal_dev(sc->sc_dev,
 		    "ignored setting with type %d format\n", UGETW(asid->wFormatTag));
 		return USBD_NORMAL_COMPLETION;
 	}
@@ -1620,7 +1616,7 @@ uaudio_process_as(struct uaudio_softc *sc, const char *tbuf, int *offsp,
 	if (dir == UE_DIR_IN && type == UE_ISO_ADAPT) {
 		sync = TRUE;
 #ifndef UAUDIO_MULTIPLE_ENDPOINTS
-		aprint_error_dev(sc->sc_dev,
+		aprint_normal_dev(sc->sc_dev,
 		    "ignored input endpoint of type adaptive\n");
 		return USBD_NORMAL_COMPLETION;
 #endif
@@ -1628,7 +1624,7 @@ uaudio_process_as(struct uaudio_softc *sc, const char *tbuf, int *offsp,
 	if (dir != UE_DIR_IN && type == UE_ISO_ASYNC) {
 		sync = TRUE;
 #ifndef UAUDIO_MULTIPLE_ENDPOINTS
-		aprint_error_dev(sc->sc_dev,
+		aprint_normal_dev(sc->sc_dev,
 		    "ignored output endpoint of type async\n");
 		return USBD_NORMAL_COMPLETION;
 #endif
@@ -1697,7 +1693,7 @@ uaudio_process_as(struct uaudio_softc *sc, const char *tbuf, int *offsp,
 	chan = asf1d->bNrChannels;
 	prec = asf1d->bBitResolution;
 	if (prec != 8 && prec != 16 && prec != 24) {
-		aprint_error_dev(sc->sc_dev,
+		aprint_normal_dev(sc->sc_dev,
 		    "ignored setting with precision %d\n", prec);
 		return USBD_NORMAL_COMPLETION;
 	}
@@ -1730,7 +1726,7 @@ uaudio_process_as(struct uaudio_softc *sc, const char *tbuf, int *offsp,
 		break;
 	case UA_FMT_IEEE_FLOAT:
 	default:
-		aprint_error_dev(sc->sc_dev,
+		aprint_normal_dev(sc->sc_dev,
 		    "ignored setting with format %d\n", format);
 		return USBD_NORMAL_COMPLETION;
 	}
@@ -1830,8 +1826,6 @@ uaudio_identify_as(struct uaudio_softc *sc,
 	/* build audio_format array */
 	sc->sc_formats = kmem_alloc(sizeof(struct audio_format) * sc->sc_nalts,
 	    KM_SLEEP);
-	if (sc->sc_formats == NULL)
-		return USBD_NOMEM;
 	sc->sc_nformats = sc->sc_nalts;
 	for (i = 0; i < sc->sc_nalts; i++) {
 		auf = &sc->sc_formats[i];
@@ -2600,8 +2594,10 @@ uaudio_trigger_input(void *addr, void *start, void *end, int blksize,
 		    ch->fraction);
 
 	mutex_exit(&sc->sc_intr_lock);
+	mutex_exit(&sc->sc_lock);
 	err = uaudio_chan_open(sc, ch);
 	if (err) {
+		mutex_enter(&sc->sc_lock);
 		mutex_enter(&sc->sc_intr_lock);
 		return EIO;
 	}
@@ -2609,6 +2605,7 @@ uaudio_trigger_input(void *addr, void *start, void *end, int blksize,
 	err = uaudio_chan_alloc_buffers(sc, ch);
 	if (err) {
 		uaudio_chan_close(sc, ch);
+		mutex_enter(&sc->sc_lock);
 		mutex_enter(&sc->sc_intr_lock);
 		return EIO;
 	}
@@ -2617,11 +2614,15 @@ uaudio_trigger_input(void *addr, void *start, void *end, int blksize,
 	ch->intr = intr;
 	ch->arg = arg;
 
-	 /* XXX -1 shouldn't be needed */
-	for (i = 0; i < UAUDIO_NCHANBUFS - 1; i++) {
+	/*
+	 * Start as half as many channels for recording as for playback.
+	 * This stops playback from stuttering in full-duplex operation.
+	 */
+	for (i = 0; i < UAUDIO_NCHANBUFS / 2; i++) {
 		uaudio_chan_rtransfer(ch);
 	}
 
+	mutex_enter(&sc->sc_lock);
 	mutex_enter(&sc->sc_intr_lock);
 
 	return 0;
@@ -2650,8 +2651,10 @@ uaudio_trigger_output(void *addr, void *start, void *end, int blksize,
 		    ch->fraction);
 
 	mutex_exit(&sc->sc_intr_lock);
+	mutex_exit(&sc->sc_lock);
 	err = uaudio_chan_open(sc, ch);
 	if (err) {
+		mutex_enter(&sc->sc_lock);
 		mutex_enter(&sc->sc_intr_lock);
 		return EIO;
 	}
@@ -2659,6 +2662,7 @@ uaudio_trigger_output(void *addr, void *start, void *end, int blksize,
 	err = uaudio_chan_alloc_buffers(sc, ch);
 	if (err) {
 		uaudio_chan_close(sc, ch);
+		mutex_enter(&sc->sc_lock);
 		mutex_enter(&sc->sc_intr_lock);
 		return EIO;
 	}
@@ -2666,9 +2670,9 @@ uaudio_trigger_output(void *addr, void *start, void *end, int blksize,
 	ch->intr = intr;
 	ch->arg = arg;
 
-	/* XXX -1 shouldn't be needed */
-	for (i = 0; i < UAUDIO_NCHANBUFS - 1; i++)
+	for (i = 0; i < UAUDIO_NCHANBUFS; i++)
 		uaudio_chan_ptransfer(ch);
+	mutex_enter(&sc->sc_lock);
 	mutex_enter(&sc->sc_intr_lock);
 
 	return 0;
@@ -2828,7 +2832,7 @@ uaudio_chan_ptransfer(struct chan *ch)
 	 * Transfer data from upper layer buffer to channel buffer, taking
 	 * care of wrapping the upper layer buffer.
 	 */
-	n = min(total, ch->end - ch->cur);
+	n = uimin(total, ch->end - ch->cur);
 	memcpy(cb->buffer, ch->cur, n);
 	ch->cur += n;
 	if (ch->cur >= ch->end)
@@ -2880,8 +2884,8 @@ uaudio_chan_pintr(struct usbd_xfer *xfer, void *priv,
 	}
 #endif
 
-	ch->transferred += cb->size;
 	mutex_enter(&ch->sc->sc_intr_lock);
+	ch->transferred += cb->size;
 	/* Call back to upper layer */
 	while (ch->transferred >= ch->blksize) {
 		ch->transferred -= ch->blksize;
@@ -2969,7 +2973,7 @@ uaudio_chan_rintr(struct usbd_xfer *xfer, void *priv,
 	 */
 	for (i = 0; i < UAUDIO_NFRAMES; i++) {
 		frsize = cb->sizes[i];
-		n = min(frsize, ch->end - ch->cur);
+		n = uimin(frsize, ch->end - ch->cur);
 		memcpy(ch->cur, cb->buffer + cb->offsets[i], n);
 		ch->cur += n;
 		if (ch->cur >= ch->end)
@@ -2982,8 +2986,8 @@ uaudio_chan_rintr(struct usbd_xfer *xfer, void *priv,
 	}
 
 	/* Call back to upper layer */
-	ch->transferred += count;
 	mutex_enter(&ch->sc->sc_intr_lock);
+	ch->transferred += count;
 	while (ch->transferred >= ch->blksize) {
 		ch->transferred -= ch->blksize;
 		DPRINTFN(5, "call %p(%p)\n", ch->intr, ch->arg);

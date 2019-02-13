@@ -1,4 +1,4 @@
-/*	$NetBSD: uvm_km.c,v 1.141 2016/07/27 16:45:00 maxv Exp $	*/
+/*	$NetBSD: uvm_km.c,v 1.144 2017/10/28 00:37:13 pgoyette Exp $	*/
 
 /*
  * Copyright (c) 1997 Charles D. Cranor and Washington University.
@@ -152,7 +152,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uvm_km.c,v 1.141 2016/07/27 16:45:00 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uvm_km.c,v 1.144 2017/10/28 00:37:13 pgoyette Exp $");
 
 #include "opt_uvmhist.h"
 
@@ -259,14 +259,13 @@ uvm_km_bootstrap(vaddr_t start, vaddr_t end)
 	int error;
 
 	UVMHIST_FUNC(__func__); UVMHIST_CALLED(maphist);
-	UVMHIST_LOG(maphist, "start=%"PRIxVADDR" end=%#"PRIxVADDR,
-	    start, end, 0,0);
+	UVMHIST_LOG(maphist, "start=%#jx end=%#jx", start, end, 0,0);
 
 	kmeminit_nkmempages();
 	kmemsize = (vsize_t)nkmempages * PAGE_SIZE;
 	kmem_arena_small = kmemsize < 64 * 1024 * 1024;
 
-	UVMHIST_LOG(maphist, "kmemsize=%#"PRIxVSIZE, kmemsize, 0,0,0);
+	UVMHIST_LOG(maphist, "kmemsize=%#jx", kmemsize, 0,0,0);
 
 	/*
 	 * next, init kernel memory objects.
@@ -346,8 +345,8 @@ uvm_km_bootstrap(vaddr_t start, vaddr_t end)
 
 	vmem_subsystem_init(kmem_arena);
 
-	UVMHIST_LOG(maphist, "kmem vmem created (base=%#"PRIxVADDR
-	    ", size=%#"PRIxVSIZE, kmembase, kmemsize, 0,0);
+	UVMHIST_LOG(maphist, "kmem vmem created (base=%#jx, size=%#jx",
+	    kmembase, kmemsize, 0,0);
 
 	kmem_va_arena = vmem_init(&kmem_va_arena_store, "kva",
 	    0, 0, PAGE_SIZE, vmem_alloc, vmem_free, kmem_arena,
@@ -414,8 +413,6 @@ uvm_km_suballoc(struct vm_map *map, vaddr_t *vmin /* IN/OUT */,
 	pmap_reference(vm_map_pmap(map));
 	if (submap == NULL) {
 		submap = kmem_alloc(sizeof(*submap), KM_SLEEP);
-		if (submap == NULL)
-			panic("uvm_km_suballoc: unable to create submap");
 	}
 	uvm_map_setup(submap, *vmin, *vmax, flags);
 	submap->pmap = vm_map_pmap(map);
@@ -610,8 +607,8 @@ uvm_km_alloc(struct vm_map *map, vsize_t size, vsize_t align, uvm_flag_t flags)
 	kva = vm_map_min(map);	/* hint */
 	size = round_page(size);
 	obj = (flags & UVM_KMF_PAGEABLE) ? uvm_kernel_object : NULL;
-	UVMHIST_LOG(maphist,"  (map=0x%x, obj=0x%x, size=0x%x, flags=%d)",
-		    map, obj, size, flags);
+	UVMHIST_LOG(maphist,"  (map=0x%#jx, obj=0x%#jx, size=0x%jx, flags=%jd)",
+	    (uintptr_t)map, (uintptr_t)obj, size, flags);
 
 	/*
 	 * allocate some virtual space
@@ -632,7 +629,7 @@ uvm_km_alloc(struct vm_map *map, vsize_t size, vsize_t align, uvm_flag_t flags)
 	 */
 
 	if (flags & (UVM_KMF_VAONLY | UVM_KMF_PAGEABLE)) {
-		UVMHIST_LOG(maphist,"<- done valloc (kva=0x%x)", kva,0,0,0);
+		UVMHIST_LOG(maphist,"<- done valloc (kva=0x%jx)", kva,0,0,0);
 		return(kva);
 	}
 
@@ -641,7 +638,7 @@ uvm_km_alloc(struct vm_map *map, vsize_t size, vsize_t align, uvm_flag_t flags)
 	 */
 
 	offset = kva - vm_map_min(kernel_map);
-	UVMHIST_LOG(maphist, "  kva=0x%x, offset=0x%x", kva, offset,0,0);
+	UVMHIST_LOG(maphist, "  kva=0x%jx, offset=0x%jx", kva, offset,0,0);
 
 	/*
 	 * now allocate and map in the memory... note that we are the only ones
@@ -704,7 +701,7 @@ uvm_km_alloc(struct vm_map *map, vsize_t size, vsize_t align, uvm_flag_t flags)
 
 	pmap_update(pmap_kernel());
 
-	UVMHIST_LOG(maphist,"<- done (kva=0x%x)", kva,0,0,0);
+	UVMHIST_LOG(maphist,"<- done (kva=0x%jx)", kva,0,0,0);
 	return(kva);
 }
 
@@ -816,9 +813,7 @@ again:
 	loopsize = size;
 
 	while (loopsize) {
-#ifdef DIAGNOSTIC
-		paddr_t pa;
-#endif
+		paddr_t pa __diagused;
 		KASSERTMSG(!pmap_extract(pmap_kernel(), loopva, &pa),
 		    "loopva=%#"PRIxVADDR" loopsize=%#"PRIxVSIZE
 		    " pa=%#"PRIxPADDR" vmem=%p",

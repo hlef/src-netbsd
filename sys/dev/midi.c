@@ -1,4 +1,4 @@
-/*	$NetBSD: midi.c,v 1.85 2016/07/14 10:19:05 msaitoh Exp $	*/
+/*	$NetBSD: midi.c,v 1.88 2017/10/28 03:47:24 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1998, 2008 The NetBSD Foundation, Inc.
@@ -31,10 +31,12 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: midi.c,v 1.85 2016/07/14 10:19:05 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: midi.c,v 1.88 2017/10/28 03:47:24 riastradh Exp $");
 
+#ifdef _KERNEL_OPT
 #include "midi.h"
 #include "sequencer.h"
+#endif
 
 #include <sys/param.h>
 #include <sys/ioctl.h>
@@ -53,10 +55,13 @@ __KERNEL_RCSID(0, "$NetBSD: midi.c,v 1.85 2016/07/14 10:19:05 msaitoh Exp $");
 #include <sys/midiio.h>
 #include <sys/device.h>
 #include <sys/intr.h>
+#include <sys/module.h>
 
 #include <dev/audio_if.h>
 #include <dev/midi_if.h>
 #include <dev/midivar.h>
+
+#include "ioconf.h"
 
 #if NMIDI > 0
 
@@ -128,8 +133,6 @@ CFATTACH_DECL_NEW(midi, sizeof(struct midi_softc),
 
 #define MIDI_XMT_ASENSE_PERIOD mstohz(275)
 #define MIDI_RCV_ASENSE_PERIOD mstohz(300)
-
-extern struct cfdriver midi_cd;
 
 static int
 midiprobe(device_t parent, cfdata_t match, void *aux)
@@ -1760,8 +1763,12 @@ filt_midiread(struct knote *kn, long hint)
 	return (kn->kn_data > 0);
 }
 
-static const struct filterops midiread_filtops =
-	{ 1, NULL, filt_midirdetach, filt_midiread };
+static const struct filterops midiread_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_midirdetach,
+	.f_event = filt_midiread,
+};
 
 static void
 filt_midiwdetach(struct knote *kn)
@@ -1804,8 +1811,12 @@ filt_midiwrite(struct knote *kn, long hint)
 	return (kn->kn_data > 0);
 }
 
-static const struct filterops midiwrite_filtops =
-	{ 1, NULL, filt_midiwdetach, filt_midiwrite };
+static const struct filterops midiwrite_filtops = {
+	.f_isfd = 1,
+	.f_attach = NULL,
+	.f_detach = filt_midiwdetach,
+	.f_event = filt_midiwrite,
+};
 
 int
 midikqfilter(dev_t dev, struct knote *kn)
@@ -1887,3 +1898,47 @@ midi_attach_mi(const struct midi_hw_if *mhwp, void *hdlp, device_t dev)
 }
 
 #endif /* NMIDI > 0 || NMIDIBUS > 0 */
+
+#ifdef _MODULE
+#include "ioconf.c"
+
+devmajor_t midi_bmajor = -1, midi_cmajor = -1;
+#endif
+
+MODULE(MODULE_CLASS_DRIVER, midi, "audio");
+
+static int
+midi_modcmd(modcmd_t cmd, void *arg)
+{
+	int error = 0;
+
+#ifdef _MODULE
+	switch (cmd) {
+	case MODULE_CMD_INIT:
+		error = devsw_attach(midi_cd.cd_name, NULL, &midi_bmajor,
+		    &midi_cdevsw, &midi_cmajor);
+		if (error)
+			break;
+
+		error = config_init_component(cfdriver_ioconf_midi,
+		    cfattach_ioconf_midi, cfdata_ioconf_midi);
+		if (error) {
+			devsw_detach(NULL, &midi_cdevsw);
+		}
+		break;
+	case MODULE_CMD_FINI:
+		devsw_detach(NULL, &midi_cdevsw);
+		error = config_fini_component(cfdriver_ioconf_midi,
+		   cfattach_ioconf_midi, cfdata_ioconf_midi);
+		if (error)
+			devsw_attach(midi_cd.cd_name, NULL, &midi_bmajor,
+			    &midi_cdevsw, &midi_cmajor);
+		break;
+	default:
+		error = ENOTTY;
+		break;
+	}
+#endif
+
+	return error;
+}

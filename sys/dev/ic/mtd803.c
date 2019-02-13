@@ -1,4 +1,4 @@
-/* $NetBSD: mtd803.c,v 1.31 2016/06/10 13:27:13 ozaki-r Exp $ */
+/* $NetBSD: mtd803.c,v 1.36 2018/09/03 16:29:31 riastradh Exp $ */
 
 /*-
  *
@@ -44,7 +44,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: mtd803.c,v 1.31 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: mtd803.c,v 1.36 2018/09/03 16:29:31 riastradh Exp $");
 
 
 #include <sys/param.h>
@@ -58,6 +58,7 @@ __KERNEL_RCSID(0, "$NetBSD: mtd803.c,v 1.31 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <net/if.h>
 #include <net/if_ether.h>
 #include <net/if_media.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -66,9 +67,6 @@ __KERNEL_RCSID(0, "$NetBSD: mtd803.c,v 1.31 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <netinet/in_var.h>
 #include <netinet/ip.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 
@@ -432,19 +430,19 @@ mtd_put(struct mtd_softc *sc, int index, struct mbuf *m)
 	for (tlen = 0; m != NULL; m = n) {
 		len = m->m_len;
 		if (len == 0) {
-			MFREE(m, n);
+			n = m_free(m);
 			continue;
 		} else if (tlen > MTD_TXBUF_SIZE) {
 			/* XXX FIXME: No idea what to do here. */
 			aprint_error_dev(sc->dev, "packet too large! Size = %i\n",
 				tlen);
-			MFREE(m, n);
+			n = m_free(m);
 			continue;
 		}
 		memcpy(buf, mtod(m, void *), len);
 		buf += len;
 		tlen += len;
-		MFREE(m, n);
+		n = m_free(m);
 	}
 	sc->desc[MTD_NUM_RXD + index].conf = MTD_TXD_CONF_PAD | MTD_TXD_CONF_CRC
 		| MTD_TXD_CONF_IRQC
@@ -472,7 +470,7 @@ mtd_start(struct ifnet *ifp)
 		if (m == NULL)
 			break;
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		/* Copy mbuf chain into tx buffer */
 		(void)mtd_put(sc, sc->cur_tx, m);
@@ -604,7 +602,7 @@ mtd_get(struct mtd_softc *sc, int index, int totlen)
 			m->m_data = newdata;
 		}
 
-		m->m_len = len = min(totlen, len);
+		m->m_len = len = uimin(totlen, len);
 		memcpy(mtod(m, void *), buf, len);
 		buf += len;
 
@@ -677,9 +675,6 @@ mtd_rxirq(struct mtd_softc *sc)
 			continue;
 		}
 
-		++ifp->if_ipackets;
-
-		bpf_mtap(ifp, m);
 		/* Pass the packet up */
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 	}

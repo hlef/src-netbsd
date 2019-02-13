@@ -1,4 +1,4 @@
-/*	$NetBSD: pte.h,v 1.23 2016/07/11 16:15:35 matt Exp $	*/
+/*	$NetBSD: pte.h,v 1.25 2017/06/24 07:00:37 skrll Exp $	*/
 
 /*-
  * Copyright (c) 1997 The NetBSD Foundation, Inc.
@@ -315,7 +315,7 @@ static inline bool
 pte_cached_p(pt_entry_t pte)
 {
 	if (MIPS_HAS_R4K_MMU) {
-		return MIPS3_PG_TO_CCA(pte) == mips_options.mips3_pg_cached;
+		return MIPS3_PG_TO_CCA(pte) == MIPS3_PG_TO_CCA(mips_options.mips3_pg_cached);
 	} else {
 		return (pte & MIPS1_PG_N) == 0;
 	}
@@ -359,6 +359,12 @@ pte_cached_change(pt_entry_t pte, bool cached)
 		pte |= (cached ? MIPS3_PG_CACHED : MIPS3_PG_UNCACHED);
 	}
 	return pte;
+}
+
+static inline void
+pte_set(pt_entry_t *ptep, pt_entry_t pte)
+{
+	*ptep = pte;
 }
 
 #ifdef __PMAP_PRIVATE

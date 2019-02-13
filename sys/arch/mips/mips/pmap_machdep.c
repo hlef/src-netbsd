@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap_machdep.c,v 1.1 2016/07/11 16:15:36 matt Exp $	*/
+/*	$NetBSD: pmap_machdep.c,v 1.23 2018/09/03 16:29:26 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1998, 2001 The NetBSD Foundation, Inc.
@@ -67,7 +67,7 @@
 
 #include <sys/cdefs.h>
 
-__KERNEL_RCSID(0, "$NetBSD: pmap_machdep.c,v 1.1 2016/07/11 16:15:36 matt Exp $");
+__KERNEL_RCSID(0, "$NetBSD: pmap_machdep.c,v 1.23 2018/09/03 16:29:26 riastradh Exp $");
 
 /*
  *	Manages physical address maps.
@@ -111,10 +111,10 @@ __KERNEL_RCSID(0, "$NetBSD: pmap_machdep.c,v 1.1 2016/07/11 16:15:36 matt Exp $"
  * These warnings probably applies to other files under sys/arch/mips.
  */
 
-#include "opt_sysv.h"
 #include "opt_cputype.h"
-#include "opt_multiprocessor.h"
 #include "opt_mips_cache.h"
+#include "opt_multiprocessor.h"
+#include "opt_sysv.h"
 
 #define __MUTEX_PRIVATE
 #define __PMAP_PRIVATE
@@ -133,6 +133,7 @@ __KERNEL_RCSID(0, "$NetBSD: pmap_machdep.c,v 1.1 2016/07/11 16:15:36 matt Exp $"
 #endif
 
 #include <uvm/uvm.h>
+#include <uvm/uvm_physseg.h>
 
 #include <mips/cache.h>
 #include <mips/cpuregs.h>
@@ -163,7 +164,11 @@ CTASSERT(VM_MIN_KERNEL_ADDRESS % NBSEG == 0);
 PMAP_COUNTER(zeroed_pages, "pages zeroed");
 PMAP_COUNTER(copied_pages, "pages copied");
 extern struct evcnt pmap_evcnt_page_cache_evictions;
- 
+
+u_int pmap_page_cache_alias_mask;
+
+#define pmap_md_cache_indexof(x)	(((vaddr_t)(x)) & pmap_page_cache_alias_mask)
+
 static register_t
 pmap_md_map_ephemeral_page(struct vm_page *pg, bool locked_p, int prot,
     pt_entry_t *old_pte_p)
@@ -177,11 +182,10 @@ pmap_md_map_ephemeral_page(struct vm_page *pg, bool locked_p, int prot,
 	UVMHIST_LOG(pmaphist, "(pg=%p, prot=%d, ptep=%p)",
 	    pg, prot, old_pte_p, 0);
 
-	KASSERT(locked_p || !VM_PAGEMD_PVLIST_LOCKED_P(mdpg));
 	KASSERT(!locked_p || VM_PAGEMD_PVLIST_LOCKED_P(mdpg));
 
 	if (!MIPS_CACHE_VIRTUAL_ALIAS || !mips_cache_badalias(pv->pv_va, pa)) {
-#ifndef __mips_o32
+#ifdef _LP64
 		va = MIPS_PHYS_TO_XKPHYS_CACHED(pa);
 #else
 		if (pa < MIPS_PHYS_MASK) {
@@ -196,15 +200,24 @@ pmap_md_map_ephemeral_page(struct vm_page *pg, bool locked_p, int prot,
 		 */
 		kpreempt_disable(); // paired with the one in unmap
 		struct cpu_info * const ci = curcpu();
-		KASSERT(ci->ci_pmap_dstbase != 0);
+		if (MIPS_CACHE_VIRTUAL_ALIAS) {
+			KASSERT(ci->ci_pmap_dstbase != 0);
+			KASSERT(ci->ci_pmap_srcbase != 0);
 
-		va = (prot & VM_PROT_WRITE
+			const u_int __diagused mask = pmap_page_cache_alias_mask;
+			KASSERTMSG((ci->ci_pmap_dstbase & mask) == 0,
+			    "%#"PRIxVADDR, ci->ci_pmap_dstbase);
+			KASSERTMSG((ci->ci_pmap_srcbase & mask) == 0,
+			    "%#"PRIxVADDR, ci->ci_pmap_srcbase);
+		}
+		vaddr_t nva = (prot & VM_PROT_WRITE
 			? ci->ci_pmap_dstbase
 			: ci->ci_pmap_srcbase)
-		    + mips_cache_indexof(MIPS_CACHE_VIRTUAL_ALIAS
+		    + pmap_md_cache_indexof(MIPS_CACHE_VIRTUAL_ALIAS
 			? pv->pv_va
 			: pa);
 
+		va = (intptr_t)nva;
 		/*
 		 * Now to make and write the new PTE to map the PA.
 		 */
@@ -229,8 +242,8 @@ pmap_md_map_ephemeral_page(struct vm_page *pg, bool locked_p, int prot,
 			(void)VM_PAGEMD_PVLIST_READLOCK(mdpg);
 		if (VM_PAGEMD_CACHED_P(mdpg)
 		    && mips_cache_badalias(pv->pv_va, va)) {
-			mips_dcache_wbinv_range_index(trunc_page(pv->pv_va),
-			    PAGE_SIZE);
+			register_t ova = (intptr_t)trunc_page(pv->pv_va);
+			mips_dcache_wbinv_range_index(ova, PAGE_SIZE);
 			/*
 			 * If there is no active mapping, remember this new one.
 			 */
@@ -257,7 +270,6 @@ pmap_md_unmap_ephemeral_page(struct vm_page *pg, bool locked_p, register_t va,
 	UVMHIST_LOG(pmaphist, "(pg=%p, va=%#lx, pte=%#"PRIxPTE")",
 	    pg, va, pte_value(old_pte), 0);
 
-	KASSERT(locked_p || !VM_PAGEMD_PVLIST_LOCKED_P(mdpg));
 	KASSERT(!locked_p || VM_PAGEMD_PVLIST_LOCKED_P(mdpg));
 
 	if (MIPS_CACHE_VIRTUAL_ALIAS) {
@@ -295,6 +307,7 @@ pmap_md_unmap_ephemeral_page(struct vm_page *pg, bool locked_p, register_t va,
 static void
 pmap_md_vca_page_wbinv(struct vm_page *pg, bool locked_p)
 {
+	UVMHIST_FUNC(__func__); UVMHIST_CALLED(pmaphist);
 	pt_entry_t pte;
 
 	const register_t va = pmap_md_map_ephemeral_page(pg, locked_p,
@@ -306,12 +319,12 @@ pmap_md_vca_page_wbinv(struct vm_page *pg, bool locked_p)
 }
 
 bool
-pmap_md_ok_to_steal_p(const struct vm_physseg *seg, size_t npgs)
+pmap_md_ok_to_steal_p(const uvm_physseg_t bank, size_t npgs)
 {
 #ifndef _LP64
-	if (seg->avail_start + npgs >= atop(MIPS_PHYS_MASK + 1)) {
-		aprint_debug("%s: seg %zu: not enough in KSEG0 for %zu pages\n",
-		    __func__, seg - VM_PHYSMEM_PTR(0), npgs);
+	if (uvm_physseg_get_avail_start(bank) + npgs >= atop(MIPS_PHYS_MASK + 1)) {
+		aprint_debug("%s: seg not enough in KSEG0 for %zu pages\n",
+		    __func__, npgs);
 		return false;
 	}
 #endif
@@ -329,8 +342,12 @@ pmap_bootstrap(void)
 	size_t sysmap_size;
 	pt_entry_t *sysmap;
 
-	if (MIPS_CACHE_VIRTUAL_ALIAS && uvmexp.ncolors)
+	if (MIPS_CACHE_VIRTUAL_ALIAS && uvmexp.ncolors) {
 		pmap_page_colormask = (uvmexp.ncolors - 1) << PAGE_SHIFT;
+		pmap_page_cache_alias_mask = uimax(
+		    mips_cache_info.mci_cache_alias_mask,
+		    mips_cache_info.mci_icache_alias_mask);
+	}
 
 #ifdef MULTIPROCESSOR
 	pmap_t pm = pmap_kernel();
@@ -393,8 +410,8 @@ pmap_bootstrap(void)
 	 * for us.  Must do this before uvm_pageboot_alloc()
 	 * can be called.
 	 */
-	pmap_limits.avail_start = ptoa(VM_PHYSMEM_PTR(0)->start);
-	pmap_limits.avail_end = ptoa(VM_PHYSMEM_PTR(vm_nphysseg - 1)->end);
+	pmap_limits.avail_start = ptoa(uvm_physseg_get_start(uvm_physseg_get_first()));
+	pmap_limits.avail_end = ptoa(uvm_physseg_get_end(uvm_physseg_get_last()));
 	pmap_limits.virtual_end = pmap_limits.virtual_start + (vaddr_t)sysmap_size * NBPG;
 
 #ifndef _LP64
@@ -419,7 +436,7 @@ pmap_bootstrap(void)
 
 	vaddr_t va = VM_MIN_KERNEL_ADDRESS;
 #ifdef _LP64
-	/* 
+	/*
 	 * Do we need more than one XSEG's worth virtual address space?
 	 * If so, we have to allocate the additional pmap_segtab_t's for them
 	 * and insert them into the kernel's top level segtab.
@@ -508,16 +525,23 @@ pmap_md_alloc_ephemeral_address_space(struct cpu_info *ci)
 #endif
 	    || MIPS_CACHE_VIRTUAL_ALIAS
 	    || MIPS_ICACHE_VIRTUAL_ALIAS) {
-		vsize_t size = uvmexp.ncolors * PAGE_SIZE;
-		if (MIPS_ICACHE_VIRTUAL_ALIAS
-		    && mci->mci_picache_way_size > size)
-			size = mci->mci_picache_way_size;
-		ci->ci_pmap_dstbase = uvm_km_alloc(kernel_map, size, 0,
-		    UVM_KMF_COLORMATCH | UVM_KMF_VAONLY);
+		vsize_t size = uimax(mci->mci_pdcache_way_size, mci->mci_picache_way_size);
+		const u_int __diagused mask = pmap_page_cache_alias_mask;
+
+		ci->ci_pmap_dstbase = uvm_km_alloc(kernel_map, size, size,
+		    UVM_KMF_VAONLY);
+
 		KASSERT(ci->ci_pmap_dstbase);
-		ci->ci_pmap_srcbase = uvm_km_alloc(kernel_map, size, 0,
-		    UVM_KMF_COLORMATCH | UVM_KMF_VAONLY);
+		KASSERT(!pmap_md_direct_mapped_vaddr_p(ci->ci_pmap_dstbase));
+		KASSERTMSG((ci->ci_pmap_dstbase & mask) == 0, "%#"PRIxVADDR,
+		    ci->ci_pmap_dstbase);
+
+		ci->ci_pmap_srcbase = uvm_km_alloc(kernel_map, size, size,
+		    UVM_KMF_VAONLY);
 		KASSERT(ci->ci_pmap_srcbase);
+		KASSERT(!pmap_md_direct_mapped_vaddr_p(ci->ci_pmap_srcbase));
+		KASSERTMSG((ci->ci_pmap_srcbase & mask) == 0, "%#"PRIxVADDR,
+		    ci->ci_pmap_srcbase);
 	}
 }
 
@@ -563,9 +587,9 @@ pmap_procwr(struct proc *p, vaddr_t va, size_t len)
 		if (p == curlwp->l_proc
 		    && mips_cache_info.mci_pdcache_way_mask < PAGE_SIZE)
 		    /* XXX check icache mask too? */
-			mips_icache_sync_range(va, len);
+			mips_icache_sync_range((intptr_t)va, len);
 		else
-			mips_icache_sync_range_index(va, len);
+			mips_icache_sync_range_index((intptr_t)va, len);
 	} else {
 		pmap_t pmap = p->p_vmspace->vm_map.pmap;
 		kpreempt_disable();
@@ -594,6 +618,8 @@ pmap_zero_page(paddr_t dst_pa)
 	PMAP_COUNT(zeroed_pages);
 
 	struct vm_page * const dst_pg = PHYS_TO_VM_PAGE(dst_pa);
+
+	KASSERT(!VM_PAGEMD_EXECPAGE_P(VM_PAGE_TO_MD(dst_pg)));
 
 	const register_t dst_va = pmap_md_map_ephemeral_page(dst_pg, false,
 	    VM_PROT_READ|VM_PROT_WRITE, &dst_pte);
@@ -624,6 +650,7 @@ pmap_copy_page(paddr_t src_pa, paddr_t dst_pa)
 	    VM_PROT_READ, &src_pte);
 
 	KASSERT(VM_PAGE_TO_MD(dst_pg)->mdpg_first.pv_pmap == NULL);
+	KASSERT(!VM_PAGEMD_EXECPAGE_P(VM_PAGE_TO_MD(dst_pg)));
 	const register_t dst_va = pmap_md_map_ephemeral_page(dst_pg, false,
 	    VM_PROT_READ|VM_PROT_WRITE, &dst_pte);
 
@@ -638,13 +665,12 @@ pmap_copy_page(paddr_t src_pa, paddr_t dst_pa)
 void
 pmap_md_page_syncicache(struct vm_page *pg, const kcpuset_t *onproc)
 {
+	UVMHIST_FUNC(__func__); UVMHIST_CALLED(pmaphist);
 	struct mips_options * const opts = &mips_options;
 	if (opts->mips_cpu_flags & CPU_MIPS_I_D_CACHE_COHERENT)
 		return;
 
 	struct vm_page_md * const mdpg = VM_PAGE_TO_MD(pg);
-	pv_entry_t pv = &mdpg->mdpg_first;
-	const vaddr_t va = trunc_page(pv->pv_va);
 
 	/*
 	 * If onproc is empty, we could do a
@@ -655,13 +681,24 @@ pmap_md_page_syncicache(struct vm_page *pg, const kcpuset_t *onproc)
 	 */
 	if (MIPS_HAS_R4K_MMU) {
 		if (VM_PAGEMD_CACHED_P(mdpg)) {
-			mips_icache_sync_range_index( va, PAGE_SIZE);
+			/* This was probably mapped cached by UBC so flush it */
+			pt_entry_t pte;
+			const register_t tva = pmap_md_map_ephemeral_page(pg, false,
+			    VM_PROT_READ, &pte);
+
+			UVMHIST_LOG(pmaphist, "  va %#"PRIxVADDR, tva, 0, 0, 0);
+			mips_dcache_wbinv_range(tva, PAGE_SIZE);
+			mips_icache_sync_range(tva, PAGE_SIZE);
+
+			pmap_md_unmap_ephemeral_page(pg, false, tva, pte);
 		}
 	} else {
 		mips_icache_sync_range(MIPS_PHYS_TO_KSEG0(VM_PAGE_TO_PHYS(pg)),
 		    PAGE_SIZE);
 	}
 #ifdef MULTIPROCESSOR
+	pv_entry_t pv = &mdpg->mdpg_first;
+	const register_t va = (intptr_t)trunc_page(pv->pv_va);
 	pmap_tlb_syncicache(va, onproc);
 #endif
 }
@@ -694,7 +731,10 @@ pmap_md_map_poolpage(paddr_t pa, size_t len)
 		pv_entry_t pv = &mdpg->mdpg_first;
 		vaddr_t last_va = trunc_page(pv->pv_va);
 
+		KASSERT(len == PAGE_SIZE || last_va == pa);
 		KASSERT(pv->pv_pmap == NULL);
+		KASSERT(pv->pv_next == NULL);
+		KASSERT(!VM_PAGEMD_EXECPAGE_P(mdpg));
 
 		/*
 		 * If this page was last mapped with an address that
@@ -718,22 +758,20 @@ pmap_md_unmap_poolpage(vaddr_t va, size_t len)
 
 	const paddr_t pa = pmap_md_direct_mapped_vaddr_to_paddr(va);
 	struct vm_page * const pg = PHYS_TO_VM_PAGE(pa);
-	struct vm_page_md * const mdpg = VM_PAGE_TO_MD(pg);
 
 	KASSERT(pg);
+	struct vm_page_md * const mdpg = VM_PAGE_TO_MD(pg);
 
 	KASSERT(VM_PAGEMD_CACHED_P(mdpg));
-	mdpg->mdpg_first.pv_va = va;
-#if 0
-	if (MIPS_CACHE_VIRTUAL_ALIAS) {
-		/*
-		 * We've unmapped a poolpage.  Its contents are irrelevant.
-		 */
-		KASSERT((va & PAGE_MASK) == 0);
-		mips_dcache_inv_range(va, PAGE_SIZE);
-		mdpg->mdpg_first.pv_va = va;
-	}
-#endif
+	KASSERT(!VM_PAGEMD_EXECPAGE_P(mdpg));
+
+	pv_entry_t pv = &mdpg->mdpg_first;
+
+	/* Note last mapped address for future color check */
+	pv->pv_va = va;
+
+	KASSERT(pv->pv_pmap == NULL);
+	KASSERT(pv->pv_next == NULL);
 
 	return pa;
 }
@@ -776,12 +814,14 @@ pmap_md_io_vaddr_p(vaddr_t va)
 void
 pmap_md_icache_sync_range_index(vaddr_t va, vsize_t len)
 {
+	UVMHIST_FUNC(__func__); UVMHIST_CALLED(pmaphist);
 	mips_icache_sync_range_index(va, len);
 }
 
 void
 pmap_md_icache_sync_all(void)
 {
+	UVMHIST_FUNC(__func__); UVMHIST_CALLED(pmaphist);
 	mips_icache_sync_all();
 }
 
@@ -829,13 +869,13 @@ pmap_md_tlb_check_entry(void *ctx, vaddr_t va, tlb_asid_t asid, pt_entry_t pte)
 	} else {
 		xpte &= ~(MIPS1_PG_WIRED|MIPS1_PG_RO);
 	}
-    
+
         KASSERTMSG(pte == xpte,
             "pmap=%p va=%#"PRIxVADDR" asid=%u: TLB pte (%#"PRIxPTE
 	    ") != real pte (%#"PRIxPTE"/%#"PRIxPTE") @ %p",
             pm, va, asid, pte_value(pte), pte_value(xpte), pte_value(opte),
 	    ptep);
-  
+
         return true;
 }
 
@@ -876,6 +916,7 @@ tlb_walk(void *ctx, tlb_walkfunc_t func)
 bool
 pmap_md_vca_add(struct vm_page *pg, vaddr_t va, pt_entry_t *ptep)
 {
+	UVMHIST_FUNC(__func__); UVMHIST_CALLED(pmaphist);
 	struct vm_page_md * const mdpg = VM_PAGE_TO_MD(pg);
 	if (!MIPS_HAS_R4K_MMU || !MIPS_CACHE_VIRTUAL_ALIAS)
 		return false;
@@ -901,17 +942,33 @@ pmap_md_vca_add(struct vm_page *pg, vaddr_t va, pt_entry_t *ptep)
 	if (__predict_true(!mips_cache_badalias(pv->pv_va, va))) {
 		return false;
 	}
-	for (pv_entry_t npv = pv; npv; npv = npv->pv_next) {
-		if (npv->pv_va & PV_KENTER)
+	KASSERT(pv->pv_pmap != NULL);
+	bool ret = false;
+	for (pv_entry_t npv = pv; npv && npv->pv_pmap;) {
+		if (npv->pv_va & PV_KENTER) {
+			npv = npv->pv_next;
 			continue;
+		}
+		ret = true;
 		vaddr_t nva = trunc_page(npv->pv_va);
 		pmap_t npm = npv->pv_pmap;
 		VM_PAGEMD_PVLIST_UNLOCK(mdpg);
 		pmap_remove(npm, nva, nva + PAGE_SIZE);
-		pmap_update(npm);
+
+		/*
+		 * pmap_update is not required here as we're the pmap
+		 * and we know that the invalidation happened or the
+		 * asid has been released (and activation is deferred)
+		 *
+		 * A deferred activation should NOT occur here.
+		 */
 		(void)VM_PAGEMD_PVLIST_LOCK(mdpg);
+
+		npv = pv;
 	}
-	return true;
+	KASSERT(ret == true);
+
+	return ret;
 #else	/* !PMAP_NO_PV_UNCACHED */
 	if (VM_PAGEMD_CACHED_P(mdpg)) {
 		/*
@@ -942,9 +999,11 @@ pmap_md_vca_add(struct vm_page *pg, vaddr_t va, pt_entry_t *ptep)
 void
 pmap_md_vca_clean(struct vm_page *pg, int op)
 {
+	UVMHIST_FUNC(__func__); UVMHIST_CALLED(pmaphist);
 	if (!MIPS_HAS_R4K_MMU || !MIPS_CACHE_VIRTUAL_ALIAS)
 		return;
 
+	UVMHIST_LOG(pmaphist, "(pg=%p, op=%d)", pg, op, 0, 0);
 	KASSERT(VM_PAGEMD_PVLIST_LOCKED_P(VM_PAGE_TO_MD(pg)));
 
 	if (op == PMAP_WB || op == PMAP_WBINV) {
@@ -1006,12 +1065,10 @@ vaddr_t
 pmap_md_pool_phystov(paddr_t pa)
 {
 #ifdef _LP64
-	if ((pa & ~MIPS_PHYS_MASK) != 0) {
-		KASSERT(mips_options.mips3_xkphys_cached);
-		return MIPS_PHYS_TO_XKPHYS_CACHED(pa);
-	}
+	KASSERT(mips_options.mips3_xkphys_cached);
+	return MIPS_PHYS_TO_XKPHYS_CACHED(pa);
 #else
 	KASSERT((pa & ~MIPS_PHYS_MASK) == 0);
-#endif
 	return MIPS_PHYS_TO_KSEG0(pa);
+#endif
 }

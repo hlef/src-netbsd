@@ -1,4 +1,4 @@
-/*	$NetBSD: pci_map.c,v 1.32 2014/12/26 05:09:03 msaitoh Exp $	*/
+/*	$NetBSD: pci_map.c,v 1.36 2018/05/19 17:21:42 jakllsch Exp $	*/
 
 /*-
  * Copyright (c) 1998, 2000 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: pci_map.c,v 1.32 2014/12/26 05:09:03 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: pci_map.c,v 1.36 2018/05/19 17:21:42 jakllsch Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -42,6 +42,8 @@ __KERNEL_RCSID(0, "$NetBSD: pci_map.c,v 1.32 2014/12/26 05:09:03 msaitoh Exp $")
 
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
+
+bool pci_mapreg_map_enable_decode = true;
 
 static int
 pci_io_find(pci_chipset_tag_t pc, pcitag_t tag, int reg, pcireg_t type,
@@ -280,34 +282,34 @@ pci_mapreg_map(const struct pci_attach_args *pa, int reg, pcireg_t type,
 
 int
 pci_mapreg_submap(const struct pci_attach_args *pa, int reg, pcireg_t type,
-    int busflags, bus_size_t maxsize, bus_size_t offset, bus_space_tag_t *tagp,
+    int busflags, bus_size_t reqsize, bus_size_t offset, bus_space_tag_t *tagp,
 	bus_space_handle_t *handlep, bus_addr_t *basep, bus_size_t *sizep)
 {
 	bus_space_tag_t tag;
 	bus_space_handle_t handle;
 	bus_addr_t base;
-	bus_size_t size;
-	int flags;
+	bus_size_t realmaxsize;
+	pcireg_t csr;
+	int flags, s;
 
 	if (PCI_MAPREG_TYPE(type) == PCI_MAPREG_TYPE_IO) {
 		if ((pa->pa_flags & PCI_FLAGS_IO_OKAY) == 0)
 			return 1;
 		if (pci_io_find(pa->pa_pc, pa->pa_tag, reg, type, &base,
-		    &size, &flags))
+		    &realmaxsize, &flags))
 			return 1;
 		tag = pa->pa_iot;
 	} else {
 		if ((pa->pa_flags & PCI_FLAGS_MEM_OKAY) == 0)
 			return 1;
 		if (pci_mem_find(pa->pa_pc, pa->pa_tag, reg, type, &base,
-		    &size, &flags))
+		    &realmaxsize, &flags))
 			return 1;
 		tag = pa->pa_memt;
 	}
 
 	if (reg == PCI_MAPREG_ROM) {
 		pcireg_t 	mask;
-		int		s;
 		/* we have to enable the ROM address decoder... */
 		s = splhigh();
 		mask = pci_conf_read(pa->pa_pc, pa->pa_tag, reg);
@@ -320,14 +322,23 @@ pci_mapreg_submap(const struct pci_attach_args *pa, int reg, pcireg_t type,
 	 * pci_mapreg_map.
 	 */
 
-	maxsize = (maxsize != 0) ? maxsize : size;
+	reqsize = (reqsize != 0) ? reqsize : realmaxsize;
 	base += offset;
 
-	if ((size < maxsize) || (size < (offset + maxsize)))
+	if (realmaxsize < (offset + reqsize))
 		return 1;
 
-	if (bus_space_map(tag, base, maxsize, busflags | flags, &handle))
+	if (bus_space_map(tag, base, reqsize, busflags | flags, &handle))
 		return 1;
+
+	if (pci_mapreg_map_enable_decode) {
+		s = splhigh();
+		csr = pci_conf_read(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG);
+		csr |= (PCI_MAPREG_TYPE(type) == PCI_MAPREG_TYPE_IO) ?
+		    PCI_COMMAND_IO_ENABLE : PCI_COMMAND_MEM_ENABLE;
+		pci_conf_write(pa->pa_pc, pa->pa_tag, PCI_COMMAND_STATUS_REG, csr);
+		splx(s);
+	}
 
 	if (tagp != NULL)
 		*tagp = tag;
@@ -336,7 +347,7 @@ pci_mapreg_submap(const struct pci_attach_args *pa, int reg, pcireg_t type,
 	if (basep != NULL)
 		*basep = base;
 	if (sizep != NULL)
-		*sizep = maxsize;
+		*sizep = reqsize;
 
 	return 0;
 }

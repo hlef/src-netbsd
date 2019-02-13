@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_veriexec.c,v 1.11 2015/08/04 12:44:04 maxv Exp $	*/
+/*	$NetBSD: kern_veriexec.c,v 1.18 2017/11/07 18:35:57 christos Exp $	*/
 
 /*-
  * Copyright (c) 2005, 2006 Elad Efrat <elad@NetBSD.org>
@@ -29,7 +29,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_veriexec.c,v 1.11 2015/08/04 12:44:04 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_veriexec.c,v 1.18 2017/11/07 18:35:57 christos Exp $");
 
 #include "opt_veriexec.h"
 
@@ -354,11 +354,6 @@ veriexec_init(void)
 	veriexec_fpops_add(a, b, c, (veriexec_fpop_init_t)d, \
 	 (veriexec_fpop_update_t)e, (veriexec_fpop_final_t)f)
 
-#ifdef VERIFIED_EXEC_FP_RMD160
-	FPOPS_ADD("RMD160", RMD160_DIGEST_LENGTH, sizeof(RMD160_CTX),
-	    RMD160Init, RMD160Update, RMD160Final);
-#endif /* VERIFIED_EXEC_FP_RMD160 */
-
 #ifdef VERIFIED_EXEC_FP_SHA256
 	FPOPS_ADD("SHA256", SHA256_DIGEST_LENGTH, sizeof(SHA256_CTX),
 	    SHA256_Init, SHA256_Update, SHA256_Final);
@@ -373,16 +368,6 @@ veriexec_init(void)
 	FPOPS_ADD("SHA512", SHA512_DIGEST_LENGTH, sizeof(SHA512_CTX),
 	    SHA512_Init, SHA512_Update, SHA512_Final);
 #endif /* VERIFIED_EXEC_FP_SHA512 */
-
-#ifdef VERIFIED_EXEC_FP_SHA1
-	FPOPS_ADD("SHA1", SHA1_DIGEST_LENGTH, sizeof(SHA1_CTX),
-	    SHA1Init, SHA1Update, SHA1Final);
-#endif /* VERIFIED_EXEC_FP_SHA1 */
-
-#ifdef VERIFIED_EXEC_FP_MD5
-	FPOPS_ADD("MD5", MD5_DIGEST_LENGTH, sizeof(MD5_CTX),
-	    MD5Init, MD5Update, MD5Final);
-#endif /* VERIFIED_EXEC_FP_MD5 */
 
 #undef FPOPS_ADD
 }
@@ -1050,9 +1035,11 @@ veriexec_file_add(struct lwp *l, prop_dictionary_t dict)
 {
 	struct veriexec_table_entry *vte;
 	struct veriexec_file_entry *vfe = NULL;
+	struct veriexec_file_entry *ovfe;
 	struct vnode *vp;
 	const char *file, *fp_type;
 	int error;
+	bool ignore_dup = false;
 
 	if (!prop_dictionary_get_cstring_nocopy(dict, "file", &file))
 		return (EINVAL);
@@ -1096,12 +1083,6 @@ veriexec_file_add(struct lwp *l, prop_dictionary_t dict)
 
 	rw_enter(&veriexec_op_lock, RW_WRITER);
 
-	if (veriexec_get(vp)) {
-		/* We already have an entry for this file. */
-		error = EEXIST;
-		goto unlock_out;
-	}
-
 	/* Continue entry initialization. */
 	if (prop_dictionary_get_uint8(dict, "entry-type", &vfe->type) == FALSE)
 		vfe->type = 0;
@@ -1123,9 +1104,8 @@ veriexec_file_add(struct lwp *l, prop_dictionary_t dict)
 
 	vfe->status = FINGERPRINT_NOTEVAL;
 	if (prop_bool_true(prop_dictionary_get(dict, "keep-filename"))) {
-		vfe->filename_len = strlen(file) + 1;
-		vfe->filename = kmem_alloc(vfe->filename_len, KM_SLEEP);
-		strlcpy(vfe->filename, file, vfe->filename_len);
+		vfe->filename = kmem_strdupsize(file, &vfe->filename_len,
+		    KM_SLEEP);
 	} else
 		vfe->filename = NULL;
 
@@ -1138,6 +1118,22 @@ veriexec_file_add(struct lwp *l, prop_dictionary_t dict)
 		if (error)
 			goto unlock_out;
 		vfe->status = status;
+	}
+
+	/*
+	 * If we already have an entry for this file, and it matches
+	 * the new entry exactly (except for the filename, which may
+	 * hard-linked!), we just ignore the new entry.  If the new
+	 * entry differs, report the error.
+	 */
+	if ((ovfe = veriexec_get(vp)) != NULL) {
+		error = EEXIST;
+		if (vfe->type == ovfe->type &&
+		    vfe->status == ovfe->status &&
+		    vfe->ops == ovfe->ops &&
+		    memcmp(vfe->fp, ovfe->fp, vfe->ops->hash_len) == 0)
+			ignore_dup = true;
+		goto unlock_out;
 	}
 
 	vte = veriexec_table_lookup(vp->v_mount);
@@ -1162,6 +1158,9 @@ veriexec_file_add(struct lwp *l, prop_dictionary_t dict)
 	vrele(vp);
 	if (error)
 		veriexec_file_free(vfe);
+
+	if (ignore_dup && error == EEXIST)
+		error = 0;
 
 	return (error);
 }
@@ -1363,20 +1362,15 @@ veriexec_file_dump(struct veriexec_file_entry *vfe, prop_array_t entries)
 int
 veriexec_dump(struct lwp *l, prop_array_t rarray)
 {
-	struct mount *mp, *nmp;
+	mount_iterator_t *iter;
+	struct mount *mp;
 
-	mutex_enter(&mountlist_lock);
-	for (mp = TAILQ_FIRST(&mountlist); mp != NULL; mp = nmp) {
-		/* If it fails, the file-system is [being] unmounted. */
-		if (vfs_busy(mp, &nmp) != 0)
-			continue;
-
+	mountlist_iterator_init(&iter);
+	while ((mp = mountlist_iterator_next(iter)) != NULL) {
 		fileassoc_table_run(mp, veriexec_hook,
 		    (fileassoc_cb_t)veriexec_file_dump, rarray);
-
-		vfs_unbusy(mp, false, &nmp);
 	}
-	mutex_exit(&mountlist_lock);
+	mountlist_iterator_destroy(iter);
 
 	return (0);
 }
@@ -1384,24 +1378,19 @@ veriexec_dump(struct lwp *l, prop_array_t rarray)
 int
 veriexec_flush(struct lwp *l)
 {
-	struct mount *mp, *nmp;
+	mount_iterator_t *iter;
+	struct mount *mp;
 	int error = 0;
 
-	mutex_enter(&mountlist_lock);
-	for (mp = TAILQ_FIRST(&mountlist); mp != NULL; mp = nmp) {
+	mountlist_iterator_init(&iter);
+	while ((mp = mountlist_iterator_next(iter)) != NULL) {
 		int lerror;
-
-		/* If it fails, the file-system is [being] unmounted. */
-		if (vfs_busy(mp, &nmp) != 0)
-			continue;
 
 		lerror = veriexec_table_delete(l, mp);
 		if (lerror && lerror != ENOENT)
 			error = lerror;
-
-		vfs_unbusy(mp, false, &nmp);
 	}
-	mutex_exit(&mountlist_lock);
+	mountlist_iterator_destroy(iter);
 
 	return (error);
 }

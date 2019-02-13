@@ -1,4 +1,4 @@
-/*	$NetBSD: m41st84.c,v 1.22 2014/11/20 16:34:26 christos Exp $	*/
+/*	$NetBSD: m41st84.c,v 1.24 2018/06/16 21:22:13 thorpej Exp $	*/
 
 /*
  * Copyright (c) 2003 Wasabi Systems, Inc.
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: m41st84.c,v 1.22 2014/11/20 16:34:26 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: m41st84.c,v 1.24 2018/06/16 21:22:13 thorpej Exp $");
 
 #include "opt_strtc.h"
 
@@ -55,6 +55,8 @@ __KERNEL_RCSID(0, "$NetBSD: m41st84.c,v 1.22 2014/11/20 16:34:26 christos Exp $"
 #include <dev/i2c/m41st84reg.h>
 #include <dev/i2c/m41st84var.h>
 
+#include "ioconf.h"
+
 struct strtc_softc {
 	device_t sc_dev;
 	i2c_tag_t sc_tag;
@@ -70,8 +72,6 @@ CFATTACH_DECL_NEW(strtc, sizeof(struct strtc_softc),
     strtc_match, strtc_attach, NULL, NULL);
 
 #ifndef STRTC_NO_USERRAM
-extern struct cfdriver strtc_cd;
-
 dev_type_open(strtc_open);
 dev_type_close(strtc_close);
 dev_type_read(strtc_read);
@@ -102,16 +102,15 @@ static int
 strtc_match(device_t parent, cfdata_t cf, void *arg)
 {
 	struct i2c_attach_args *ia = arg;
+	int match_result;
 
-	if (ia->ia_name) {
-		/* direct config - check name */
-		if (strcmp(ia->ia_name, "strtc") == 0)
-			return 1;
-	} else {
-		/* indirect config - check typical address */
-		if (ia->ia_addr == M41ST84_ADDR)
-			return 1;
-	}
+	if (iic_use_direct_match(ia, cf, NULL, &match_result))
+		return match_result;
+
+	/* indirect config - check typical address */
+	if (ia->ia_addr == M41ST84_ADDR)
+		return I2C_MATCH_ADDRESS_ONLY;
+
 	return 0;
 }
 

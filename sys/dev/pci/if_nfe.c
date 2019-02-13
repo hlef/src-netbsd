@@ -1,4 +1,4 @@
-/*	$NetBSD: if_nfe.c,v 1.61 2016/06/10 13:27:14 ozaki-r Exp $	*/
+/*	$NetBSD: if_nfe.c,v 1.65 2018/06/26 06:48:01 msaitoh Exp $	*/
 /*	$OpenBSD: if_nfe.c,v 1.77 2008/02/05 16:52:50 brad Exp $	*/
 
 /*-
@@ -21,7 +21,7 @@
 /* Driver for NVIDIA nForce MCP Fast Ethernet and Gigabit Ethernet */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_nfe.c,v 1.61 2016/06/10 13:27:14 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_nfe.c,v 1.65 2018/06/26 06:48:01 msaitoh Exp $");
 
 #include "opt_inet.h"
 #include "vlan.h"
@@ -409,6 +409,7 @@ nfe_attach(device_t parent, device_t self, void *aux)
 		ifmedia_set(&sc->sc_mii.mii_media, IFM_ETHER | IFM_AUTO);
 
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr);
 	ether_set_ifflags_cb(&sc->sc_ethercom, nfe_ifflags_cb);
 
@@ -631,8 +632,8 @@ nfe_intr(void *arg)
 		}
 	}
 
-	if (handled && !IF_IS_EMPTY(&ifp->if_snd))
-		nfe_start(ifp);
+	if (handled)
+		if_schedule_deferred_start(ifp);
 
 	return handled;
 }
@@ -944,8 +945,6 @@ mbufcopied:
 				    device_xname(sc->sc_dev)));
 			}
 		}
-		bpf_mtap(ifp, m);
-		ifp->if_ipackets++;
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 
 skip1:
@@ -1073,7 +1072,6 @@ nfe_encap(struct nfe_softc *sc, struct mbuf *m0)
 	bus_dmamap_t map;
 	uint16_t flags, csumflags;
 #if NVLAN > 0
-	struct m_tag *mtag;
 	uint32_t vtag = 0;
 #endif
 	int error, i, first;
@@ -1102,8 +1100,8 @@ nfe_encap(struct nfe_softc *sc, struct mbuf *m0)
 
 #if NVLAN > 0
 	/* setup h/w VLAN tagging */
-	if ((mtag = VLAN_OUTPUT_TAG(&sc->sc_ethercom, m0)) != NULL)
-		vtag = NFE_TX_VTAG | VLAN_TAG_VALUE(mtag);
+	if (vlan_has_tag(m0))
+		vtag = NFE_TX_VTAG | vlan_get_tag(m0);
 #endif
 	if ((sc->sc_flags & NFE_HW_CSUM) != 0) {
 		if (m0->m_pkthdr.csum_flags & M_CSUM_IPv4)
@@ -1205,7 +1203,7 @@ nfe_start(struct ifnet *ifp)
 		/* packet put in h/w queue, remove from s/w queue */
 		IFQ_DEQUEUE(&ifp->if_snd, m0);
 
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->txq.queued != old) {

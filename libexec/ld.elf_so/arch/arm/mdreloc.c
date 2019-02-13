@@ -1,8 +1,8 @@
-/*	$NetBSD: mdreloc.c,v 1.38 2014/08/25 20:40:52 joerg Exp $	*/
+/*	$NetBSD: mdreloc.c,v 1.44 2018/04/03 21:10:27 joerg Exp $	*/
 
 #include <sys/cdefs.h>
 #ifndef lint
-__RCSID("$NetBSD: mdreloc.c,v 1.38 2014/08/25 20:40:52 joerg Exp $");
+__RCSID("$NetBSD: mdreloc.c,v 1.44 2018/04/03 21:10:27 joerg Exp $");
 #endif /* not lint */
 
 #include <sys/types.h>
@@ -74,16 +74,37 @@ int
 _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 {
 	const Elf_Rel *rel;
+	const Elf_Sym *def = NULL;
+	const Obj_Entry *defobj = NULL;
+	unsigned long last_symnum = ULONG_MAX;
 
 	for (rel = obj->rel; rel < obj->rellim; rel++) {
 		Elf_Addr        *where;
-		const Elf_Sym   *def;
-		const Obj_Entry *defobj;
 		Elf_Addr         tmp;
 		unsigned long	 symnum;
 
 		where = (Elf_Addr *)(obj->relocbase + rel->r_offset);
-		symnum = ELF_R_SYM(rel->r_info);
+
+		switch (ELF_R_TYPE(rel->r_info)) {
+		case R_TYPE(PC24):	/* word32 S - P + A */
+		case R_TYPE(ABS32):	/* word32 B + S + A */
+		case R_TYPE(GLOB_DAT):	/* word32 B + S */
+		case R_TYPE(TLS_DTPOFF32):
+		case R_TYPE(TLS_DTPMOD32):
+		case R_TYPE(TLS_TPOFF32):
+			symnum = ELF_R_SYM(rel->r_info);
+			if (last_symnum != symnum) {
+				last_symnum = symnum;
+				def = _rtld_find_symdef(symnum, obj, &defobj,
+				    false);
+				if (def == NULL)
+					return -1;
+			}
+			break;
+
+		default:
+			break;
+		}
 
 		switch (ELF_R_TYPE(rel->r_info)) {
 		case R_TYPE(NONE):
@@ -99,10 +120,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			addend = *where;
 			if (addend & 0x00800000)
 				addend |= 0xff000000;
-
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
 			tmp = (Elf_Addr)obj->relocbase + def->st_value
 			    - (Elf_Addr)where + (addend << 2);
 			if ((tmp & 0xfe000000) != 0xfe000000 &&
@@ -111,24 +128,23 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 				"%s: R_ARM_PC24 relocation @ %p to %s failed "
 				"(displacement %ld (%#lx) out of range)",
 				    obj->path, where,
-				    obj->strtab + obj->symtab[symnum].st_name,
+				    obj->strtab + obj->symtab[
+				        ELF_R_SYM(rel->r_info)].st_name,
 				    (long) tmp, (long) tmp);
 				return -1;
 			}
 			tmp >>= 2;
 			*where = (*where & 0xff000000) | (tmp & 0x00ffffff);
 			rdbg(("PC24 %s in %s --> %p @ %p in %s",
-			    obj->strtab + obj->symtab[symnum].st_name,
-			    obj->path, (void *)*where, where, defobj->path));
+			    obj->strtab + obj->symtab[ELF_R_SYM(rel->r_info)]
+			    .st_name, obj->path, (void *)*where, where,
+			    defobj->path));
 			break;
 		}
 #endif
 
 		case R_TYPE(ABS32):	/* word32 B + S + A */
 		case R_TYPE(GLOB_DAT):	/* word32 B + S */
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
 			if (__predict_true(RELOC_ALIGNED_P(where))) {
 				tmp = *where + (Elf_Addr)defobj->relocbase +
 				    def->st_value;
@@ -146,9 +162,16 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 				store_ptr(where, tmp);
 			}
 			rdbg(("ABS32/GLOB_DAT %s in %s --> %p @ %p in %s",
-			    obj->strtab + obj->symtab[symnum].st_name,
-			    obj->path, (void *)tmp, where, defobj->path));
+			    obj->strtab + obj->symtab[ELF_R_SYM(rel->r_info)]
+			    .st_name, obj->path, (void *)tmp, where,
+			    defobj->path));
 			break;
+
+		case R_TYPE(IRELATIVE):
+			/* IFUNC relocations are handled in _rtld_call_ifunc */
+			if (obj->ifunc_remaining_nonplt == 0)
+				obj->ifunc_remaining_nonplt = obj->rellim - rel;
+			/* FALL-THROUGH */
 
 		case R_TYPE(RELATIVE):	/* word32 B + A */
 			if (__predict_true(RELOC_ALIGNED_P(where))) {
@@ -180,10 +203,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			break;
 
 		case R_TYPE(TLS_DTPOFF32):
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			tmp = (Elf_Addr)(def->st_value);
 			if (__predict_true(RELOC_ALIGNED_P(where)))
 				*where = tmp;
@@ -191,15 +210,11 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 				store_ptr(where, tmp);
 
 			rdbg(("TLS_DTPOFF32 %s in %s --> %p",
-			    obj->strtab + obj->symtab[symnum].st_name,
-			    obj->path, (void *)tmp));
+			    obj->strtab + obj->symtab[ELF_R_SYM(rel->r_info)]
+			    .st_name, obj->path, (void *)tmp));
 
 			break;
 		case R_TYPE(TLS_DTPMOD32):
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			tmp = (Elf_Addr)(defobj->tlsindex);
 			if (__predict_true(RELOC_ALIGNED_P(where)))
 				*where = tmp;
@@ -207,16 +222,12 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 				store_ptr(where, tmp);
 
 			rdbg(("TLS_DTPMOD32 %s in %s --> %p",
-			    obj->strtab + obj->symtab[symnum].st_name,
-			    obj->path, (void *)tmp));
+			    obj->strtab + obj->symtab[ELF_R_SYM(rel->r_info)]
+			    .st_name, obj->path, (void *)tmp));
 
 			break;
 
 		case R_TYPE(TLS_TPOFF32):
-			def = _rtld_find_symdef(symnum, obj, &defobj, false);
-			if (def == NULL)
-				return -1;
-
 			if (!defobj->tls_done &&
 			    _rtld_tls_offset_allocate(obj))
 				return -1;
@@ -228,16 +239,16 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 			else
 				store_ptr(where, tmp);
 			rdbg(("TLS_TPOFF32 %s in %s --> %p",
-			    obj->strtab + obj->symtab[symnum].st_name,
-			    obj->path, (void *)tmp));
+			    obj->strtab + obj->symtab[ELF_R_SYM(rel->r_info)]
+			    .st_name, obj->path, (void *)tmp));
 			break;
 
 		default:
 			rdbg(("sym = %lu, type = %lu, offset = %p, "
-			    "contents = %p, symbol = %s",
-			    symnum, (u_long)ELF_R_TYPE(rel->r_info),
-			    (void *)rel->r_offset, (void *)load_ptr(where),
-			    obj->strtab + obj->symtab[symnum].st_name));
+			    "contents = %p",
+			    (u_long)ELF_R_SYM(rel->r_info),
+			    (u_long)ELF_R_TYPE(rel->r_info),
+			    (void *)rel->r_offset, (void *)load_ptr(where)));
 			_rtld_error("%s: Unsupported relocation type %ld "
 			    "in non-PLT relocations",
 			    obj->path, (u_long) ELF_R_TYPE(rel->r_info));
@@ -248,17 +259,18 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 }
 
 int
-_rtld_relocate_plt_lazy(const Obj_Entry *obj)
+_rtld_relocate_plt_lazy(Obj_Entry *obj)
 {
 	const Elf_Rel *rel;
 
-	if (!obj->relocbase)
-		return 0;
-
-	for (rel = obj->pltrel; rel < obj->pltrellim; rel++) {
+	for (rel = obj->pltrellim; rel-- > obj->pltrel; ) {
 		Elf_Addr *where = (Elf_Addr *)(obj->relocbase + rel->r_offset);
 
-		assert(ELF_R_TYPE(rel->r_info) == R_TYPE(JUMP_SLOT));
+		assert(ELF_R_TYPE(rel->r_info) == R_TYPE(JUMP_SLOT) ||
+		       ELF_R_TYPE(rel->r_info) == R_TYPE(IRELATIVE));
+
+		if (ELF_R_TYPE(rel->r_info) == R_TYPE(IRELATIVE))
+			obj->ifunc_remaining = obj->pltrellim - rel;
 
 		/* Just relocate the GOT slots pointing into the PLT */
 		*where += (Elf_Addr)obj->relocbase;

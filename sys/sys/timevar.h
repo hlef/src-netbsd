@@ -1,4 +1,4 @@
-/*	$NetBSD: timevar.h,v 1.36 2016/03/08 05:02:55 christos Exp $	*/
+/*	$NetBSD: timevar.h,v 1.38 2018/04/19 21:19:07 christos Exp $	*/
 
 /*
  *  Copyright (c) 2005, 2008 The NetBSD Foundation.
@@ -151,6 +151,7 @@ void	adjtime1(const struct timeval *, struct timeval *, struct proc *);
 int	clock_getres1(clockid_t, struct timespec *);
 int	clock_gettime1(clockid_t, struct timespec *);
 int	clock_settime1(struct proc *, clockid_t, const struct timespec *, bool);
+void	clock_timeleft(clockid_t, struct timespec *, struct timespec *);
 int	dogetitimer(struct proc *, int, struct itimerval *);
 int	dosetitimer(struct proc *, int, struct itimerval *);
 int	dotimer_gettime(int, struct proc *, struct itimerspec *);
@@ -189,13 +190,13 @@ bool	time_wraps(struct timespec *, struct timespec *);
 extern volatile time_t time_second;	/* current second in the epoch */
 extern volatile time_t time_uptime;	/* system uptime in seconds */
 
-static inline time_t time_mono_to_wall(time_t t)
+static __inline time_t time_mono_to_wall(time_t t)
 {
 
 	return t - time_uptime + time_second;
 }
 
-static inline time_t time_wall_to_mono(time_t t)
+static __inline time_t time_wall_to_mono(time_t t)
 {
 
 	return t - time_second + time_uptime;

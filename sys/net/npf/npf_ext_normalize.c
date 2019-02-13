@@ -1,5 +1,3 @@
-/*	$NetBSD: npf_ext_normalize.c,v 1.3 2014/07/20 00:37:41 rmind Exp $	*/
-
 /*-
  * Copyright (c) 2009-2012 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -26,8 +24,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef _KERNEL
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: npf_ext_normalize.c,v 1.3 2014/07/20 00:37:41 rmind Exp $");
+__KERNEL_RCSID(0, "$NetBSD: npf_ext_normalize.c,v 1.9 2018/09/29 14:41:36 rmind Exp $");
 
 #include <sys/types.h>
 #include <sys/module.h>
@@ -37,6 +36,7 @@ __KERNEL_RCSID(0, "$NetBSD: npf_ext_normalize.c,v 1.3 2014/07/20 00:37:41 rmind 
 #include <netinet/in_systm.h>
 #include <netinet/in.h>
 #include <netinet/in_var.h>
+#endif
 
 #include "npf.h"
 #include "npf_impl.h"
@@ -65,7 +65,7 @@ typedef struct {
  * with the given parameters.
  */
 static int
-npf_normalize_ctor(npf_rproc_t *rp, prop_dictionary_t params)
+npf_normalize_ctor(npf_rproc_t *rp, const nvlist_t *params)
 {
 	npf_normalize_t *np;
 
@@ -73,12 +73,12 @@ npf_normalize_ctor(npf_rproc_t *rp, prop_dictionary_t params)
 	np = kmem_zalloc(sizeof(npf_normalize_t), KM_SLEEP);
 
 	/* IP ID randomisation and IP_DF flag cleansing. */
-	prop_dictionary_get_bool(params, "random-id", &np->n_random_id);
-	prop_dictionary_get_bool(params, "no-df", &np->n_no_df);
+	np->n_random_id = dnvlist_get_bool(params, "random-id", false);
+	np->n_no_df = dnvlist_get_bool(params, "no-df", false);
 
 	/* Minimum IP TTL and maximum TCP MSS. */
-	prop_dictionary_get_uint32(params, "min-ttl", &np->n_minttl);
-	prop_dictionary_get_uint32(params, "max-mss", &np->n_maxmss);
+	np->n_minttl = dnvlist_get_number(params, "min-ttl", 0);
+	np->n_maxmss = dnvlist_get_number(params, "max-mss", 0);
 
 	/* Assign the parameters for this rule procedure. */
 	npf_rproc_assign(rp, np);
@@ -141,12 +141,15 @@ npf_normalize_ip4(npf_cache_t *npc, npf_normalize_t *np)
  * npf_normalize: the main routine to normalize IPv4 and/or TCP headers.
  */
 static bool
-npf_normalize(npf_cache_t *npc, void *params, int *decision)
+npf_normalize(npf_cache_t *npc, void *params, const npf_match_info_t *mi,
+    int *decision)
 {
 	npf_normalize_t *np = params;
-	struct tcphdr *th = npc->npc_l4.tcp;
 	uint16_t cksum, mss, maxmss = np->n_maxmss;
+	uint16_t old[2], new[2];
+	struct tcphdr *th;
 	int wscale;
+	bool mid;
 
 	/* Skip, if already blocking. */
 	if (*decision == NPF_DECISION_BLOCK) {
@@ -157,6 +160,7 @@ npf_normalize(npf_cache_t *npc, void *params, int *decision)
 	if (npf_iscached(npc, NPC_IP4) && (np->n_random_id || np->n_minttl)) {
 		npf_normalize_ip4(npc, np);
 	}
+	th = npc->npc_l4.tcp;
 
 	/*
 	 * TCP Maximum Segment Size (MSS) "clamping".  Only if SYN packet.
@@ -177,9 +181,23 @@ npf_normalize(npf_cache_t *npc, void *params, int *decision)
 	}
 	maxmss = htons(maxmss);
 
-	/* Store new MSS, calculate TCP checksum and update it. */
-	if (npf_fetch_tcpopts(npc, &maxmss, &wscale)) {
-		cksum = npf_fixup16_cksum(th->th_sum, mss, maxmss);
+	/*
+	 * Store new MSS, calculate TCP checksum and update it. The MSS may
+	 * not be aligned and fall in the middle of two uint16_t's, so we
+	 * need to take care of that when calculating the checksum.
+	 *
+	 * WARNING: must re-fetch the TCP header after the modification.
+	 */
+	if (npf_set_mss(npc, maxmss, old, new, &mid) &&
+	    !nbuf_cksum_barrier(npc->npc_nbuf, mi->mi_di)) {
+		th = npc->npc_l4.tcp;
+		if (mid) {
+			cksum = th->th_sum;
+			cksum = npf_fixup16_cksum(cksum, old[0], new[0]);
+			cksum = npf_fixup16_cksum(cksum, old[1], new[1]);
+		} else {
+			cksum = npf_fixup16_cksum(th->th_sum, mss, maxmss);
+		}
 		th->th_sum = cksum;
 	}
 
@@ -196,6 +214,7 @@ npf_ext_normalize_modcmd(modcmd_t cmd, void *arg)
 		.dtor		= npf_normalize_dtor,
 		.proc		= npf_normalize
 	};
+	npf_t *npf = npf_getkernctx();
 
 	switch (cmd) {
 	case MODULE_CMD_INIT:
@@ -204,12 +223,12 @@ npf_ext_normalize_modcmd(modcmd_t cmd, void *arg)
 		 * extension and its calls.
 		 */
 		npf_ext_normalize_id =
-		    npf_ext_register("normalize", &npf_normalize_ops);
+		    npf_ext_register(npf, "normalize", &npf_normalize_ops);
 		return npf_ext_normalize_id ? 0 : EEXIST;
 
 	case MODULE_CMD_FINI:
 		/* Unregister the normalisation rule procedure. */
-		return npf_ext_unregister(npf_ext_normalize_id);
+		return npf_ext_unregister(npf, npf_ext_normalize_id);
 
 	case MODULE_CMD_AUTOUNLOAD:
 		return npf_autounload_p() ? 0 : EBUSY;

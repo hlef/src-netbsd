@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap.h,v 1.59 2016/07/25 12:11:40 maxv Exp $	*/
+/*	$NetBSD: pmap.h,v 1.88 2018/08/29 16:26:25 maxv Exp $	*/
 
 /*
  * Copyright (c) 1997 Charles D. Cranor and Washington University.
@@ -111,6 +111,95 @@
 #include <sys/kcpuset.h>
 #include <uvm/pmap/pmap_pvt.h>
 
+#define BTSEG_NONE	0
+#define BTSEG_TEXT	1
+#define BTSEG_RODATA	2
+#define BTSEG_DATA	3
+#define BTSPACE_NSEGS	64
+
+struct bootspace {
+	struct {
+		vaddr_t va;
+		paddr_t pa;
+		size_t sz;
+	} head;
+
+	/* Kernel segments. */
+	struct {
+		int type;
+		vaddr_t va;
+		paddr_t pa;
+		size_t sz;
+	} segs[BTSPACE_NSEGS];
+
+	/*
+	 * The area used by the early kernel bootstrap. It contains the kernel
+	 * symbols, the preloaded modules, the bootstrap tables, and the ISA I/O
+	 * mem.
+	 */
+	struct {
+		vaddr_t va;
+		paddr_t pa;
+		size_t sz;
+	} boot;
+
+	/* A magic VA usable by the bootstrap code. */
+	vaddr_t spareva;
+
+	/* Virtual address of the page directory. */
+	vaddr_t pdir;
+
+	/* Area dedicated to kernel modules (amd64 only). */
+	vaddr_t smodule;
+	vaddr_t emodule;
+};
+
+#define SLSPACE_NONE	0
+#define SLAREA_USER	1
+#define SLAREA_PTE	2
+#define SLAREA_MAIN	3
+#define SLAREA_PCPU	4
+#define SLAREA_DMAP	5
+#define SLAREA_HYPV	6
+#define SLAREA_ASAN	7
+#define SLAREA_KERN	8
+#define SLSPACE_NAREAS	9
+
+struct slotspace {
+	struct {
+		size_t sslot; /* start slot */
+		size_t nslot; /* # of slots */
+		bool active;  /* area is active */
+	} area[SLSPACE_NAREAS];
+};
+
+extern struct slotspace slotspace;
+
+#ifndef MAXGDTSIZ
+#define MAXGDTSIZ 65536 /* XXX */
+#endif
+
+struct pcpu_entry {
+	uint8_t gdt[MAXGDTSIZ];
+	uint8_t tss[PAGE_SIZE];
+	uint8_t ist0[PAGE_SIZE];
+	uint8_t ist1[PAGE_SIZE];
+	uint8_t ist2[PAGE_SIZE];
+	uint8_t ist3[PAGE_SIZE];
+	uint8_t rsp0[2 * PAGE_SIZE];
+} __packed;
+
+struct pcpu_area {
+#ifdef SVS
+	uint8_t utls[PAGE_SIZE];
+#endif
+	uint8_t idt[PAGE_SIZE];
+	uint8_t ldt[PAGE_SIZE];
+	struct pcpu_entry ent[MAXCPUS];
+} __packed;
+
+extern struct pcpu_area *pcpuarea;
+
 /*
  * pmap data structures: see pmap.c for details of locking.
  */
@@ -180,16 +269,6 @@ struct pmap {
 	((pmap)->pm_pdirpa[0] + (index) * sizeof(pd_entry_t))
 #endif
 
-/* 
- * flag to be used for kernel mappings: PG_u on Xen/amd64, 
- * 0 otherwise.
- */
-#if defined(XEN) && defined(__x86_64__)
-#define PG_k PG_u
-#else
-#define PG_k 0
-#endif
-
 /*
  * MD flags that we use for pmap_enter and pmap_kenter_pa:
  */
@@ -210,6 +289,7 @@ extern u_long PDPpaddr;
 
 extern pd_entry_t pmap_pg_g;			/* do we support PG_G? */
 extern pd_entry_t pmap_pg_nx;			/* do we support PG_NX? */
+extern int pmap_largepages;
 extern long nkptp[PTP_LEVELS];
 
 /*
@@ -255,12 +335,9 @@ void		pmap_write_protect(struct pmap *, vaddr_t, vaddr_t, vm_prot_t);
 void		pmap_load(void);
 paddr_t		pmap_init_tmp_pgtbl(paddr_t);
 void		pmap_remove_all(struct pmap *);
+void		pmap_ldt_cleanup(struct lwp *);
 void		pmap_ldt_sync(struct pmap *);
 void		pmap_kremove_local(vaddr_t, vsize_t);
-
-void		pmap_emap_enter(vaddr_t, paddr_t, vm_prot_t);
-void		pmap_emap_remove(vaddr_t, vsize_t);
-void		pmap_emap_sync(bool);
 
 #define	__HAVE_PMAP_PV_TRACK	1
 void		pmap_pv_init(void);
@@ -276,6 +353,11 @@ int		pmap_pdes_invalid(vaddr_t, pd_entry_t * const *, pd_entry_t *);
 u_int		x86_mmap_flags(paddr_t);
 
 bool		pmap_is_curpmap(struct pmap *);
+
+#ifndef __HAVE_DIRECT_MAP
+void		pmap_vpage_cpu_init(struct cpu_info *);
+#endif
+vaddr_t		slotspace_rand(int, size_t, size_t);
 
 vaddr_t reserve_dumppages(vaddr_t); /* XXX: not a pmap fn */
 
@@ -302,8 +384,6 @@ void		pmap_tlb_cpu_init(struct cpu_info *);
 void		pmap_tlb_shootdown(pmap_t, vaddr_t, pt_entry_t, tlbwhy_t);
 void		pmap_tlb_shootnow(void);
 void		pmap_tlb_intr(void);
-
-#define	__HAVE_PMAP_EMAP
 
 #define PMAP_GROWKERNEL		/* turn on pmap_growkernel interface */
 #define PMAP_FORK		/* turn on pmap_fork interface */
@@ -333,17 +413,6 @@ __inline static void __unused
 pmap_update_pg(vaddr_t va)
 {
 	invlpg(va);
-}
-
-/*
- * pmap_update_2pg: flush two pages from the TLB
- */
-
-__inline static void __unused
-pmap_update_2pg(vaddr_t va, vaddr_t vb)
-{
-	invlpg(va);
-	invlpg(vb);
 }
 
 /*
@@ -481,19 +550,28 @@ void	pmap_kenter_ma(vaddr_t, paddr_t, vm_prot_t, u_int);
 int	pmap_enter_ma(struct pmap *, vaddr_t, paddr_t, paddr_t,
 	    vm_prot_t, u_int, int);
 bool	pmap_extract_ma(pmap_t, vaddr_t, paddr_t *);
+void	pmap_free_ptps(struct vm_page *);
+
+paddr_t pmap_get_physpage(void);
 
 /*
  * Hooks for the pool allocator.
  */
 #define	POOL_VTOPHYS(va)	vtophys((vaddr_t) (va))
 
+#ifdef __HAVE_PCPU_AREA
+extern struct pcpu_area *pcpuarea;
+#define PDIR_SLOT_PCPU		510
+#define PMAP_PCPU_BASE		(VA_SIGN_NEG((PDIR_SLOT_PCPU * NBPD_L4)))
+#endif
+
 #ifdef __HAVE_DIRECT_MAP
 
-#define L4_SLOT_DIRECT		509
-#define PDIR_SLOT_DIRECT	L4_SLOT_DIRECT
+extern vaddr_t pmap_direct_base;
+extern vaddr_t pmap_direct_end;
 
-#define PMAP_DIRECT_BASE	(VA_SIGN_NEG((L4_SLOT_DIRECT * NBPD_L4)))
-#define PMAP_DIRECT_END		(VA_SIGN_NEG(((L4_SLOT_DIRECT + 1) * NBPD_L4)))
+#define PMAP_DIRECT_BASE	pmap_direct_base
+#define PMAP_DIRECT_END		pmap_direct_end
 
 #define PMAP_DIRECT_MAP(pa)	((vaddr_t)PMAP_DIRECT_BASE + (pa))
 #define PMAP_DIRECT_UNMAP(va)	((paddr_t)(va) - PMAP_DIRECT_BASE)

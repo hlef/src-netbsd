@@ -1,4 +1,4 @@
-/*	$NetBSD: sdmmc.c,v 1.33 2015/12/22 09:55:38 mlelstv Exp $	*/
+/*	$NetBSD: sdmmc.c,v 1.35 2018/03/06 07:41:55 mlelstv Exp $	*/
 /*	$OpenBSD: sdmmc.c,v 1.18 2009/01/09 10:58:38 jsg Exp $	*/
 
 /*
@@ -49,7 +49,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sdmmc.c,v 1.33 2015/12/22 09:55:38 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sdmmc.c,v 1.35 2018/03/06 07:41:55 mlelstv Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_sdmmc.h"
@@ -400,6 +400,8 @@ sdmmc_card_attach(struct sdmmc_softc *sc)
 
 	CLR(sc->sc_flags, SMF_CARD_ATTACHED);
 
+	sdmmc_chip_hw_reset(sc->sc_sct, sc->sc_sch);
+
 	/*
 	 * Power up the card (or card stack).
 	 */
@@ -522,6 +524,7 @@ sdmmc_print(void *aux, const char *pnp)
 				printf("standard function interface code 0x%x",
 				    sf->interface);
 			printf(")");
+			i = 1;
 		}
 		printf("%sat %s", i ? " " : "", pnp);
 	}

@@ -1,4 +1,4 @@
-/*	$NetBSD: sdmmc_io.c,v 1.12 2015/10/06 14:32:51 mlelstv Exp $	*/
+/*	$NetBSD: sdmmc_io.c,v 1.14 2018/10/14 17:37:40 jdolecek Exp $	*/
 /*	$OpenBSD: sdmmc_io.c,v 1.10 2007/09/17 01:33:33 krw Exp $	*/
 
 /*
@@ -20,7 +20,7 @@
 /* Routines for SD I/O cards. */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sdmmc_io.c,v 1.12 2015/10/06 14:32:51 mlelstv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sdmmc_io.c,v 1.14 2018/10/14 17:37:40 jdolecek Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_sdmmc.h"
@@ -122,9 +122,6 @@ sdmmc_io_enable(struct sdmmc_softc *sc)
 		goto out;
 	}
 
-	/* Reset I/O functions (again). */
-	sdmmc_io_reset(sc);
-
 	/* Send the new OCR value until all cards are ready. */
 	error = sdmmc_io_send_op_cond(sc, host_ocr, NULL);
 	if (error) {
@@ -203,6 +200,11 @@ sdmmc_io_init(struct sdmmc_softc *sc, struct sdmmc_function *sf)
 			sdmmc_io_write_1(sf, SD_IO_CCCR_BUS_WIDTH,
 			    CCCR_BUS_WIDTH_4);
 			sf->width = 4;
+			error = sdmmc_chip_bus_width(sc->sc_sct, sc->sc_sch,
+			    sf->width);
+			if (error)
+				aprint_error_dev(sc->sc_dev,
+				    "can't change bus width\n");
 		}
 
 		error = sdmmc_read_cis(sf, &sf->cis);
@@ -535,12 +537,10 @@ sdmmc_io_xchg(struct sdmmc_softc *sc, struct sdmmc_function *sf,
 static void
 sdmmc_io_reset(struct sdmmc_softc *sc)
 {
+	u_char data = CCCR_CTL_RES;
 
-	/* Don't lock */
-#if 0 /* XXX command fails */
-	(void)sdmmc_io_write(sc, NULL, SD_IO_REG_CCCR_CTL, CCCR_CTL_RES);
-	sdmmc_delay(100000);
-#endif
+	if (sdmmc_io_rw_direct(sc, NULL, SD_IO_CCCR_CTL, &data, SD_ARG_CMD52_WRITE) == 0)
+		sdmmc_delay(100000);
 }
 
 /*
@@ -636,12 +636,11 @@ sdmmc_intr_establish(device_t dev, int (*fun)(void *), void *arg,
 	if (sc->sc_sct->card_enable_intr == NULL)
 		return NULL;
 
-	ih = malloc(sizeof *ih, M_DEVBUF, M_WAITOK|M_CANFAIL|M_ZERO);
+	ih = malloc(sizeof *ih, M_DEVBUF, M_WAITOK|M_ZERO);
 	if (ih == NULL)
 		return NULL;
 
-	ih->ih_name = malloc(strlen(name) + 1, M_DEVBUF,
-	    M_WAITOK|M_CANFAIL|M_ZERO);
+	ih->ih_name = malloc(strlen(name) + 1, M_DEVBUF, M_WAITOK|M_ZERO);
 	if (ih->ih_name == NULL) {
 		free(ih, M_DEVBUF);
 		return NULL;

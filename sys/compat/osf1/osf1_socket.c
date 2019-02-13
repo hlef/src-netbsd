@@ -1,4 +1,4 @@
-/* $NetBSD: osf1_socket.c,v 1.21 2015/08/08 12:02:35 maxv Exp $ */
+/* $NetBSD: osf1_socket.c,v 1.23 2018/05/05 02:09:40 christos Exp $ */
 
 /*
  * Copyright (c) 1999 Christopher G. Demetriou.  All rights reserved.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: osf1_socket.c,v 1.21 2015/08/08 12:02:35 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: osf1_socket.c,v 1.23 2018/05/05 02:09:40 christos Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>

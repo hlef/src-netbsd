@@ -1,4 +1,4 @@
-/*	$NetBSD: pmap.h,v 1.117 2014/04/21 19:12:11 christos Exp $	*/
+/*	$NetBSD: pmap.h,v 1.119 2018/07/25 11:47:07 maxv Exp $	*/
 
 /*
  * Copyright (c) 1997 Charles D. Cranor and Washington University.
@@ -284,16 +284,6 @@
 #define PG_PVLIST	PG_AVAIL2	/* mapping has entry on pvlist */
 #define PG_X		PG_AVAIL3	/* executable mapping */
 
-/*
- * Number of PTE's per cache line.  4 byte pte, 32-byte cache line
- * Used to avoid false sharing of cache lines.
- */
-#ifdef PAE
-#define NPTECL		4
-#else
-#define NPTECL		8
-#endif
-
 #include <x86/pmap.h>
 
 #ifndef XEN
@@ -405,7 +395,6 @@ struct trapframe;
 struct pcb;
 
 int	pmap_exec_fixup(struct vm_map *, struct trapframe *, struct pcb *);
-void	pmap_ldt_cleanup(struct lwp *);
 
 #include <x86/pmap_pv.h>
 

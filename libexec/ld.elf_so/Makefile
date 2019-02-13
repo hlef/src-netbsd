@@ -1,8 +1,8 @@
-#	$NetBSD: Makefile,v 1.133 2016/06/16 11:34:13 christos Exp $
+#	$NetBSD: Makefile,v 1.139 2018/10/17 23:36:58 joerg Exp $
 #
 # NOTE: when changing ld.so, ensure that ldd still compiles.
 #
-
+NOSANITIZER=	# defined
 WARNS?=4
 
 LDELFSO_MACHINE_ARCH?= ${MACHINE_ARCH}
@@ -62,6 +62,8 @@ COPTS+=		-fvisibility=hidden
 .if defined(MLIBDIR)
 PROG=		ld.elf_so-${MLIBDIR}
 CPPFLAGS+=	-DRTLD_ARCH_SUBDIR=\"${MLIBDIR}\"
+.	if ${MLIBDIR} == "o32"
+.	endif
 .else
 PROG=		ld.elf_so
 .endif
@@ -70,7 +72,7 @@ CLIBOBJ!=	cd ${NETBSDSRCDIR}/lib/libc && ${PRINTOBJDIR}
 
 SRCS+=		rtld.c reloc.c symbol.c xmalloc.c xprintf.c debug.c \
 		map_object.c load.c search.c headers.c paths.c expand.c \
-		tls.c symver.c diagassert.c
+		tls.c symver.c diagassert.c compat.c
 
 .if ${USE_FORT} == "yes"
 .PATH.c: ${NETBSDSRCDIR}/lib/libc/misc
@@ -95,7 +97,6 @@ CPPFLAGS+=	-I${.CURDIR} -I. -D_KERNTYPES
 CPPFLAGS+=	-DRTLD_LOADER
 CPPFLAGS+=	-DGNU_RELRO
 CPPFLAGS+=	-D_RTLD_SOURCE
-CPPFLAGS+=	-DCOMBRELOC
 #CPPFLAGS+=	-DDEBUG
 #CPPFLAGS+=	-DRTLD_DEBUG
 #CPPFLAGS+=	-DRTLD_DEBUG_RELOC
@@ -122,6 +123,7 @@ CPPFLAGS+=	-DRTLD_DEFAULT_LIBRARY_PATH=\"${SHLIBDIR}:${LIBDIR}\"
 COPTS.rtld.c+=	-Wno-stack-protector
 COPTS.symbol.c+=-Wno-stack-protector
 
+LDADD+=		-Wl,--version-script=${.CURDIR}/symbols.map
 LDADD+=		-L${CLIBOBJ} -L${DESTDIR}${LIBDIR}
 .if ${MKPICLIB} != "no"
 LDADD+=		-lc_pic

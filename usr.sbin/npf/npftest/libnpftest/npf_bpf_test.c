@@ -1,4 +1,4 @@
-/*	$NetBSD: npf_bpf_test.c,v 1.7 2014/07/20 00:37:41 rmind Exp $	*/
+/*	$NetBSD: npf_bpf_test.c,v 1.9 2018/09/29 14:41:36 rmind Exp $	*/
 
 /*-
  * Copyright (c) 2013 The NetBSD Foundation, Inc.
@@ -33,8 +33,10 @@
  * NPF test of BPF coprocessor.
  */
 
+#ifdef _KERNEL
 #include <sys/types.h>
 #include <sys/endian.h>
+#endif
 
 #define	NPF_BPFCOP
 #include "npf_impl.h"
@@ -49,7 +51,7 @@ fill_packet(int proto)
 	struct ip *ip;
 	struct tcphdr *th;
 
-	m = mbuf_construct(IPPROTO_TCP);
+	m = mbuf_construct(proto);
 	th = mbuf_return_hdrs(m, false, &ip);
 	ip->ip_src.s_addr = inet_addr("192.168.2.100");
 	ip->ip_dst.s_addr = inet_addr("10.0.0.1");
@@ -62,7 +64,7 @@ static int
 test_bpf_code(void *code, size_t size)
 {
 	ifnet_t *dummy_ifp = npf_test_addif(IFNAME_TEST, false, false);
-	npf_cache_t npc = { .npc_info = 0 };
+	npf_cache_t npc = { .npc_info = 0, .npc_ctx = npf_getkernctx() };
 	uint32_t memstore[BPF_MEMWORDS];
 	bpf_args_t bc_args;
 	struct mbuf *m;
@@ -72,11 +74,14 @@ test_bpf_code(void *code, size_t size)
 
 	/* Layer 3 (IP + TCP). */
 	m = fill_packet(IPPROTO_TCP);
-	nbuf_init(&nbuf, m, dummy_ifp);
+	nbuf_init(npf_getkernctx(), &nbuf, m, dummy_ifp);
 	npc.npc_nbuf = &nbuf;
 	npf_cache_all(&npc);
-
+#ifdef _NPF_STANDALONE
+	bc_args.pkt = (const uint8_t *)nbuf_dataptr(&nbuf);
+#else
 	bc_args.pkt = (const uint8_t *)m;
+#endif
 	bc_args.buflen = m_length(m);
 	bc_args.wirelen = bc_args.buflen;
 	bc_args.mem = memstore;
@@ -88,7 +93,7 @@ test_bpf_code(void *code, size_t size)
 	jcode = npf_bpf_compile(code, size);
 	if (jcode) {
 		jret = npf_bpf_filter(&bc_args, NULL, jcode);
-		assert(ret == jret);
+		assert(ret == jret); (void)jret;
 		bpf_jit_freecode(jcode);
 	} else if (lverbose) {
 		printf("JIT-compilation failed\n");

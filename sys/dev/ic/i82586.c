@@ -1,4 +1,4 @@
-/*	$NetBSD: i82586.c,v 1.74 2016/07/14 10:19:06 msaitoh Exp $	*/
+/*	$NetBSD: i82586.c,v 1.79 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
@@ -137,7 +137,7 @@ Mode of operation:
 */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: i82586.c,v 1.74 2016/07/14 10:19:06 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: i82586.c,v 1.79 2018/09/03 16:29:31 riastradh Exp $");
 
 
 #include <sys/param.h>
@@ -154,9 +154,7 @@ __KERNEL_RCSID(0, "$NetBSD: i82586.c,v 1.74 2016/07/14 10:19:06 msaitoh Exp $");
 #include <net/if_types.h>
 #include <net/if_media.h>
 #include <net/if_ether.h>
-
 #include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 
@@ -271,6 +269,7 @@ i82586_attach(struct ie_softc *sc, const char *name, u_int8_t *etheraddr,
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, etheraddr);
 
 	aprint_normal(" address %s, type %s\n", ether_sprintf(etheraddr),name);
@@ -736,7 +735,7 @@ i82586_tint(struct ie_softc *sc, int scbstatus)
 	if (sc->xmit_busy > 0)
 		iexmit(sc);
 
-	i82586_start(ifp);
+	if_schedule_deferred_start(ifp);
 	return (0);
 }
 
@@ -931,7 +930,7 @@ ieget(struct ie_softc *sc, int head, int totlen)
 			m->m_data = newdata;
 		}
 
-		m->m_len = len = min(totlen, len);
+		m->m_len = len = uimin(totlen, len);
 
 		totlen -= len;
 		if (totlen > 0) {
@@ -962,7 +961,7 @@ ieget(struct ie_softc *sc, int head, int totlen)
 	while (resid > 0) {
 		int thisrblen = IE_RBUF_SIZE - thisrboff,
 		    thismblen = m->m_len - thismboff;
-		len = min(thisrblen, thismblen);
+		len = uimin(thisrblen, thismblen);
 
 		(sc->memcopyin)(sc, mtod(m, char *) + thismboff,
 				IE_RBUF_ADDR(sc,head) + thisrboff,
@@ -1037,9 +1036,6 @@ ie_readframe(
 			pktlen);
 	}
 #endif
-
-	/* Pass it up. */
-	bpf_mtap(&sc->sc_ethercom.ec_if, m);
 
 	/*
 	 * Finally pass this packet up to higher layers.
@@ -1160,7 +1156,7 @@ i82586_start(struct ifnet *ifp)
 			panic("i82586_start: no header mbuf");
 
 		/* Tap off here if there is a BPF listener. */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 
 #if I82586_DEBUG
 		if (sc->sc_debug & IED_ENQ)

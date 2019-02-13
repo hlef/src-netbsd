@@ -1,4 +1,4 @@
-/*	$NetBSD: vnd.c,v 1.257 2016/07/26 01:49:48 pgoyette Exp $	*/
+/*	$NetBSD: vnd.c,v 1.269 2018/10/07 12:00:07 mlelstv Exp $	*/
 
 /*-
  * Copyright (c) 1996, 1997, 1998, 2008 The NetBSD Foundation, Inc.
@@ -91,7 +91,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: vnd.c,v 1.257 2016/07/26 01:49:48 pgoyette Exp $");
+__KERNEL_RCSID(0, "$NetBSD: vnd.c,v 1.269 2018/10/07 12:00:07 mlelstv Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_vnd.h"
@@ -114,6 +114,7 @@ __KERNEL_RCSID(0, "$NetBSD: vnd.c,v 1.257 2016/07/26 01:49:48 pgoyette Exp $");
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <sys/vnode.h>
+#include <sys/fstrans.h>
 #include <sys/file.h>
 #include <sys/uio.h>
 #include <sys/conf.h>
@@ -158,6 +159,7 @@ struct vndxfer {
     (MAKEDISKDEV(major((dev)), vndunit((dev)), RAW_PART))
 
 #define	VND_MAXPENDING(vnd)	((vnd)->sc_maxactive * 4)
+#define	VND_MAXPAGES(vnd)	(1024 * 1024 / PAGE_SIZE)
 
 
 static void	vndclear(struct vnd_softc *, int);
@@ -229,7 +231,6 @@ static int	vnd_detach(device_t, int);
 
 CFATTACH_DECL3_NEW(vnd, sizeof(struct vnd_softc),
     vnd_match, vnd_attach, vnd_detach, NULL, NULL, NULL, DVF_DETACH_SHUTDOWN);
-extern struct cfdriver vnd_cd;
 
 static struct vnd_softc	*vnd_spawn(int);
 int	vnd_destroy(device_t);
@@ -574,20 +575,18 @@ vnode_has_strategy(struct vnd_softc *vnd)
 	    vnode_has_op(vnd->sc_vp, VOFFSET(vop_strategy));
 }
 
+/* Verify that I/O requests cannot be smaller than the
+ * smallest I/O size supported by the backend.
+ */
 static bool
 vnode_has_large_blocks(struct vnd_softc *vnd)
 {
-	u_int32_t vnd_secsize, mnt_secsize;
-	uint64_t numsec;
-	unsigned secsize;
+	u_int32_t vnd_secsize, iosize;
 
-	if (getdisksize(vnd->sc_vp, &numsec, &secsize))
-		return true;
-
+	iosize = vnd->sc_iosize;
 	vnd_secsize = vnd->sc_geom.vng_secsize;
-	mnt_secsize = secsize;
 
-	return vnd_secsize % mnt_secsize != 0;
+	return vnd_secsize % iosize != 0;
 }
 
 /* XXX this function needs a reliable check to detect
@@ -805,16 +804,31 @@ handle_with_rdwr(struct vnd_softc *vnd, const struct buf *obp, struct buf *bp)
 		    bp->b_bcount);
 #endif
 
+	/* Make sure the request succeeds while suspending this fs. */
+	fstrans_start_lazy(vp->v_mount);
+
 	/* Issue the read or write operation. */
 	bp->b_error =
 	    vn_rdwr(doread ? UIO_READ : UIO_WRITE,
 	    vp, bp->b_data, len, offset, UIO_SYSSPACE,
-	    IO_ADV_ENCODE(POSIX_FADV_NOREUSE), vnd->sc_cred, &resid, NULL);
+	    IO_ADV_ENCODE(POSIX_FADV_NOREUSE) | IO_DIRECT,
+		vnd->sc_cred, &resid, NULL);
 	bp->b_resid = resid;
 
+	/*
+	 * Avoid caching too many pages, the vnd user
+	 * is usually a filesystem and caches itself.
+	 * We need some amount of caching to not hinder
+	 * read-ahead and write-behind operations.
+	 */
 	mutex_enter(vp->v_interlock);
-	(void) VOP_PUTPAGES(vp, 0, 0,
-	    PGO_ALLPAGES | PGO_CLEANIT | PGO_FREE | PGO_SYNCIO);
+	if (vp->v_uobj.uo_npages > VND_MAXPAGES(vnd))
+		(void) VOP_PUTPAGES(vp, 0, 0,
+		    PGO_ALLPAGES | PGO_CLEANIT | PGO_FREE);
+	else
+		mutex_exit(vp->v_interlock);
+
+	fstrans_done(vp->v_mount);
 
 	/* We need to increase the number of outputs on the vnode if
 	 * there was any write to it. */
@@ -1240,6 +1254,8 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 		fflags = FREAD;
 		if ((vio->vnd_flags & VNDIOF_READONLY) == 0)
 			fflags |= FWRITE;
+		if ((vio->vnd_flags & VNDIOF_FILEIO) != 0)
+			vnd->sc_flags |= VNF_USE_VN_RDWR;
 		error = pathbuf_copyin(vio->vnd_file, &pb);
 		if (error) {
 			goto unlock_and_exit;
@@ -1263,60 +1279,87 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 
 		/* If using a compressed file, initialize its info */
 		/* (or abort with an error if kernel has no compression) */
-		if (vio->vnd_flags & VNF_COMP) {
+		if (vio->vnd_flags & VNDIOF_COMP) {
 #ifdef VND_COMPRESSION
 			struct vnd_comp_header *ch;
 			int i;
-			u_int32_t comp_size;
-			u_int32_t comp_maxsize;
+			uint32_t comp_size;
+			uint32_t comp_maxsize;
 
 			/* allocate space for compresed file header */
 			ch = malloc(sizeof(struct vnd_comp_header),
-			M_TEMP, M_WAITOK);
+			    M_TEMP, M_WAITOK);
 
 			/* read compressed file header */
 			error = vn_rdwr(UIO_READ, nd.ni_vp, (void *)ch,
-			  sizeof(struct vnd_comp_header), 0, UIO_SYSSPACE,
-			  IO_UNIT|IO_NODELOCKED, l->l_cred, NULL, NULL);
+			    sizeof(struct vnd_comp_header), 0, UIO_SYSSPACE,
+			    IO_UNIT|IO_NODELOCKED, l->l_cred, NULL, NULL);
 			if (error) {
 				free(ch, M_TEMP);
 				VOP_UNLOCK(nd.ni_vp);
 				goto close_and_exit;
 			}
 
+			if (be32toh(ch->block_size) == 0 ||
+			    be32toh(ch->num_blocks) > UINT32_MAX - 1) {
+				free(ch, M_TEMP);
+				VOP_UNLOCK(nd.ni_vp);
+				goto close_and_exit;
+			}
+
 			/* save some header info */
-			vnd->sc_comp_blksz = ntohl(ch->block_size);
+			vnd->sc_comp_blksz = be32toh(ch->block_size);
 			/* note last offset is the file byte size */
-			vnd->sc_comp_numoffs = ntohl(ch->num_blocks)+1;
+			vnd->sc_comp_numoffs = be32toh(ch->num_blocks) + 1;
 			free(ch, M_TEMP);
 			if (!DK_DEV_BSIZE_OK(vnd->sc_comp_blksz)) {
 				VOP_UNLOCK(nd.ni_vp);
 				error = EINVAL;
 				goto close_and_exit;
 			}
-			if (sizeof(struct vnd_comp_header) +
-			  sizeof(u_int64_t) * vnd->sc_comp_numoffs >
-			  vattr.va_size) {
+			KASSERT(0 < vnd->sc_comp_blksz);
+			KASSERT(0 < vnd->sc_comp_numoffs);
+			/*
+			 * @#^@!$& gcc -Wtype-limits refuses to let me
+			 * write SIZE_MAX/sizeof(uint64_t) < numoffs,
+			 * because the range of the type on amd64 makes
+			 * the comparisons always false.
+			 */
+#if SIZE_MAX <= UINT32_MAX*(64/CHAR_BIT)
+			if (SIZE_MAX/sizeof(uint64_t) < vnd->sc_comp_numoffs) {
+				VOP_UNLOCK(nd.ni_vp);
+				error = EINVAL;
+				goto close_and_exit;
+			}
+#endif
+			if ((vattr.va_size < sizeof(struct vnd_comp_header)) ||
+			    (vattr.va_size - sizeof(struct vnd_comp_header) <
+				sizeof(uint64_t)*vnd->sc_comp_numoffs) ||
+			    (UQUAD_MAX/vnd->sc_comp_blksz <
+				vnd->sc_comp_numoffs - 1)) {
 				VOP_UNLOCK(nd.ni_vp);
 				error = EINVAL;
 				goto close_and_exit;
 			}
 
 			/* set decompressed file size */
+			KASSERT(vnd->sc_comp_numoffs - 1 <=
+			    UQUAD_MAX/vnd->sc_comp_blksz);
 			vattr.va_size =
 			    ((u_quad_t)vnd->sc_comp_numoffs - 1) *
 			     (u_quad_t)vnd->sc_comp_blksz;
 
 			/* allocate space for all the compressed offsets */
+			__CTASSERT(UINT32_MAX <= UQUAD_MAX/sizeof(uint64_t));
 			vnd->sc_comp_offsets =
-			malloc(sizeof(u_int64_t) * vnd->sc_comp_numoffs,
-			M_DEVBUF, M_WAITOK);
+			    malloc(sizeof(uint64_t) * vnd->sc_comp_numoffs,
+				M_DEVBUF, M_WAITOK);
 
 			/* read in the offsets */
 			error = vn_rdwr(UIO_READ, nd.ni_vp,
-			  (void *)vnd->sc_comp_offsets,
-			  sizeof(u_int64_t) * vnd->sc_comp_numoffs,
-			  sizeof(struct vnd_comp_header), UIO_SYSSPACE,
+			    (void *)vnd->sc_comp_offsets,
+			    sizeof(uint64_t) * vnd->sc_comp_numoffs,
+			    sizeof(struct vnd_comp_header), UIO_SYSSPACE,
 			  IO_UNIT|IO_NODELOCKED, l->l_cred, NULL, NULL);
 			if (error) {
 				VOP_UNLOCK(nd.ni_vp);
@@ -1329,22 +1372,24 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 			comp_maxsize = 0;
 			for (i = 0; i < vnd->sc_comp_numoffs - 1; i++) {
 				vnd->sc_comp_offsets[i] =
-				  be64toh(vnd->sc_comp_offsets[i]);
-				comp_size = be64toh(vnd->sc_comp_offsets[i + 1])
-				  - vnd->sc_comp_offsets[i];
+				    be64toh(vnd->sc_comp_offsets[i]);
+				comp_size =
+				    be64toh(vnd->sc_comp_offsets[i + 1])
+				    - vnd->sc_comp_offsets[i];
 				if (comp_size > comp_maxsize)
 					comp_maxsize = comp_size;
 			}
 			vnd->sc_comp_offsets[vnd->sc_comp_numoffs - 1] =
-			  be64toh(vnd->sc_comp_offsets[vnd->sc_comp_numoffs - 1]);
+			    be64toh(vnd->sc_comp_offsets[vnd->sc_comp_numoffs
+				    - 1]);
 
 			/* create compressed data buffer */
 			vnd->sc_comp_buff = malloc(comp_maxsize,
-			  M_DEVBUF, M_WAITOK);
+			    M_DEVBUF, M_WAITOK);
 
 			/* create decompressed buffer */
 			vnd->sc_comp_decombuf = malloc(vnd->sc_comp_blksz,
-			  M_DEVBUF, M_WAITOK);
+			    M_DEVBUF, M_WAITOK);
 			vnd->sc_comp_buffblk = -1;
 
 			/* Initialize decompress stream */
@@ -1355,7 +1400,7 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 			if (error) {
 				if (vnd->sc_comp_stream.msg)
 					printf("vnd%d: compressed file, %s\n",
-					  unit, vnd->sc_comp_stream.msg);
+					    unit, vnd->sc_comp_stream.msg);
 				VOP_UNLOCK(nd.ni_vp);
 				error = EINVAL;
 				goto close_and_exit;
@@ -1373,6 +1418,13 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 		vnd->sc_vp = nd.ni_vp;
 		vnd->sc_size = btodb(vattr.va_size);	/* note truncation */
 
+		/* get smallest I/O size for underlying device, fall back to
+		 * fundamental I/O size of underlying filesystem
+		 */
+		error = bdev_ioctl(vattr.va_fsid, DIOCGSECTORSIZE, &vnd->sc_iosize, FKIOCTL, l);
+		if (error)
+			vnd->sc_iosize = vnd->sc_vp->v_mount->mnt_stat.f_frsize;
+
 		/*
 		 * Use pseudo-geometry specified.  If none was provided,
 		 * use "standard" Adaptec fictitious geometry.
@@ -1386,12 +1438,19 @@ vndioctl(dev_t dev, u_long cmd, void *data, int flag, struct lwp *l)
 			 * Sanity-check the sector size.
 			 */
 			if (!DK_DEV_BSIZE_OK(vnd->sc_geom.vng_secsize) ||
-			    vnd->sc_geom.vng_ncylinders == 0 ||
 			    vnd->sc_geom.vng_ntracks == 0 ||
 			    vnd->sc_geom.vng_nsectors == 0) {
 				error = EINVAL;
 				goto close_and_exit;
 			}
+
+			/*
+			 * Compute missing cylinder count from size
+			 */
+			if (vnd->sc_geom.vng_ncylinders == 0)
+				vnd->sc_geom.vng_ncylinders = vnd->sc_size /
+					(vnd->sc_geom.vng_ntracks *
+					vnd->sc_geom.vng_nsectors);
 
 			/*
 			 * Compute the size (in DEV_BSIZE blocks) specified
@@ -1618,7 +1677,7 @@ vndsetcred(struct vnd_softc *vnd, kauth_cred_t cred)
 
 	/* XXX: Horrible kludge to establish credentials for NFS */
 	aiov.iov_base = tmpbuf;
-	aiov.iov_len = min(DEV_BSIZE, dbtob(vnd->sc_size));
+	aiov.iov_len = uimin(DEV_BSIZE, dbtob(vnd->sc_size));
 	auio.uio_iov = &aiov;
 	auio.uio_iovcnt = 1;
 	auio.uio_offset = 0;
@@ -2071,8 +2130,10 @@ vnd_modcmd(modcmd_t cmd, void *arg)
 		error = config_cfattach_attach(vnd_cd.cd_name, &vnd_ca);
 	        if (error) {
 			config_cfdriver_detach(&vnd_cd);
+#ifdef DIAGNOSTIC
 			aprint_error("%s: unable to register cfattach for \n"
 			    "%s, error %d", __func__, vnd_cd.cd_name, error);
+#endif
 			break;
 		}
 
@@ -2087,8 +2148,10 @@ vnd_modcmd(modcmd_t cmd, void *arg)
 		if (error) {
 			config_cfattach_detach(vnd_cd.cd_name, &vnd_ca);
 			config_cfdriver_detach(&vnd_cd);
+#ifdef DIAGNOSTIC
                         aprint_error("%s: unable to attach %s devsw, "
                             "error %d", __func__, vnd_cd.cd_name, error);
+#endif
 			break;
 		}
 #endif
@@ -2106,20 +2169,24 @@ vnd_modcmd(modcmd_t cmd, void *arg)
                  */
 		error = config_cfattach_detach(vnd_cd.cd_name, &vnd_ca);
                 if (error) { 
-                        error = devsw_attach("vnd", &vnd_bdevsw, &vnd_bmajor,
+                        (void)devsw_attach("vnd", &vnd_bdevsw, &vnd_bmajor,
                             &vnd_cdevsw, &vnd_cmajor);
+#ifdef DIAGNOSTIC
                         aprint_error("%s: failed to detach %s cfattach, "
                             "error %d\n", __func__, vnd_cd.cd_name, error);
+#endif
                         break;
                 }
                 error = config_cfdriver_detach(&vnd_cd);
                 if (error) {
-                        config_cfattach_attach(vnd_cd.cd_name, &vnd_ca); 
-                        devsw_attach("vnd", &vnd_bdevsw, &vnd_bmajor,
+                        (void)config_cfattach_attach(vnd_cd.cd_name, &vnd_ca); 
+                        (void)devsw_attach("vnd", &vnd_bdevsw, &vnd_bmajor,
                             &vnd_cdevsw, &vnd_cmajor);
+#ifdef DIAGNOSTIC
                         aprint_error("%s: failed to detach %s cfdriver, "
                             "error %d\n", __func__, vnd_cd.cd_name, error);
                         break;
+#endif
                 }
 #endif
 		break;

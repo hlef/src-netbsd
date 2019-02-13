@@ -1,4 +1,4 @@
-/*	$NetBSD: mdreloc.c,v 1.58 2016/06/20 08:12:25 martin Exp $	*/
+/*	$NetBSD: mdreloc.c,v 1.69 2018/04/03 21:10:27 joerg Exp $	*/
 
 /*-
  * Copyright (c) 2000 Eduardo Horvath.
@@ -32,8 +32,10 @@
 
 #include <sys/cdefs.h>
 #ifndef lint
-__RCSID("$NetBSD: mdreloc.c,v 1.58 2016/06/20 08:12:25 martin Exp $");
+__RCSID("$NetBSD: mdreloc.c,v 1.69 2018/04/03 21:10:27 joerg Exp $");
 #endif /* not lint */
+
+#include <machine/elf_support.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -175,7 +177,7 @@ static const long reloc_target_bitmask[] = {
 	_BM(22), _BM(10),		/* _HIPLT22, LOPLT10 */
 	_BM(32), _BM(22), _BM(10),	/* _PCPLT32, _PCPLT22, _PCPLT10 */
 	_BM(10), _BM(11), -1,		/* _10, _11, _64 */
-	_BM(10), _BM(22),		/* _OLO10, _HH22 */
+	_BM(13), _BM(22),		/* _OLO10, _HH22 */
 	_BM(10), _BM(22),		/* _HM10, _LM22 */
 	_BM(22), _BM(10), _BM(22),	/* _PC_HH22, _PC_HM10, _PC_LM22 */
 	_BM(16), _BM(19),		/* _WDISP16, _WDISP19 */
@@ -192,19 +194,6 @@ static const long reloc_target_bitmask[] = {
 /*
  * Instruction templates:
  */
-#define	BAA	0x30680000	/*	ba,a	%xcc, 0 */
-#define	SETHI	0x03000000	/*	sethi	%hi(0), %g1 */
-#define	JMP	0x81c06000	/*	jmpl	%g1+%lo(0), %g0 */
-#define	NOP	0x01000000	/*	sethi	%hi(0), %g0 */
-#define	OR	0x82106000	/*	or	%g1, 0, %g1 */
-#define	XOR	0x82186000	/*	xor	%g1, 0, %g1 */
-#define	MOV71	0x8213e000	/*	or	%o7, 0, %g1 */
-#define	MOV17	0x9e106000	/*	or	%g1, 0, %o7 */
-#define	CALL	0x40000000	/*	call	0 */
-#define	SLLX	0x83287000	/*	sllx	%g1, 0, %g1 */
-#define	NEG	0x82200001	/*	neg	%g1 */
-#define	SETHIG5	0x0b000000	/*	sethi	%hi(0), %g5 */
-#define	ORG5	0x82104005	/*	or	%g1, %g5, %g1 */
 
 
 /* %hi(v)/%lo(v) with variable shift */
@@ -310,15 +299,15 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 	const Elf_Rela *rela;
 	const Elf_Sym *def = NULL;
 	const Obj_Entry *defobj = NULL;
+	unsigned long last_symnum = ULONG_MAX;
 
 	for (rela = obj->rela; rela < obj->relalim; rela++) {
 		Elf_Addr *where;
 		Elf_Word type;
 		Elf_Addr value = 0, mask;
-		unsigned long	 symnum;
+		unsigned long symnum;
 
 		where = (Elf_Addr *) (obj->relocbase + rela->r_offset);
-		symnum = ELF_R_SYM(rela->r_info);
 
 		type = ELF_R_TYPE(rela->r_info);
 		if (type == R_TYPE(NONE))
@@ -331,6 +320,15 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 		/* We do JMP_SLOTs in _rtld_bind() below */
 		if (type == R_TYPE(JMP_SLOT))
 			continue;
+
+		/* IFUNC relocations are handled in _rtld_call_ifunc */
+		if (type == R_TYPE(IRELATIVE)) {
+			if (obj->ifunc_remaining_nonplt == 0) {
+				obj->ifunc_remaining_nonplt =
+				    obj->relalim - rela;
+			}
+			continue;
+		}
 
 		/* COPY relocs are also handled elsewhere */
 		if (type == R_TYPE(COPY))
@@ -347,62 +345,56 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 
 		value = rela->r_addend;
 
+		if (RELOC_RESOLVE_SYMBOL(type) || RELOC_TLS(type)) {
+			symnum = ELF_R_SYM(rela->r_info);
+			if (last_symnum != symnum) {
+				last_symnum = symnum;
+				def = _rtld_find_symdef(symnum, obj, &defobj,
+				    false);
+				if (def == NULL)
+					return -1;
+			}
+		}
+
 		/*
 		 * Handle TLS relocations here, they are different.
 		 */
 		if (RELOC_TLS(type)) {
 			switch (type) {
-				case R_TYPE(TLS_DTPMOD64):
-					def = _rtld_find_symdef(symnum, obj,
-					    &defobj, false);
-					if (def == NULL)
-						return -1;
+			case R_TYPE(TLS_DTPMOD64):
+				*where = (Elf64_Addr)defobj->tlsindex;
 
-					*where = (Elf64_Addr)defobj->tlsindex;
+				rdbg(("TLS_DTPMOD64 %s in %s --> %p",
+				    obj->strtab +
+				    obj->symtab[symnum].st_name,
+				    obj->path, (void *)*where));
 
-					rdbg(("TLS_DTPMOD64 %s in %s --> %p",
-					    obj->strtab +
-					    obj->symtab[symnum].st_name,
-					    obj->path, (void *)*where));
+				break;
 
-					break;
+			case R_TYPE(TLS_DTPOFF64):
+				*where = (Elf64_Addr)(def->st_value
+				    + rela->r_addend);
 
-				case R_TYPE(TLS_DTPOFF64):
-					def = _rtld_find_symdef(symnum, obj,
-					    &defobj, false);
-					if (def == NULL)
-						return -1;
+				rdbg(("DTPOFF64 %s in %s --> %p",
+				    obj->strtab +
+				        obj->symtab[symnum].st_name,
+				    obj->path, (void *)*where));
 
-					*where = (Elf64_Addr)(def->st_value
-					    + rela->r_addend);
+				break;
 
-					rdbg(("DTPOFF64 %s in %s --> %p",
-					    obj->strtab +
-					        obj->symtab[symnum].st_name,
-					    obj->path, (void *)*where));
+			case R_TYPE(TLS_TPOFF64):
+				if (!defobj->tls_done &&
+					_rtld_tls_offset_allocate(obj))
+					     return -1;
 
-					break;
+				*where = (Elf64_Addr)(def->st_value -
+				    defobj->tlsoffset + rela->r_addend);
 
-				case R_TYPE(TLS_TPOFF64):
-					def = _rtld_find_symdef(symnum, obj,
-					    &defobj, false);
-					if (def == NULL)
-						return -1;
+				rdbg(("TLS_TPOFF64 %s in %s --> %p",
+				    obj->strtab + obj->symtab[symnum].st_name,
+				    obj->path, (void *)*where));
 
-					if (!defobj->tls_done &&
-						_rtld_tls_offset_allocate(obj))
-						     return -1;
-
-					*where = (Elf64_Addr)(def->st_value -
-			                            defobj->tlsoffset +
-						    rela->r_addend);
-
-		                        rdbg(("TLS_TPOFF64 %s in %s --> %p",
-		                            obj->strtab +
-					    obj->symtab[symnum].st_name,
-		                            obj->path, (void *)*where));
-
-	                		break;
+				break;
 			}
 			continue;
 		}
@@ -418,13 +410,6 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 		}
 
 		if (RELOC_RESOLVE_SYMBOL(type)) {
-
-			/* Find the symbol */
-			def = _rtld_find_symdef(symnum, obj, &defobj,
-			    false);
-			if (def == NULL)
-				return -1;
-
 			/* Add in the symbol's absolute address */
 			value += (Elf_Addr)(defobj->relocbase + def->st_value);
 		}
@@ -518,9 +503,16 @@ _rtld_relocate_nonplt_objects(Obj_Entry *obj)
 }
 
 int
-_rtld_relocate_plt_lazy(const Obj_Entry *obj)
+_rtld_relocate_plt_lazy(Obj_Entry *obj)
 {
-	return (0);
+	const Elf_Rela *rela;
+
+	for (rela = obj->pltrelalim; rela-- > obj->pltrela; ) {
+		if (ELF_R_TYPE(rela->r_info) == R_TYPE(JMP_IREL))
+			obj->ifunc_remaining = obj->pltrelalim - rela + 1;
+	}
+
+	return 0;
 }
 
 caddr_t
@@ -532,7 +524,8 @@ _rtld_bind(const Obj_Entry *obj, Elf_Word reloff)
 
 	result = 0;	/* XXX gcc */
 
-	if (ELF_R_TYPE(obj->pltrela->r_info) == R_TYPE(JMP_SLOT)) {
+	if (ELF_R_TYPE(obj->pltrela->r_info) == R_TYPE(JMP_SLOT) ||
+	    ELF_R_TYPE(obj->pltrela->r_info) == R_TYPE(JMP_IREL)) {
 		/*
 		 * XXXX
 		 *
@@ -545,8 +538,9 @@ _rtld_bind(const Obj_Entry *obj, Elf_Word reloff)
 		 * 
 		 * So, to provide binary compatibility, we will check the first
 		 * entry, if it is reserved it should not be of the type
-		 * JMP_SLOT.  If it is JMP_SLOT, then the 4 reserved entries
-		 * were not generated and our index is 4 entries too far.
+		 * JMP_SLOT or JMP_REL.  If it is either of those, then
+		 * the 4 reserved entries were not generated and our index
+		 * is 4 entries too far.
 		 */
 		rela -= 4;
 	}
@@ -571,7 +565,8 @@ _rtld_relocate_plt_objects(const Obj_Entry *obj)
 	 * Check for first four reserved entries - and skip them.
 	 * See above for details.
 	 */
-	if (ELF_R_TYPE(obj->pltrela->r_info) != R_TYPE(JMP_SLOT))
+	if (ELF_R_TYPE(obj->pltrela->r_info) != R_TYPE(JMP_SLOT) &&
+	    ELF_R_TYPE(obj->pltrela->r_info) != R_TYPE(JMP_IREL))
 		rela += 4;
 
 	for (; rela < obj->pltrelalim; rela++)
@@ -579,6 +574,23 @@ _rtld_relocate_plt_objects(const Obj_Entry *obj)
 			return -1;
 
 	return 0;
+}
+
+static inline void
+_rtld_write_plt(Elf_Word *where, Elf_Addr value, const Elf_Rela *rela,
+    const Obj_Entry *obj)
+{
+	if (rela && rela->r_addend) {
+		Elf_Addr *ptr = (Elf_Addr *)where;
+		/*
+		 * This entry is >= 32768.  The relocations points to a
+		 * PC-relative pointer to the bind_0 stub at the top of the
+		 * PLT section.  Update it to point to the target function.
+		 */
+		ptr[0] += value - (Elf_Addr)obj->pltgot;
+	} else {
+		sparc_write_branch(where + 1, (void *)value);
+	}
 }
 
 /*
@@ -592,8 +604,11 @@ _rtld_relocate_plt_object(const Obj_Entry *obj, const Elf_Rela *rela,
 	Elf_Word *where = (Elf_Word *)(obj->relocbase + rela->r_offset);
 	const Elf_Sym *def;
 	const Obj_Entry *defobj;
-	Elf_Addr value, offset;
+	Elf_Addr value;
 	unsigned long info = rela->r_info;
+
+	if (ELF_R_TYPE(info) == R_TYPE(JMP_IREL))
+		return 0;
 
 	assert(ELF_R_TYPE(info) == R_TYPE(JMP_SLOT));
 
@@ -613,210 +628,7 @@ _rtld_relocate_plt_object(const Obj_Entry *obj, const Elf_Rela *rela,
 	rdbg(("bind now/fixup in %s at %p --> new=%p", 
 	    defobj->strtab + def->st_name, (void*)where, (void *)value));
 
-	/*
-	 * At the PLT entry pointed at by `where', we now construct a direct
-	 * transfer to the now fully resolved function address.
-	 *
-	 * A PLT entry is supposed to start by looking like this:
-	 *
-	 *	sethi	%hi(. - .PLT0), %g1
-	 *	ba,a	%xcc, .PLT1
-	 *	nop
-	 *	nop
-	 *	nop
-	 *	nop
-	 *	nop
-	 *	nop
-	 *
-	 * When we replace these entries we start from the last instruction
-	 * and do it in reverse order so the last thing we do is replace the
-	 * branch.  That allows us to change this atomically.
-	 *
-	 * We now need to find out how far we need to jump.  We have a choice
-	 * of several different relocation techniques which are increasingly
-	 * expensive.
-	 */
-
-	offset = ((Elf_Addr)where) - value;
-	if (rela->r_addend) {
-		Elf_Addr *ptr = (Elf_Addr *)where;
-		/*
-		 * This entry is >= 32768.  The relocations points to a
-		 * PC-relative pointer to the bind_0 stub at the top of the
-		 * PLT section.  Update it to point to the target function.
-		 */
-		ptr[0] += value - (Elf_Addr)obj->pltgot;
-
-	} else if (offset <= (1L<<20) && (Elf_SOff)offset >= -(1L<<20)) {
-		/* 
-		 * We're within 1MB -- we can use a direct branch insn.
-		 *
-		 * We can generate this pattern:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	ba,a	%xcc, addr
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *
-		 */
-		where[1] = BAA | ((offset >> 2) & 0x7ffff);
-		__asm volatile("iflush %0+4" : : "r" (where));
-	} else if (value < (1L<<32)) {
-		/* 
-		 * We're within 32-bits of address zero.
-		 *
-		 * The resulting code in the jump slot is:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	sethi	%hi(addr), %g1
-		 *	jmp	%g1+%lo(addr)
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *
-		 */
-		where[2] = JMP   | LOVAL(value, 0);
-		where[1] = SETHI | HIVAL(value, 10);
-		__asm volatile("iflush %0+8" : : "r" (where));
-		__asm volatile("iflush %0+4" : : "r" (where));
-
-	} else if ((Elf_SOff)value <= 0 && (Elf_SOff)value > -(1L<<32)) {
-		/* 
-		 * We're within 32-bits of address -1.
-		 *
-		 * The resulting code in the jump slot is:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	sethi	%hix(addr), %g1
-		 *	xor	%g1, %lox(addr), %g1
-		 *	jmp	%g1
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *
-		 */
-		where[3] = JMP;
-		where[2] = XOR | (value & 0x00003ff) | 0x1c00;
-		where[1] = SETHI | HIVAL(~value, 10);
-		__asm volatile("iflush %0+12" : : "r" (where));
-		__asm volatile("iflush %0+8" : : "r" (where));
-		__asm volatile("iflush %0+4" : : "r" (where));
-
-	} else if ((offset+8) <= (1L<<31) &&
-	    (Elf_SOff)(offset+8) >= -((1L<<31) - 4)) {
-		/* 
-		 * We're within 32-bits -- we can use a direct call insn 
-		 *
-		 * The resulting code in the jump slot is:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	mov	%o7, %g1
-		 *	call	(.+offset)
-		 *	 mov	%g1, %o7
-		 *	nop
-		 *	nop
-		 *	nop
-		 *	nop
-		 *
-		 */
-		offset += 8;	/* call is at where[2], 8 byte further */
-		where[3] = MOV17;
-		where[2] = CALL	  | ((-offset >> 2) & 0x3fffffff);
-		where[1] = MOV71;
-		__asm volatile("iflush %0+12" : : "r" (where));
-		__asm volatile("iflush %0+8" : : "r" (where));
-		__asm volatile("iflush %0+4" : : "r" (where));
-
-	} else if ((Elf_SOff)value > 0 && value < (1L<<44)) {
-		/* 
-		 * We're within 44 bits.  We can generate this pattern:
-		 *
-		 * The resulting code in the jump slot is:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	sethi	%h44(addr), %g1
-		 *	or	%g1, %m44(addr), %g1
-		 *	sllx	%g1, 12, %g1	
-		 *	jmp	%g1+%l44(addr)	
-		 *	nop
-		 *	nop
-		 *	nop
-		 *
-		 */
-		where[4] = JMP   | LOVAL(value, 0);
-		where[3] = SLLX  | 12;
-		where[2] = OR    | (((value) >> 12) & 0x00001fff);
-		where[1] = SETHI | HIVAL(value, 22);
-		__asm volatile("iflush %0+16" : : "r" (where));
-		__asm volatile("iflush %0+12" : : "r" (where));
-		__asm volatile("iflush %0+8" : : "r" (where));
-		__asm volatile("iflush %0+4" : : "r" (where));
-
-	} else if ((Elf_SOff)value < 0 && (Elf_SOff)value > -(1L<<44)) {
-		/*
-		 *  We're within 44 bits.  We can generate this pattern:
-		 *
-		 * The resulting code in the jump slot is:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	sethi	%hi((-addr)>>12), %g1
-		 *	or	%g1, %lo((-addr)>>12), %g1
-		 *	neg	%g1
-		 *	sllx	%g1, 12, %g1
-		 *	jmp	%g1+(addr&0x0fff)
-		 *	nop
-		 *	nop
-		 *
-		 */
-		Elf_Addr neg = (~value+1)>>12;
-		where[5] = JMP   | (value & 0x0fff);
-		where[4] = SLLX  | 12;
-		where[3] = NEG;
-		where[2] = OR    | (LOVAL(neg, 0)+1);
-		where[1] = SETHI | HIVAL(neg, 10);
-		__asm volatile("iflush %0+20" : : "r" (where));
-		__asm volatile("iflush %0+16" : : "r" (where));
-		__asm volatile("iflush %0+12" : : "r" (where));
-		__asm volatile("iflush %0+8" : : "r" (where));
-		__asm volatile("iflush %0+4" : : "r" (where));
-
-	} else {
-		/* 
-		 * We need to load all 64-bits
-		 *
-		 * The resulting code in the jump slot is:
-		 *
-		 *	sethi	%hi(. - .PLT0), %g1
-		 *	sethi	%hh(addr), %g1
-		 *	sethi	%lm(addr), %g5
-		 *	or	%g1, %hm(addr), %g1
-		 *	sllx	%g1, 32, %g1
-		 *	or	%g1, %g5, %g1
-		 *	jmp	%g1+%lo(addr)
-		 *	nop
-		 *
-		 */
-		where[6] = JMP     | LOVAL(value, 0);
-		where[5] = ORG5;
-		where[4] = SLLX    | 32;
-		where[3] = OR      | LOVAL(value, 32);
-		where[2] = SETHIG5 | HIVAL(value, 10);
-		where[1] = SETHI   | HIVAL(value, 42);
-		__asm volatile("iflush %0+24" : : "r" (where));
-		__asm volatile("iflush %0+20" : : "r" (where));
-		__asm volatile("iflush %0+16" : : "r" (where));
-		__asm volatile("iflush %0+12" : : "r" (where));
-		__asm volatile("iflush %0+8" : : "r" (where));
-		__asm volatile("iflush %0+4" : : "r" (where));
-
-	}
+	_rtld_write_plt(where, value, rela, obj);
 
 	if (tp)
 		*tp = value;

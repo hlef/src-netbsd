@@ -1,4 +1,4 @@
-/*	$NetBSD: if_ni.c,v 1.43 2016/06/10 13:27:13 ozaki-r Exp $ */
+/*	$NetBSD: if_ni.c,v 1.46 2018/06/26 06:48:00 msaitoh Exp $ */
 /*
  * Copyright (c) 2000 Ludd, University of Lule}, Sweden. All rights reserved.
  *
@@ -36,7 +36,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_ni.c,v 1.43 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_ni.c,v 1.46 2018/06/26 06:48:00 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -51,12 +51,10 @@ __KERNEL_RCSID(0, "$NetBSD: if_ni.c,v 1.43 2016/06/10 13:27:13 ozaki-r Exp $");
 #include <net/if.h>
 #include <net/if_ether.h>
 #include <net/if_dl.h>
+#include <net/bpf.h>
 
 #include <netinet/in.h>
 #include <netinet/if_inarp.h>
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 #ifdef __vax__
@@ -535,7 +533,7 @@ nistart(struct ifnet *ifp)
 		if (cnt > NTXFRAGS)
 			panic("nistart"); /* XXX */
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 		bdp = &bbd[(data->bufs[0]._index & 0x7fff)];
 		for (m0 = m, i = 0, mlen = 0; m0; m0 = m0->m_next) {
 			if (m0->m_len == 0)
@@ -617,7 +615,6 @@ niintr(void *arg)
 			if (m == (void *)data->nd_cmdref)
 				break; /* Out of mbufs */
 
-			bpf_mtap(ifp, m);
 			if_percpuq_enqueue(ifp->if_percpuq, m);
 			break;
 

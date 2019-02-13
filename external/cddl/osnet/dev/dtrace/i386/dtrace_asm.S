@@ -1,4 +1,4 @@
-/*	$NetBSD: dtrace_asm.S,v 1.5 2016/06/23 04:35:35 pgoyette Exp $	*/
+/*	$NetBSD: dtrace_asm.S,v 1.7 2018/05/28 21:05:03 chs Exp $	*/
 
 /*
  * CDDL HEADER START
@@ -21,7 +21,7 @@
  *
  * CDDL HEADER END
  *
- * $FreeBSD: src/sys/cddl/dev/dtrace/i386/dtrace_asm.S,v 1.1.4.1 2009/08/03 08:13:06 kensmith Exp $
+ * $FreeBSD: head/sys/cddl/dev/dtrace/i386/dtrace_asm.S 298171 2016-04-17 23:08:47Z markj $
  */
 /*
  * Copyright 2004 Sun Microsystems, Inc.  All rights reserved.
@@ -30,17 +30,45 @@
 
 #define _ASM
 
+#include "assym.h"
+
 #include <sys/cpuvar_defs.h>
 #include <sys/dtrace.h>
 #include <machine/asm.h>
 #include <machine/frameasm.h>
+#include <machine/trap.h>
+
+#define INTR_POP		\
+	addl	$16, %esp;	\
+	popl	%edi;		\
+	popl	%esi;		\
+	popl	%ebp;		\
+	popl	%ebx;		\
+	popl	%edx;		\
+	popl	%ecx;		\
+	popl	%eax;		\
+	addl	$8, %esp
 
 	ENTRY(dtrace_invop_start)
+	
+	/* Store a trapframe for dtrace. */
+	pushl	$0
+	pushl	$T_PRIVINFLT
+	pushl	%eax
+	pushl	%ecx
+	pushl	%edx
+	pushl	%ebx
+	pushl	%ebp
+	pushl	%esi
+	pushl	%edi
+	subl	$16,%esp		/* dummy for segment regs */
+	cld
 
+	/* Store the args to dtrace_invop(). */
 	pushl	%eax			/* push %eax -- may be return value */
 	pushl	%esp			/* push stack pointer */
-	addl	$48, (%esp)		/* adjust to incoming args */
-	pushl	40(%esp)		/* push calling EIP */
+	addl	$4, (%esp)		/* skip first arg and segment regs */
+	pushl	TF_EIP+8(%esp)		/* push calling EIP */
 
 	/*
 	 * Call dtrace_invop to let it check if the exception was
@@ -67,7 +95,7 @@ invop_push:
 	 * We must emulate a "pushl %ebp".  To do this, we pull the stack
 	 * down 4 bytes, and then store the base pointer.
 	 */
-	popal
+	INTR_POP
 	subl	$4, %esp		/* make room for %ebp */
 	pushl	%eax			/* push temp */
 	movl	8(%esp), %eax		/* load calling EIP */
@@ -86,7 +114,7 @@ invop_pop:
 	 * the above:  we remove the %ebp from the stack, and squeeze up the
 	 * saved state from the trap.
 	 */
-	popal
+	INTR_POP
 	pushl	%eax			/* push temp */
 	movl	16(%esp), %ebp		/* pop %ebp */
 	movl	12(%esp), %eax		/* load calling EFLAGS */
@@ -106,7 +134,7 @@ invop_leave:
 	 * requires two temporaries:  one for the new base pointer, and one
 	 * for the staging register.
 	 */
-	popa
+	INTR_POP
 	pushl	%eax			/* push temp */
 	pushl	%ebx			/* push temp */
 	movl	%ebp, %ebx		/* set temp to old %ebp */
@@ -118,18 +146,18 @@ invop_leave:
 	movl	8(%esp), %eax		/* load calling EIP */
 	incl	%eax			/* increment over LOCK prefix */
 	movl	%eax, -8(%ebx)		/* store calling EIP */
-	movl	%ebx, -4(%esp)		/* temporarily store new %esp */
+	subl	$8, %ebx		/* adjust for three pushes, one pop */
+	movl	%ebx, 8(%esp)		/* temporarily store new %esp */
 	popl	%ebx			/* pop off temp */
 	popl	%eax			/* pop off temp */
-	movl	-12(%esp), %esp		/* set stack pointer */
-	subl	$8, %esp		/* adjust for three pushes, one pop */
+	movl	(%esp), %esp		/* set stack pointer */
 	iret				/* return from interrupt */
 invop_nop:
 	/*
 	 * We must emulate a "nop".  This is obviously not hard:  we need only
 	 * advance the %eip by one.
 	 */
-	popa
+	INTR_POP
 	incl	(%esp)
 	iret				/* return from interrupt */
 
@@ -165,19 +193,7 @@ uint32_t dtrace_cas32(uint32_t *target, uint32_t cmp, uint32_t new)
 */
 
 	ENTRY(dtrace_cas32)
-	movl	4(%esp), %edx
-	movl	8(%esp), %eax
-	movl	12(%esp), %ecx
-	lock
-	cmpxchgl %ecx, (%edx)
-	ret
-	END(dtrace_cas32)
-
-/*
-uint32_t dtrace_casptr(uint32_t *target, uint32_t cmp, uint32_t new)
-*/
-
-	ENTRY(dtrace_casptr)
+	ALTENTRY(dtrace_casptr)
 	movl	4(%esp), %edx
 	movl	8(%esp), %eax
 	movl	12(%esp), %ecx
@@ -185,7 +201,7 @@ uint32_t dtrace_casptr(uint32_t *target, uint32_t cmp, uint32_t new)
 	cmpxchgl %ecx, (%edx)
 	ret
 	END(dtrace_casptr)
-
+	END(dtrace_cas32)
 
 /*
 uintptr_t dtrace_caller(int aframes)
