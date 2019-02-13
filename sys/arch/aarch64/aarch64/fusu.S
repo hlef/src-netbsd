@@ -1,4 +1,4 @@
-/* $NetBSD: fusu.S,v 1.1 2014/08/10 05:47:37 matt Exp $ */
+/*	$NetBSD: fusu.S,v 1.5 2018/07/17 18:08:36 christos Exp $	*/
 
 /*-
  * Copyright (c) 2014 The NetBSD Foundation, Inc.
@@ -30,106 +30,139 @@
  */
 
 #include <aarch64/asm.h>
-
 #include "assym.h"
 
-RCSID("$NetBSD: fusu.S,v 1.1 2014/08/10 05:47:37 matt Exp $");
+RCSID("$NetBSD: fusu.S,v 1.5 2018/07/17 18:08:36 christos Exp $");
+
+	.macro enter_cpu_onfault
+	stp	fp, lr, [sp, #-16]!	/* save fp, lr */
+	mov	fp, sp			/* link frame pointer */
+	stp	x19, x20, [sp, #-16]!	/* save x19, x20 */
+	mov	x19, x0			/* x19 = arg0 */
+	mov	x20, x1			/* x20 = arg1 */
+
+	/* if (cpu_set_onfault(fb) != 0) return -1 */
+	sub	sp, sp, #FB_T_SIZE	/* allocate struct faultbuf */
+	mov	x0, sp
+	bl	cpu_set_onfault
+	mvn	x8, xzr			/* temporary return value = -1 */
+	cbnz	w0, 9f			/* return if error */
+	.endm
+
+	.macro exit_cpu_onfault
+	/* curlwp->l_md.md_onfault = NULL */
+	mrs	x0, tpidr_el1			/* curcpu */
+	ldr	x0, [x0, #CI_CURLWP]		/* x0 = curlwp */
+	str	xzr, [x0, #L_MD_ONFAULT]	/* lwp->l_md_onfault = NULL */
+9:
+	add	sp, sp, #FB_T_SIZE		/* pop stack */
+	ldp	x19, x20, [sp], #16		/* restore x19, x20 */
+	ldp	fp, lr, [sp], #16		/* restore fp, lr */
+	mov	x0, x8				/* x0 = return value */
+	.endm
 
 /* LINTSTUB: int fubyte(const void *base); */
-
 ENTRY(fubyte)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	ldtrb	w0, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	ldtrb	w8, [x19]
+
+	exit_cpu_onfault
 	ret
 END(fubyte)
 
 /* LINTSTUB: int fusword(const void *base); */
-
 ENTRY(fusword)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	ldtrh	w0, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	ldtrh	w8, [x19]
+
+	exit_cpu_onfault
 	ret
 END(fusword)
 
 /* LINTSTUB: int fuswintr(const void *base); */
-
 ENTRY(fuswintr)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	ldtrh	w0, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	ldtrh	w8, [x19]
+
+	exit_cpu_onfault
 	ret
 END(fuswintr)
 
-/* LINTSTUB: long fuword(const void *base); */
+/* LINTSTUB: int fuword32(const void *base); */
+ENTRY(fuword32)
+	enter_cpu_onfault
 
-ENTRY(fuword)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	ldtr	x0, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	ldtr	w8, [x19]
+
+	exit_cpu_onfault
 	ret
-.Lfusu_onfault:
-	mvn	x0, xzr
+END(fuword32)
+
+/* LINTSTUB: long fuword(const void *base); */
+ENTRY(fuword)
+	enter_cpu_onfault
+
+	ldtr	x8, [x19]
+
+	exit_cpu_onfault
 	ret
 END(fuword)
 
-/* LINTSTUB: int subyte(const void *base, int val); */
-
+/* LINTSTUB: int subyte(void *base, int c); */
 ENTRY(subyte)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	sttrb	w1, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	sttrb	w20, [x19]
+	mov	x8, #0
+
+	exit_cpu_onfault
 	ret
 END(subyte)
 
-/* LINTSTUB: int susword(const void *base, int val); */
-
+/* LINTSTUB: int suword(void *base, short c); */
 ENTRY(susword)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	sttrh	w1, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	sttrh	w20, [x19]
+	mov	x8, #0
+
+	exit_cpu_onfault
 	ret
 END(susword)
 
-/* LINTSTUB: int suswintr(const void *base, int val); */
-
+/* LINTSTUB: int suswintr(void *base, short c); */
 ENTRY(suswintr)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	sttrh	w1, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	sttrh	w20, [x19]
+	mov	x8, #0
+
+	exit_cpu_onfault
 	ret
 END(suswintr)
 
-/* LINTSTUB: long suword(const void *base, int val); */
+/* LINTSTUB: int suword32(void *base, int c); */
+ENTRY(suword32)
+	enter_cpu_onfault
 
+	sttr	w20, [x19]
+	mov	x8, #0
+
+	exit_cpu_onfault
+	ret
+END(suword32)
+
+/* LINTSTUB: int suword(void *base, long c); */
 ENTRY(suword)
-	mrs	x2, tpidr_el1
-	ldr	x18, [x2, #CI_CURLWP]
-	adr	x3, .Lfusu_onfault
-	str	x3, [x18, #L_MD_ONFAULT]
-	sttr	x1, [x0]
-	str	xzr, [x18, #L_MD_ONFAULT]
+	enter_cpu_onfault
+
+	sttr	x20, [x19]
+	mov	x8, #0
+
+	exit_cpu_onfault
 	ret
 END(suword)
+

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -141,7 +141,7 @@ AcpiExAllocateNameString (
     {
         /* Set up multi prefixes   */
 
-        *TempPtr++ = AML_MULTI_NAME_PREFIX_OP;
+        *TempPtr++ = AML_MULTI_NAME_PREFIX;
         *TempPtr++ = (char) NumNameSegs;
     }
     else if (2 == NumNameSegs)
@@ -201,14 +201,11 @@ AcpiExNameSegment (
         return_ACPI_STATUS (AE_CTRL_PENDING);
     }
 
-    ACPI_DEBUG_PRINT ((ACPI_DB_LOAD, "Bytes from stream:\n"));
-
     for (Index = 0;
         (Index < ACPI_NAME_SIZE) && (AcpiUtValidNameChar (*AmlAddress, 0));
         Index++)
     {
         CharBuf[Index] = *AmlAddress++;
-        ACPI_DEBUG_PRINT ((ACPI_DB_LOAD, "%c\n", CharBuf[Index]));
     }
 
 
@@ -222,9 +219,9 @@ AcpiExNameSegment (
 
         if (NameString)
         {
-            strcat (NameString, CharBuf);
             ACPI_DEBUG_PRINT ((ACPI_DB_NAMES,
-                "Appended to - %s\n", NameString));
+                "Appending NameSeg %s\n", CharBuf));
+            strcat (NameString, CharBuf);
         }
         else
         {
@@ -385,7 +382,7 @@ AcpiExGetNameString (
             }
             break;
 
-        case AML_MULTI_NAME_PREFIX_OP:
+        case AML_MULTI_NAME_PREFIX:
 
             ACPI_DEBUG_PRINT ((ACPI_DB_LOAD, "MultiNamePrefix at %p\n",
                 AmlAddress));

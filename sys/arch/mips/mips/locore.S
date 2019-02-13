@@ -1,4 +1,4 @@
-/*	$NetBSD: locore.S,v 1.204 2016/07/27 09:32:35 skrll Exp $	*/
+/*	$NetBSD: locore.S,v 1.219 2018/09/07 21:14:45 macallan Exp $	*/
 
 /*
  * Copyright (c) 1992, 1993
@@ -61,22 +61,11 @@
 #include <mips/asm.h>
 #include <mips/cpuregs.h>
 #include <mips/trap.h>
+#include <mips/locore.h>
 
-RCSID("$NetBSD: locore.S,v 1.204 2016/07/27 09:32:35 skrll Exp $")
+RCSID("$NetBSD: locore.S,v 1.219 2018/09/07 21:14:45 macallan Exp $")
 
 #include "assym.h"
-
-#if defined(MIPS1) || defined(MIPS2)
-#define	NOP_L		nop
-#else
-#define	NOP_L		/* nothing */
-#endif
-
-#if defined(MIPS1) || defined(MIPS2) || defined(MIPS3)
-#define MFC0_HAZARD	nop
-#else
-#define MFC0_HAZARD	/* nothing */
-#endif
 
 	.set	noreorder
 
@@ -84,23 +73,42 @@ RCSID("$NetBSD: locore.S,v 1.204 2016/07/27 09:32:35 skrll Exp $")
 	.globl	_C_LABEL(kernel_text)		# libkvm refers this
 start:
 _C_LABEL(kernel_text):
-#if (defined(MIPS3_PLUS) && !defined(MIPS1)) || defined(emips)
-	/* keep firmware exception handler until we hook. */
-	mfc0	v0, MIPS_COP_0_STATUS
+	mfc0	k0, MIPS_COP_0_STATUS
 	MFC0_HAZARD
-#if defined(emips)
-	and	v0, MIPS_SR_TS | MIPS3_SR_RE
-#else
-	and	v0, MIPS_SR_BEV
+
+	/* First disable the interrupts only, for safety */
+	and	k0, ~MIPS_SR_INT_IE
+	mtc0	k0, MIPS_COP_0_STATUS
+	COP0_SYNC
+
+	/* Known state: BEV, coprocessors disabled. */
+	/* Leaving TS | RE alone (for emips) */
+	and	k0, MIPS_SR_TS | MIPS3_SR_RE
+	mtc0	k0, MIPS_COP_0_STATUS
+	COP0_SYNC
+
+#if defined(_LP64) 
+	/* Enable 64-bit addressing */
+	mfc0	k0, MIPS_COP_0_STATUS
+	MFC0_HAZARD
+	or	k0, MIPS_SR_KX | MIPS_SR_UX
+	mtc0	k0, MIPS_COP_0_STATUS
+#elif defined(__mips_n32)
+        mfc0    k0, MIPS_COP_0_STATUS
+        MFC0_HAZARD
+        or      k0, MIPS_SR_KX
+        mtc0    k0, MIPS_COP_0_STATUS
 #endif
-	mtc0	v0, MIPS_COP_0_STATUS		# Disable interrupts
+
+#ifdef HPCMIPS_L1CACHE_DISABLE
+	mfc0	t0, MIPS_COP_0_CONFIG
+	li	t1, 0xfffffff8
+	and	t0, t0, t1
+	or	t0, 0x00000002			# XXX, KSEG0 is uncached
+	mtc0	t0, MIPS_COP_0_CONFIG
 	COP0_SYNC
-#else
-	mtc0	zero, MIPS_COP_0_STATUS		# Disable interrupts
-	COP0_SYNC
-#endif
-	mtc0	zero, MIPS_COP_0_CAUSE
-	COP0_SYNC
+#endif /* HPCMIPS_L1CACHE_DISABLE */
+
 #ifdef MIPS64_OCTEON
 	//
 	// U-boot on the erlite starts all cpus at the kernel entry point.
@@ -141,44 +149,27 @@ _C_LABEL(kernel_text):
 	PTR_LA	gp, _C_LABEL(_gp)
 #endif
 
-#ifdef NOFPU /* No FPU; avoid touching FPU registers */
-#if !defined(emips)   /*  XXX??? we have already disabled interrupts! */
-#ifdef __mips_n32
-	li	t0, MIPS_SR_KX			# turn on XKSEG and XKPHYS
-#elif defined(_LP64)
-	li	t0, MIPS_SR_KX | MIPS_SR_UX	# turn on XKSEG and XKPHYS
-#else
-	li	t0, 0				# Disable interrupts and
-#endif
-	mtc0	t0, MIPS_COP_0_STATUS		# the fp coprocessor
-	COP0_SYNC
-#endif
-#ifdef HPCMIPS_L1CACHE_DISABLE
-	mfc0	t0, MIPS_COP_0_CONFIG
-	li	t1, 0xfffffff8
-	and	t0, t0, t1
-	or	t0, 0x00000002			# XXX, KSEG0 is uncached
-	mtc0	t0, MIPS_COP_0_CONFIG
-	COP0_SYNC
-#endif /* HPCMIPS_L1CACHE_DISABLE */
-#else
-	mfc0	t0, MIPS_COP_0_STATUS
-	MFC0_HAZARD
-#if defined(_LP64) || defined(__mips_n32)
-	or	t0, MIPS_SR_KX			# turn on XKSEG and XKPHYS
-#endif
-	or	t0, MIPS_SR_COP_1_BIT		# Disable interrupts, and
-	mtc0	t0, MIPS_COP_0_STATUS		# enable the fp coprocessor
-	COP0_HAZARD_FPUENABLE
-#endif
 	mfc0	t0, MIPS_COP_0_PRID		# read product revision ID
 	COP0_SYNC
 	nop
-#ifdef NOFPU /* No FPU; avoid touching FPU registers */
-	add	t1, zero, zero
+
+#ifdef NOFPU
+	li	t1, 0				# Dummy FPU_ID
 #else
-	cfc1	t1, MIPS_FPU_ID			# read FPU ID register
+	/* Enable the FPU to read FPUID */
+	mfc0	k0, MIPS_COP_0_STATUS
+	MFC0_HAZARD
+	or	k0, MIPS_SR_COP_1_BIT
+	mtc0	k0, MIPS_COP_0_STATUS
+	COP0_HAZARD_FPUENABLE
+
+	cfc1	t1, MIPS_FPU_ID
+
+	/* Disable again, we don't want it on in the kernel */
+	and	k0, ~MIPS_SR_COP_1_BIT
+	mtc0	k0, MIPS_COP_0_STATUS
 #endif
+
 	INT_S	t0, _C_LABEL(mips_options)+MO_CPU_ID # save PRID register
 	INT_S	t1, _C_LABEL(mips_options)+MO_FPU_ID # save FPU ID register
 	PTR_LA	MIPS_CURLWP, _C_LABEL(lwp0)	# set curlwp
@@ -187,7 +178,7 @@ _C_LABEL(kernel_text):
 
 	# XXXuvm_lwp_getuarea
 	PTR_L	sp, L_PCB(MIPS_CURLWP)		# switch to lwp0 stack
-	nop
+	NOP_L
 	PTR_ADDU sp, USPACE - TF_SIZ - CALLFRAME_SIZ
 	/*
 	 * Raise to IPLHIGH
@@ -208,7 +199,8 @@ _C_LABEL(kernel_text):
 	COP0_SYNC
 
 	jal	_C_LABEL(main)			# main(void)
-	nop
+	 nop
+
 	PANIC("main() returned")		# main never returns
 	.set	at
 	.globl _C_LABEL(verylocore)
@@ -499,7 +491,7 @@ LEAF(lwp_oncpu)
 	jr	ra				# and return.
 	 nop
 END(lwp_oncpu)
-	
+
 
 /*
  * void savectx(struct pcb *)
@@ -827,7 +819,7 @@ END(mips_pagezero)
 
 
 #ifndef DDB_TRACE
-
+
 #if defined(DEBUG) || defined(DDB) || defined(KGDB) || defined(geo)
 /*
  * Stacktrace support hooks which use type punnign to access

@@ -1,4 +1,4 @@
-/*	$NetBSD: uipc_syscalls_43.c,v 1.46 2014/11/09 17:48:07 maxv Exp $	*/
+/*	$NetBSD: uipc_syscalls_43.c,v 1.50 2018/09/06 06:41:59 maxv Exp $	*/
 
 /*
  * Copyright (c) 1982, 1986, 1989, 1990, 1993
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: uipc_syscalls_43.c,v 1.46 2014/11/09 17:48:07 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: uipc_syscalls_43.c,v 1.50 2018/09/06 06:41:59 maxv Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -61,7 +61,6 @@ __KERNEL_RCSID(0, "$NetBSD: uipc_syscalls_43.c,v 1.46 2014/11/09 17:48:07 maxv E
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
 #include <net/if_gre.h>
-#include <net/if_atm.h>
 #include <net/if_tap.h>
 #include <net80211/ieee80211_ioctl.h>
 #include <netinet6/in6_var.h>
@@ -343,7 +342,8 @@ compat_43_sys_sendmsg(struct lwp *l, const struct compat_43_sys_sendmsg_args *ua
 	msg.msg_iovlen = omsg.msg_iovlen;
 	msg.msg_iov = omsg.msg_iov;
 
-	error = sockargs(&nam, omsg.msg_name, omsg.msg_namelen, MT_SONAME);
+	error = sockargs(&nam, omsg.msg_name, omsg.msg_namelen,
+	    UIO_USERSPACE, MT_SONAME);
 	if (error != 0)
 		return (error);
 
@@ -361,7 +361,8 @@ compat_43_sys_sendmsg(struct lwp *l, const struct compat_43_sys_sendmsg_args *ua
 	if (error != 0)
 		goto bad;
 
-	return do_sys_sendmsg(l, SCARG(uap, s), &msg, SCARG(uap, flags), retval);
+	return do_sys_sendmsg(l, SCARG(uap, s), &msg, SCARG(uap, flags),
+	    retval);
 
     bad:
 	if (nam != NULL)

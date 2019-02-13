@@ -43,6 +43,7 @@ OBJECTS = \
 	$(OBJDIR)/dsinit.o\
 	$(OBJDIR)/dsmthdat.o\
 	$(OBJDIR)/dsobject.o\
+	$(OBJDIR)/dspkginit.o\
 	$(OBJDIR)/dsutils.o\
 	$(OBJDIR)/dswload.o\
 	$(OBJDIR)/dswload2.o\
@@ -72,7 +73,6 @@ OBJECTS = \
 	$(OBJDIR)/nsxfeval.o\
 	$(OBJDIR)/nsxfname.o\
 	$(OBJDIR)/nsxfobj.o\
-	$(OBJDIR)/oslibcfs.o\
 	$(OBJDIR)/osunixxf.o\
 	$(OBJDIR)/psargs.o\
 	$(OBJDIR)/psloop.o\
@@ -113,10 +113,10 @@ OBJECTS = \
 	$(OBJDIR)/utmath.o\
 	$(OBJDIR)/utmisc.o\
 	$(OBJDIR)/utmutex.o\
+	$(OBJDIR)/utnonansi.o\
 	$(OBJDIR)/utobject.o\
 	$(OBJDIR)/utosi.o\
 	$(OBJDIR)/utownerid.o\
-	$(OBJDIR)/utprint.o\
 	$(OBJDIR)/utstate.o\
 	$(OBJDIR)/utstring.o\
 	$(OBJDIR)/utxface.o\

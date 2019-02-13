@@ -1,4 +1,4 @@
-/*	$NetBSD: if_strip.c,v 1.104 2016/06/10 13:27:16 ozaki-r Exp $	*/
+/*	$NetBSD: if_strip.c,v 1.110 2018/06/06 01:49:09 maya Exp $	*/
 /*	from: NetBSD: if_sl.c,v 1.38 1996/02/13 22:00:23 christos Exp $	*/
 
 /*
@@ -87,7 +87,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_strip.c,v 1.104 2016/06/10 13:27:16 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_strip.c,v 1.110 2018/06/06 01:49:09 maya Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
@@ -113,6 +113,8 @@ __KERNEL_RCSID(0, "$NetBSD: if_strip.c,v 1.104 2016/06/10 13:27:16 ozaki-r Exp $
 #include <sys/cpu.h>
 #include <sys/intr.h>
 #include <sys/socketvar.h>
+#include <sys/device.h>
+#include <sys/module.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -222,7 +224,7 @@ struct if_clone strip_cloner =
 
 static void	stripintr(void *);
 
-static int	stripinit(struct strip_softc *);
+static int	stripcreate(struct strip_softc *);
 static struct mbuf *strip_btom(struct strip_softc *, int);
 
 /*
@@ -353,10 +355,37 @@ static struct linesw strip_disc = {
 void
 stripattach(void)
 {
+	/*
+	 * Nothing to do here, initialization is handled by the
+	 * module initialization code in slinit() below).
+	 */
+}
+
+static void
+stripinit(void)
+{
+
 	if (ttyldisc_attach(&strip_disc) != 0)
-		panic("stripattach");
+		panic("%s", __func__);
 	LIST_INIT(&strip_softc_list);
 	if_clone_attach(&strip_cloner);
+}
+
+static int
+stripdetach(void)
+{
+	int error = 0;
+
+	if (!LIST_EMPTY(&strip_softc_list))
+		error = EBUSY;
+
+	if (error == 0)
+		error = ttyldisc_detach(&strip_disc);
+
+	if (error == 0)
+		if_clone_detach(&strip_cloner);
+
+	return error;
 }
 
 static int
@@ -407,7 +436,7 @@ strip_clone_destroy(struct ifnet *ifp)
 }
 
 static int
-stripinit(struct strip_softc *sc)
+stripcreate(struct strip_softc *sc)
 {
 	u_char *p;
 
@@ -483,7 +512,7 @@ stripopen(dev_t dev, struct tty *tp)
 		if (sc->sc_ttyp == NULL) {
 			sc->sc_si = softint_establish(SOFTINT_NET,
 			    stripintr, sc);
-			if (stripinit(sc) == 0) {
+			if (stripcreate(sc) == 0) {
 				softint_disestablish(sc->sc_si);
 				return (ENOBUFS);
 			}
@@ -647,8 +676,7 @@ strip_sendbody(struct strip_softc *sc, struct mbuf *m)
 			dp = StuffData(mtod(m, u_char *), m->m_len, dp,
 			    &rllstate_ptr);
 		}
-		MFREE(m, m2);
-		m = m2;
+		m = m2 = m_free(m);
 	}
 
 	/*
@@ -1045,12 +1073,9 @@ stripintr(void *arg)
 {
 	struct strip_softc *sc = arg;
 	struct tty *tp = sc->sc_ttyp;
-	struct mbuf *m;
+	struct mbuf *m, *n;
 	int s, len;
 	u_char *pktstart;
-#ifdef INET
-	u_char c;
-#endif
 	u_char chdr[CHDR_LEN];
 
 	KASSERT(tp != NULL);
@@ -1060,9 +1085,6 @@ stripintr(void *arg)
 	 */
 	mutex_enter(softnet_lock);
 	for (;;) {
-#ifdef INET
-		struct ip *ip;
-#endif
 		struct mbuf *bpf_m;
 
 		/*
@@ -1115,6 +1137,7 @@ stripintr(void *arg)
 		} else
 			bpf_m = NULL;
 #ifdef INET
+		struct ip *ip;
 		if ((ip = mtod(m, struct ip *))->ip_p == IPPROTO_TCP) {
 			if (sc->sc_if.if_flags & SC_COMPRESS)
 				*mtod(m, u_char *) |=
@@ -1161,6 +1184,7 @@ stripintr(void *arg)
 			memcpy(chdr, pktstart, CHDR_LEN);
 		}
 #ifdef INET
+		u_char c;
 		if ((c = (*pktstart & 0xf0)) != (IPVERSION << 4)) {
 			if (c & 0x80)
 				c = TYPE_COMPRESSED_TCP;
@@ -1206,14 +1230,13 @@ stripintr(void *arg)
 		}
 		/*
 		 * If the packet will fit into a single
-		 * header mbuf, copy it into one, to save
-		 * memory.
+		 * header mbuf, try to copy it into one,
+		 * to save memory.
 		 */
-		if (m->m_pkthdr.len < MHLEN) {
-			struct mbuf *n;
+		if ((m->m_pkthdr.len < MHLEN) &&
+		    (n = m_gethdr(M_DONTWAIT, MT_DATA))) {
 			int pktlen;
 
-			MGETHDR(n, M_DONTWAIT, MT_DATA);
 			pktlen = m->m_pkthdr.len;
 			M_MOVE_PKTHDR(n, m);
 			memcpy(mtod(n, void *), mtod(m, void *), pktlen);
@@ -1245,7 +1268,7 @@ int
 stripioctl(struct ifnet *ifp, u_long cmd, void *data)
 {
 	struct ifaddr *ifa = (struct ifaddr *)data;
-	struct ifreq *ifr;
+	struct ifreq *ifr = (struct ifreq *)data;
 	int s, error = 0;
 
 	s = splnet();
@@ -1260,13 +1283,12 @@ stripioctl(struct ifnet *ifp, u_long cmd, void *data)
 		break;
 
 	case SIOCSIFDSTADDR:
-		if (ifa->ifa_addr->sa_family != AF_INET)
+		if (ifreq_getaddr(cmd, ifr)->sa_family != AF_INET)
 			error = EAFNOSUPPORT;
 		break;
 
 	case SIOCADDMULTI:
 	case SIOCDELMULTI:
-		ifr = (struct ifreq *)data;
 		if (ifr == 0) {
 			error = EAFNOSUPPORT;		/* XXX */
 			break;
@@ -1973,3 +1995,10 @@ RecvErr_Message(struct strip_softc *strip_info, u_char *sendername,
 		RecvErr("unparsed radio error message:", strip_info);
 	}
 }
+
+/*
+ * Module infrastructure
+ */
+#include "if_module.h"
+
+IF_MODULE(MODULE_CLASS_DRIVER, strip, "slcompress");

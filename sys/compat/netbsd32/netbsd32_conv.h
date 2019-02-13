@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32_conv.h,v 1.30 2015/06/22 10:35:00 mrg Exp $	*/
+/*	$NetBSD: netbsd32_conv.h,v 1.35 2018/05/10 02:36:07 christos Exp $	*/
 
 /*
  * Copyright (c) 1998, 2001 Matthew R. Green
@@ -29,13 +29,6 @@
 #ifndef _COMPAT_NETBSD32_NETBSD32_CONV_H_
 #define _COMPAT_NETBSD32_NETBSD32_CONV_H_
 
-/*
- * Though COMPAT_OLDSOCK is needed only for COMPAT_43, SunOS, Linux,
- * HP-UX, FreeBSD, Ultrix, OSF1, we define it unconditionally so that
- * this would be module-safe.
- */
-#define COMPAT_OLDSOCK /* used by <sys/socket.h> */
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -63,7 +56,7 @@ netbsd32_from_timeval50(const struct timeval *tv,
     struct netbsd32_timeval50 *tv32)
 {
 
-	tv32->tv_sec = (netbsd32_long)tv->tv_sec;
+	tv32->tv_sec = (netbsd32_time50_t)tv->tv_sec;
 	tv32->tv_usec = (netbsd32_long)tv->tv_usec;
 }
 
@@ -72,8 +65,8 @@ netbsd32_from_timeval(const struct timeval *tv,
     struct netbsd32_timeval *tv32)
 {
 
-	tv32->tv_sec = (time_t)tv->tv_sec;
-	tv32->tv_usec = (suseconds_t)tv->tv_usec;
+	tv32->tv_sec = (netbsd32_time_t)tv->tv_sec;
+	tv32->tv_usec = tv->tv_usec;
 }
 
 static __inline void
@@ -82,7 +75,7 @@ netbsd32_to_timeval50(const struct netbsd32_timeval50 *tv32,
 {
 
 	tv->tv_sec = (time_t)tv32->tv_sec;
-	tv->tv_usec = (suseconds_t)tv32->tv_usec;
+	tv->tv_usec = tv32->tv_usec;
 }
 
 static __inline void
@@ -91,7 +84,7 @@ netbsd32_to_timeval(const struct netbsd32_timeval *tv32,
 {
 
 	tv->tv_sec = (time_t)tv32->tv_sec;
-	tv->tv_usec = (suseconds_t)tv32->tv_usec;
+	tv->tv_usec = tv32->tv_usec;
 }
 
 static __inline void
@@ -157,7 +150,7 @@ netbsd32_from_timespec50(const struct timespec *p,
     struct netbsd32_timespec50 *s32p)
 {
 
-	s32p->tv_sec = (netbsd32_long)p->tv_sec;
+	s32p->tv_sec = (netbsd32_time50_t)p->tv_sec;
 	s32p->tv_nsec = (netbsd32_long)p->tv_nsec;
 }
 
@@ -166,7 +159,7 @@ netbsd32_from_timespec(const struct timespec *p,
     struct netbsd32_timespec *s32p)
 {
 
-	s32p->tv_sec = (netbsd32_long)p->tv_sec;
+	s32p->tv_sec = (netbsd32_time_t)p->tv_sec;
 	s32p->tv_nsec = (netbsd32_long)p->tv_nsec;
 }
 
@@ -287,12 +280,28 @@ static __inline void
 netbsd32_from_msghdr(struct netbsd32_msghdr *mhp32, const struct msghdr *mhp)
 {
 
-	mhp32->msg_name = mhp32->msg_name;
-	mhp32->msg_namelen = mhp32->msg_namelen;
-	mhp32->msg_iovlen = mhp32->msg_iovlen;
-	mhp32->msg_control = mhp32->msg_control;
+	NETBSD32PTR32(mhp32->msg_name, mhp->msg_name);
+	mhp32->msg_namelen = mhp->msg_namelen;
+	mhp32->msg_iovlen = mhp->msg_iovlen;
+	NETBSD32PTR32(mhp32->msg_control, mhp->msg_control);
 	mhp32->msg_controllen = mhp->msg_controllen;
 	mhp32->msg_flags = mhp->msg_flags;
+}
+
+static __inline void
+netbsd32_to_mmsghdr(const struct netbsd32_mmsghdr *mmsg32,
+    struct mmsghdr *mmsg)
+{
+    netbsd32_to_msghdr(&mmsg32->msg_hdr, &mmsg->msg_hdr);
+    mmsg->msg_len = mmsg32->msg_len;
+}
+
+static __inline void
+netbsd32_from_mmsghdr(struct netbsd32_mmsghdr *mmsg32,
+    const struct mmsghdr *mmsg)
+{
+    netbsd32_from_msghdr(&mmsg32->msg_hdr, &mmsg->msg_hdr);
+    mmsg32->msg_len = mmsg->msg_len;
 }
 
 static __inline void
@@ -761,7 +770,7 @@ netbsd32_to_dirent12(char *buf, int nbytes)
 	return ((char *)(void *)odp) - buf;
 }
 
-static inline int
+static __inline int
 netbsd32_copyin_plistref(netbsd32_pointer_t n32p, struct plistref *p)
 {
 	struct netbsd32_plistref n32plist;
@@ -776,7 +785,7 @@ netbsd32_copyin_plistref(netbsd32_pointer_t n32p, struct plistref *p)
 	return 0;
 }
 
-static inline int
+static __inline int
 netbsd32_copyout_plistref(netbsd32_pointer_t n32p, struct plistref *p)
 {
 	struct netbsd32_plistref n32plist;

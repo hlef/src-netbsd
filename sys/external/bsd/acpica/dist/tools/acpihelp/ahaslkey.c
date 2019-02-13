@@ -6,7 +6,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -48,7 +48,7 @@
  * ASL Keyword types and associated actual keywords.
  * This table was extracted from the ACPI specification.
  */
-const AH_ASL_KEYWORD        AslKeywordInfo[] =
+const AH_ASL_KEYWORD        Gbl_AslKeywordInfo[] =
 {
     {"AccessAttribKeyword", "Serial Bus Attributes (with legacy SMBus aliases)",
         ":= AttribQuick (SMBusQuick) | AttribSendReceive (SMBusSendReceive) | "
@@ -151,7 +151,7 @@ const AH_ASL_KEYWORD        AslKeywordInfo[] =
 
 /* Preprocessor directives */
 
-const AH_DIRECTIVE_INFO      PreprocessorDirectives[] =
+const AH_DIRECTIVE_INFO      Gbl_PreprocessorDirectives[] =
 {
     {"#include \"Filename\"",               "Standard include of an ASCII ASL source code file"},
     {"#include <Filename>",                 "Alternate syntax for #include, alternate search path"},
@@ -187,6 +187,7 @@ const AH_DIRECTIVE_INFO      PreprocessorDirectives[] =
     {"__PATH__",                            "Return the full pathname of the current ASL file"},
     {"__LINE__",                            "Return the current line number within the current ASL file"},
     {"__DATE__",                            "Return the current date"},
+    {"__METHOD__",                          "Return the declared name of the current control method"},
     {"__IASL__",                            "Permanently defined for the iASL compiler"},
     {NULL,                                   NULL}
 };

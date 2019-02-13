@@ -1,4 +1,4 @@
-/*	$NetBSD: clmpcc.c,v 1.51 2014/11/15 19:18:18 christos Exp $ */
+/*	$NetBSD: clmpcc.c,v 1.53 2018/09/03 16:29:31 riastradh Exp $ */
 
 /*-
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: clmpcc.c,v 1.51 2014/11/15 19:18:18 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: clmpcc.c,v 1.53 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "opt_ddb.h"
 
@@ -61,6 +61,7 @@ __KERNEL_RCSID(0, "$NetBSD: clmpcc.c,v 1.51 2014/11/15 19:18:18 christos Exp $")
 #include <dev/ic/clmpccvar.h>
 #include <dev/cons.h>
 
+#include "ioconf.h"
 
 #if defined(CLMPCC_ONLY_BYTESWAP_LOW) && defined(CLMPCC_ONLY_BYTESWAP_HIGH)
 #error	"CLMPCC_ONLY_BYTESWAP_LOW and CLMPCC_ONLY_BYTESWAP_HIGH are mutually exclusive."
@@ -83,8 +84,6 @@ static int 	clmpcc_modem_control(struct clmpcc_chan *, int, int);
  * These should be in a header file somewhere...
  */
 #define	ISCLR(v, f)	(((v) & (f)) == 0)
-
-extern struct cfdriver clmpcc_cd;
 
 dev_type_open(clmpccopen);
 dev_type_close(clmpccclose);
@@ -1234,7 +1233,7 @@ clmpcc_txintr(void *arg)
 	}
 
 	if ( ch->ch_obuf_size > 0 ) {
-		u_int n = min(ch->ch_obuf_size, ftc);
+		u_int n = uimin(ch->ch_obuf_size, ftc);
 
 		clmpcc_wrtx_multi(sc, ch->ch_obuf_addr, n);
 

@@ -1,4 +1,4 @@
-/*	$NetBSD: deviceid.c,v 1.2 2012/07/05 13:55:58 christos Exp $	*/
+/*	$NetBSD: deviceid.c,v 1.4 2018/05/28 21:05:09 chs Exp $	*/
 
 /*-
  * Copyright (c) 2009 The NetBSD Foundation, Inc.
@@ -56,12 +56,11 @@
  */
 
 #include <sys/cdefs.h>
-/* __FBSDID("$FreeBSD: src/compat/opensolaris/misc/deviceid.c,v 1.1 2007/05/06 01:39:38 pjd Exp $"); */
-__RCSID("$NetBSD: deviceid.c,v 1.2 2012/07/05 13:55:58 christos Exp $");
+/* __FBSDID("$FreeBSD: head/cddl/compat/opensolaris/misc/deviceid.c 238112 2012-07-04 17:36:26Z pjd $"); */
+__RCSID("$NetBSD: deviceid.c,v 1.4 2018/05/28 21:05:09 chs Exp $");
 
 #include <sys/param.h>
 #include <sys/ioctl.h>
-
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -84,8 +83,8 @@ devid_str_decode(char *devidstr, ddi_devid_t *retdevid, char **retminor_name)
 }
 
 int
-devid_deviceid_to_nmlist(char *search_path, ddi_devid_t devid, char *minor_name,
-    devid_nmlist_t **retlist)
+devid_deviceid_to_nmlist(const char *search_path, ddi_devid_t devid,
+    const char *minor_name, devid_nmlist_t **retlist)
 {
 
 	errx(1, "XXXNETBSD devid_deviceid_to_nmlist");
@@ -114,18 +113,7 @@ devid_free_nmlist(devid_nmlist_t *list)
 int
 devid_get(int fd, ddi_devid_t *retdevid)
 {
-#ifdef XXXNETBSD
-	errx(1, "XXXNETBSD devid_get");
-
-	if (ioctl(fd, DIOCGIDENT, retdevid->devid) == -1)
-		return (errno);
-	if (retdevid->devid[0] == '\0')
-		return (ENOENT);
-#else
-	memset(retdevid->devid, 0, sizeof(retdevid->devid));
-	strlcpy(retdevid->devid, "device", sizeof(retdevid->devid));
-#endif
-	return (0);
+	return (ENOENT);
 }
 
 int

@@ -1,4 +1,4 @@
-/*	$NetBSD: subr_psref.c,v 1.4 2016/04/13 08:31:00 riastradh Exp $	*/
+/*	$NetBSD: subr_psref.c,v 1.11 2018/02/01 03:17:00 ozaki-r Exp $	*/
 
 /*-
  * Copyright (c) 2016 The NetBSD Foundation, Inc.
@@ -64,7 +64,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: subr_psref.c,v 1.4 2016/04/13 08:31:00 riastradh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: subr_psref.c,v 1.11 2018/02/01 03:17:00 ozaki-r Exp $");
 
 #include <sys/types.h>
 #include <sys/condvar.h>
@@ -78,7 +78,7 @@ __KERNEL_RCSID(0, "$NetBSD: subr_psref.c,v 1.4 2016/04/13 08:31:00 riastradh Exp
 #include <sys/queue.h>
 #include <sys/xcall.h>
 
-LIST_HEAD(psref_head, psref);
+SLIST_HEAD(psref_head, psref);
 
 static bool	_psref_held(const struct psref_target *, struct psref_class *,
 		    bool);
@@ -94,6 +94,7 @@ struct psref_class {
 	kcondvar_t		prc_cv;
 	struct percpu		*prc_percpu; /* struct psref_cpu */
 	ipl_cookie_t		prc_iplcookie;
+	unsigned int		prc_xc_flags;
 };
 
 /*
@@ -120,21 +121,13 @@ psref_class_create(const char *name, int ipl)
 	ASSERT_SLEEPABLE();
 
 	class = kmem_alloc(sizeof(*class), KM_SLEEP);
-	if (class == NULL)
-		goto fail0;
-
 	class->prc_percpu = percpu_alloc(sizeof(struct psref_cpu));
-	if (class->prc_percpu == NULL)
-		goto fail1;
-
 	mutex_init(&class->prc_lock, MUTEX_DEFAULT, ipl);
 	cv_init(&class->prc_cv, name);
 	class->prc_iplcookie = makeiplcookie(ipl);
+	class->prc_xc_flags = XC_HIGHPRI_IPL(ipl);
 
 	return class;
-
-fail1:	kmem_free(class, sizeof(*class));
-fail0:	return NULL;
 }
 
 #ifdef DIAGNOSTIC
@@ -144,7 +137,7 @@ psref_cpu_drained_p(void *p, void *cookie, struct cpu_info *ci __unused)
 	const struct psref_cpu *pcpu = p;
 	bool *retp = cookie;
 
-	if (!LIST_EMPTY(&pcpu->pcpu_head))
+	if (!SLIST_EMPTY(&pcpu->pcpu_head))
 		*retp = false;
 }
 
@@ -195,6 +188,46 @@ psref_target_init(struct psref_target *target,
 	target->prt_draining = false;
 }
 
+#ifdef DEBUG
+static bool
+psref_exist(struct psref_cpu *pcpu, struct psref *psref)
+{
+	struct psref *_psref;
+
+	SLIST_FOREACH(_psref, &pcpu->pcpu_head, psref_entry) {
+		if (_psref == psref)
+			return true;
+	}
+	return false;
+}
+
+static void
+psref_check_duplication(struct psref_cpu *pcpu, struct psref *psref,
+    const struct psref_target *target)
+{
+	bool found = false;
+
+	found = psref_exist(pcpu, psref);
+	if (found) {
+		panic("The psref is already in the list (acquiring twice?): "
+		    "psref=%p target=%p", psref, target);
+	}
+}
+
+static void
+psref_check_existence(struct psref_cpu *pcpu, struct psref *psref,
+    const struct psref_target *target)
+{
+	bool found = false;
+
+	found = psref_exist(pcpu, psref);
+	if (!found) {
+		panic("The psref isn't in the list (releasing unused psref?): "
+		    "psref=%p target=%p", psref, target);
+	}
+}
+#endif /* DEBUG */
+
 /*
  * psref_acquire(psref, target, class)
  *
@@ -231,8 +264,13 @@ psref_acquire(struct psref *psref, const struct psref_target *target,
 	s = splraiseipl(class->prc_iplcookie);
 	pcpu = percpu_getref(class->prc_percpu);
 
+#ifdef DEBUG
+	/* Sanity-check if the target is already acquired with the same psref.  */
+	psref_check_duplication(pcpu, psref, target);
+#endif
+
 	/* Record our reference.  */
-	LIST_INSERT_HEAD(&pcpu->pcpu_head, psref, psref_entry);
+	SLIST_INSERT_HEAD(&pcpu->pcpu_head, psref, psref_entry);
 	psref->psref_target = target;
 	psref->psref_lwp = curlwp;
 	psref->psref_cpu = curcpu();
@@ -255,6 +293,7 @@ void
 psref_release(struct psref *psref, const struct psref_target *target,
     struct psref_class *class)
 {
+	struct psref_cpu *pcpu;
 	int s;
 
 	KASSERTMSG((kpreempt_disabled() || cpu_softintr_p() ||
@@ -284,7 +323,13 @@ psref_release(struct psref *psref, const struct psref_target *target,
 	 * (as does blocking interrupts).
 	 */
 	s = splraiseipl(class->prc_iplcookie);
-	LIST_REMOVE(psref, psref_entry);
+	pcpu = percpu_getref(class->prc_percpu);
+#ifdef DEBUG
+	/* Sanity-check if the target is surely acquired before.  */
+	psref_check_existence(pcpu, psref, target);
+#endif
+	SLIST_REMOVE(&pcpu->pcpu_head, psref, psref, psref_entry);
+	percpu_putref(class->prc_percpu);
 	splx(s);
 
 	/* If someone is waiting for users to drain, notify 'em.  */
@@ -335,7 +380,7 @@ psref_copy(struct psref *pto, const struct psref *pfrom,
 	pcpu = percpu_getref(class->prc_percpu);
 
 	/* Record the new reference.  */
-	LIST_INSERT_HEAD(&pcpu->pcpu_head, pto, psref_entry);
+	SLIST_INSERT_HEAD(&pcpu->pcpu_head, pto, psref_entry);
 	pto->psref_target = pfrom->psref_target;
 	pto->psref_lwp = curlwp;
 	pto->psref_cpu = curcpu();
@@ -386,8 +431,15 @@ psreffed_p(struct psref_target *target, struct psref_class *class)
 		.ret = false,
 	};
 
-	/* Ask all CPUs to say whether they hold a psref to the target.  */
-	xc_wait(xc_broadcast(0, &psreffed_p_xc, &P, NULL));
+	if (__predict_true(mp_online)) {
+		/*
+		 * Ask all CPUs to say whether they hold a psref to the
+		 * target.
+		 */
+		xc_wait(xc_broadcast(class->prc_xc_flags, &psreffed_p_xc, &P,
+		                     NULL));
+	} else
+		psreffed_p_xc(&P, NULL);
 
 	return P.ret;
 }
@@ -456,20 +508,29 @@ _psref_held(const struct psref_target *target, struct psref_class *class,
 	pcpu = percpu_getref(class->prc_percpu);
 
 	/* Search through all the references on this CPU.  */
-	LIST_FOREACH(psref, &pcpu->pcpu_head, psref_entry) {
-		/* Sanity-check the reference.  */
-		KASSERTMSG((lwp_mismatch_ok || psref->psref_lwp == curlwp),
-		    "passive reference transferred from lwp %p to lwp %p",
-		    psref->psref_lwp, curlwp);
+	SLIST_FOREACH(psref, &pcpu->pcpu_head, psref_entry) {
+		/* Sanity-check the reference's CPU.  */
 		KASSERTMSG((psref->psref_cpu == curcpu()),
 		    "passive reference transferred from CPU %u to CPU %u",
 		    cpu_index(psref->psref_cpu), cpu_index(curcpu()));
 
-		/* If it matches, stop here and answer yes.  */
-		if (psref->psref_target == target) {
-			held = true;
-			break;
-		}
+		/* If it doesn't match, skip it and move on.  */
+		if (psref->psref_target != target)
+			continue;
+
+		/*
+		 * Sanity-check the reference's LWP if we are asserting
+		 * via psref_held that this LWP holds it, but not if we
+		 * are testing in psref_target_destroy whether any LWP
+		 * still holds it.
+		 */
+		KASSERTMSG((lwp_mismatch_ok || psref->psref_lwp == curlwp),
+		    "passive reference transferred from lwp %p to lwp %p",
+		    psref->psref_lwp, curlwp);
+
+		/* Stop here and report that we found it.  */
+		held = true;
+		break;
 	}
 
 	/* Release the CPU list and restore interrupts.  */

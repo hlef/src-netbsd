@@ -1,4 +1,4 @@
-#	$NetBSD: Makefile.inc,v 1.195 2016/06/05 17:16:44 christos Exp $
+#	$NetBSD: Makefile.inc,v 1.200 2017/09/09 18:18:28 kamil Exp $
 #	from: @(#)Makefile.inc	8.6 (Berkeley) 5/4/95
 
 # gen sources
@@ -13,7 +13,7 @@ SRCS+=	alarm.c alphasort.c arc4random.c assert.c asysctl.c \
 	confstr.c ctermid.c ctype_.c \
 	dehumanize_number.c devname.c dirname.c disklabel.c err.c errx.c \
 	errc.c errlist.c errno.c execl.c execle.c execlp.c execv.c execvp.c \
-	extattr.c fmtcheck.c fmtmsg.c fnmatch.c fstab.c ftok.c \
+	exect.c extattr.c fmtcheck.c fmtmsg.c fnmatch.c fstab.c ftok.c \
 	fts.c ftw.c getbsize.c getcap.c getcwd.c \
 	getdevmajor.c getdomainname.c getgrent.c \
 	getgrouplist.c getgroupmembership.c gethostname.c \
@@ -29,15 +29,15 @@ SRCS+=	alarm.c alphasort.c arc4random.c assert.c asysctl.c \
 	rewinddir.c scandir.c seekdir.c setdomainname.c \
 	sethostname.c setjmperr.c setmode.c setproctitle.c setprogname.c \
 	shquote.c shquotev.c sighold.c sigignore.c siginterrupt.c \
-	siglist.c signal.c signame.c sigrelse.c \
-	sigset.c sigsetops.c sleep.c \
+	siglist.c signal.c signalname.c signalnext.c signalnumber.c \
+	signame.c sigrelse.c sigset.c sigsetops.c sleep.c \
 	stringlist.c sysconf.c sysctl.c sysctlbyname.c sysctlgetmibinfo.c \
-	sysctlnametomib.c syslog.c telldir.c time.c \
+	sysctlnametomib.c syslog.c syslog_ss.c telldir.c time.c timespec_get.c \
 	times.c toascii.c tolower_.c ttyname.c ttyslot.c toupper_.c ualarm.c \
 	ulimit.c uname.c unvis.c usleep.c utime.c utimens.c utmp.c \
 	utmpx.c valloc.c vis.c wait.c wait3.c waitid.c waitpid.c warn.c \
-	warnx.c warnc.c vwarn.c vwarnx.c vwarnc.c verr.c verrx.c verrc.c \
-	wordexp.c
+	warnx.c warnc.c wordexp.c xsyslog.c \
+	vwarn.c vwarnx.c vwarnc.c verr.c verrx.c verrc.c
 
 # uses alloca
 COPTS.execvp.c = -Wno-stack-protector
@@ -79,9 +79,10 @@ MAN+=	alarm.3 arc4random.3 basename.3 bsd_signal.3 bswap.3 \
 	psignal.3 pwcache.3 pthread_atfork.3 \
 	raise.3 randomid.3 realpath.3 scandir.3 setjmp.3 setmode.3 \
 	setproctitle.3 shquote.3 sighold.3 sigignore.3 siginterrupt.3 \
-	signal.3 signbit.3 sigrelse.3 sigset.3 sigsetops.3 sleep.3 \
-	stringlist.3 sysconf.3 sysctl.3 syslog.3 time.3 times.3 \
-	timezone.3 toascii.3 tolower.3 toupper.3 ttyname.3 \
+	signal.3 signalname.3 signbit.3 sigrelse.3 sigset.3 sigsetops.3 \
+	sleep.3 stringlist.3 sysconf.3 sysctl.3 syslog.3 \
+	time.3 timespec_get.3 times.3 timezone.3 toascii.3 tolower.3 \
+	toupper.3 ttyname.3 \
 	ualarm.3 ulimit.3 uname.3 unvis.3 usleep.3 utime.3 valloc.3 vis.3 \
 	wordexp.3
 
@@ -89,6 +90,7 @@ MLINKS+=bswap.3 bswap16.3 bswap.3 bswap32.3 bswap.3 bswap64.3
 MLINKS+=cpuset.3 cpuset_create.3 cpuset.3 cpuset_destroy.3 \
 	cpuset.3 cpuset_zero.3 cpuset.3 cpuset_set.3 cpuset.3 cpuset_clr.3 \
 	cpuset.3 cpuset_isset.3 cpuset.3 cpuset_size.3
+MLINKS+=devname.3 devname_r.3
 MLINKS+=directory.3 closedir.3 directory.3 dirfd.3 directory.3 opendir.3 \
 	directory.3 readdir.3 directory.3 readdir_r.3 directory.3 \
 	rewinddir.3 directory.3 seekdir.3 directory.3 telldir.3 \
@@ -170,6 +172,7 @@ MLINKS+=setjmp.3 _longjmp.3 setjmp.3 _setjmp.3 setjmp.3 longjmp.3 \
 	setjmp.3 longjmperror.3 setjmp.3 sigsetjmp.3 setjmp.3 siglongjmp.3
 MLINKS+=setmode.3 getmode.3
 MLINKS+=shquote.3 shquotev.3
+MLINKS+=signalname.3 signalnext.3 signalname.3 signalnumber.3
 MLINKS+=sigsetops.3 sigemptyset.3 sigsetops.3 sigfillset.3 \
 	sigsetops.3 sigaddset.3 sigsetops.3 sigdelset.3 \
 	sigsetops.3 sigismember.3

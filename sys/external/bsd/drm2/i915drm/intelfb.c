@@ -1,4 +1,4 @@
-/*	$NetBSD: intelfb.c,v 1.13 2015/04/04 15:12:39 jmcneill Exp $	*/
+/*	$NetBSD: intelfb.c,v 1.15 2018/08/27 15:09:35 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2014 The NetBSD Foundation, Inc.
@@ -30,7 +30,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: intelfb.c,v 1.13 2015/04/04 15:12:39 jmcneill Exp $");
+__KERNEL_RCSID(0, "$NetBSD: intelfb.c,v 1.15 2018/08/27 15:09:35 riastradh Exp $");
 
 #include <sys/types.h>
 #include <sys/bus.h>
@@ -42,6 +42,7 @@ __KERNEL_RCSID(0, "$NetBSD: intelfb.c,v 1.13 2015/04/04 15:12:39 jmcneill Exp $"
 
 #include "i915_drv.h"
 #include "i915_pci.h"
+#include "intel_drv.h"
 #include "intelfb.h"
 
 static int	intelfb_match(device_t, cfdata_t, void *);
@@ -164,11 +165,14 @@ intelfb_attach_task(struct i915drmkms_task *task)
 	struct intelfb_softc *const sc = container_of(task,
 	    struct intelfb_softc, sc_attach_task);
 	const struct intelfb_attach_args *const ifa = &sc->sc_ifa;
+	const struct drm_fb_helper_surface_size *const sizes = &ifa->ifa_fb_sizes;
 	const struct drmfb_attach_args da = {
 		.da_dev = sc->sc_dev,
 		.da_fb_helper = ifa->ifa_fb_helper,
 		.da_fb_sizes = &ifa->ifa_fb_sizes,
 		.da_fb_vaddr = bus_space_vaddr(ifa->ifa_fb_bst, sc->sc_fb_bsh),
+		.da_fb_linebytes = roundup2((sizes->surface_width *
+		    howmany(sizes->surface_bpp, 8)), 64),
 		.da_params = &intelfb_drmfb_params,
 	};
 	int error;

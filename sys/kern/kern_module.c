@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_module.c,v 1.115 2016/07/07 06:55:43 msaitoh Exp $	*/
+/*	$NetBSD: kern_module.c,v 1.132 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -34,7 +34,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_module.c,v 1.115 2016/07/07 06:55:43 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_module.c,v 1.132 2018/09/03 16:29:35 riastradh Exp $");
 
 #define _MODULE_INTERNAL
 
@@ -65,6 +65,21 @@ struct modlist        module_list = TAILQ_HEAD_INITIALIZER(module_list);
 struct modlist        module_builtins = TAILQ_HEAD_INITIALIZER(module_builtins);
 static struct modlist module_bootlist = TAILQ_HEAD_INITIALIZER(module_bootlist);
 
+struct module_callbacks {
+	TAILQ_ENTRY(module_callbacks) modcb_list;
+	void (*modcb_load)(struct module *);
+	void (*modcb_unload)(struct module *);
+};
+TAILQ_HEAD(modcblist, module_callbacks);
+static struct modcblist modcblist;
+
+static module_t *module_netbsd;
+static const modinfo_t module_netbsd_modinfo = {
+	.mi_version = __NetBSD_Version__,
+	.mi_class = MODULE_CLASS_MISC,
+	.mi_name = "netbsd"
+};
+
 static module_t	*module_active;
 bool		module_verbose_on;
 #ifdef MODULAR_DEFAULT_AUTOLOAD
@@ -84,16 +99,20 @@ int (*module_load_vfs_vec)(const char *, int, bool, module_t *,
 
 static kauth_listener_t	module_listener;
 
+static specificdata_domain_t module_specificdata_domain;
+
 /* Ensure that the kernel's link set isn't empty. */
 static modinfo_t module_dummy;
 __link_set_add_rodata(modules, module_dummy);
 
 static module_t	*module_newmodule(modsrc_t);
+static void	module_free(module_t *);
 static void	module_require_force(module_t *);
 static int	module_do_load(const char *, bool, int, prop_dictionary_t,
 		    module_t **, modclass_t modclass, bool);
 static int	module_do_unload(const char *, bool);
-static int	module_do_builtin(const char *, module_t **, prop_dictionary_t);
+static int	module_do_builtin(const module_t *, const char *, module_t **,
+    prop_dictionary_t);
 static int	module_fetch_info(module_t *);
 static void	module_thread(void *);
 
@@ -105,6 +124,9 @@ static bool	module_merge_dicts(prop_dictionary_t, const prop_dictionary_t);
 static void	sysctl_module_setup(void);
 static int	sysctl_module_autotime(SYSCTLFN_PROTO);
 
+static void	module_callback_load(struct module *);
+static void	module_callback_unload(struct module *);
+
 #define MODULE_CLASS_MATCH(mi, modclass) \
 	((modclass) == MODULE_CLASS_ANY || (modclass) == (mi)->mi_class)
 
@@ -113,6 +135,13 @@ module_incompat(const modinfo_t *mi, int modclass)
 {
 	module_error("incompatible module class for `%s' (%d != %d)",
 	    mi->mi_name, modclass, mi->mi_class);
+}
+
+struct module *
+module_kernel(void)
+{
+
+	return module_netbsd;
 }
 
 /*
@@ -151,6 +180,30 @@ module_print(const char *fmt, ...)
 	}
 }
 
+/*
+ * module_name:
+ *
+ *	Utility function: return the module's name.
+ */
+const char *
+module_name(struct module *mod)
+{
+
+	return mod->mod_info->mi_name;
+}
+
+/*
+ * module_source:
+ *
+ *	Utility function: return the module's source.
+ */
+modsrc_t
+module_source(struct module *mod)
+{
+
+	return mod->mod_source;
+}
+
 static int
 module_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
     void *arg0, void *arg1, void *arg2, void *arg3)
@@ -177,12 +230,20 @@ module_newmodule(modsrc_t source)
 	module_t *mod;
 
 	mod = kmem_zalloc(sizeof(*mod), KM_SLEEP);
-	if (mod != NULL) {
-		mod->mod_source = source;
-		mod->mod_info = NULL;
-		mod->mod_flags = 0;
-	}
+	mod->mod_source = source;
+	specificdata_init(module_specificdata_domain, &mod->mod_sdref);
 	return mod;
+}
+
+/*
+ * Free a module_t
+ */
+static void
+module_free(module_t *mod)
+{
+
+	specificdata_fini(module_specificdata_domain, &mod->mod_sdref);
+	kmem_free(mod, sizeof(*mod));
 }
 
 /*
@@ -266,11 +327,12 @@ module_builtin_add(modinfo_t *const *mip, size_t nmodinfo, bool init)
 	/* finally, init (if required) */
 	if (init) {
 		for (i = 0; i < nmodinfo; i++) {
-			rv = module_do_builtin(modp[i]->mod_info->mi_name,
-			    NULL, NULL);
+			rv = module_do_builtin(modp[i],
+			    modp[i]->mod_info->mi_name, NULL, NULL);
 			/* throw in the towel, recovery hard & not worth it */
 			if (rv)
-				panic("builtin module \"%s\" init failed: %d",
+				panic("%s: builtin module \"%s\" init failed:"
+				    " %d", __func__,
 				    modp[i]->mod_info->mi_name, rv);
 		}
 	}
@@ -280,7 +342,7 @@ module_builtin_add(modinfo_t *const *mip, size_t nmodinfo, bool init)
 	if (rv != 0) {
 		for (i = 0; i < nmodinfo; i++) {
 			if (modp[i])
-				kmem_free(modp[i], sizeof(*modp[i]));
+				module_free(modp[i]);
 		}
 	}
 	kmem_free(modp, sizeof(*modp) * nmodinfo);
@@ -347,6 +409,7 @@ module_init(void)
 	}
 	cv_init(&module_thread_cv, "mod_unld");
 	mutex_init(&module_thread_lock, MUTEX_DEFAULT, IPL_NONE);
+	TAILQ_INIT(&modcblist);
 
 #ifdef MODULAR	/* XXX */
 	module_init_md();
@@ -373,6 +436,11 @@ module_init(void)
 	}
 
 	sysctl_module_setup();
+	module_specificdata_domain = specificdata_domain_create();
+
+	module_netbsd = module_newmodule(MODULE_SOURCE_KERNEL);
+	module_netbsd->mod_refcnt = 1;
+	module_netbsd->mod_info = &module_netbsd_modinfo;
 }
 
 /*
@@ -388,7 +456,7 @@ module_start_unload_thread(void)
 	error = kthread_create(PRI_VM, KTHREAD_MPSAFE, NULL, module_thread,
 	    NULL, NULL, "modunload");
 	if (error != 0)
-		panic("module_init: %d", error);
+		panic("%s: %d", __func__, error);
 }
 
 /*
@@ -506,7 +574,8 @@ module_init_class(modclass_t modclass)
 			 * MODFLG_MUST_FORCE, don't try to override that!)
 			 */
 			if ((mod->mod_flags & MODFLG_MUST_FORCE) ||
-			    module_do_builtin(mi->mi_name, NULL, NULL) != 0) {
+			    module_do_builtin(mod, mi->mi_name, NULL,
+			    NULL) != 0) {
 				TAILQ_REMOVE(&module_builtins, mod, mod_chain);
 				TAILQ_INSERT_TAIL(&bi_fail, mod, mod_chain);
 			}
@@ -567,20 +636,31 @@ int
 module_load(const char *filename, int flags, prop_dictionary_t props,
 	    modclass_t modclass)
 {
+	module_t *mod;
 	int error;
+
+	/* Test if we already have the module loaded before
+	 * authorizing so we have the opportunity to return EEXIST. */
+	kernconfig_lock();
+	mod = module_lookup(filename);
+	if (mod != NULL) {
+		module_print("%s module `%s' already loaded",
+		    "requested", filename);
+		error = EEXIST;
+		goto out;
+	}
 
 	/* Authorize. */
 	error = kauth_authorize_system(kauth_cred_get(), KAUTH_SYSTEM_MODULE,
 	    0, (void *)(uintptr_t)MODCTL_LOAD, NULL, NULL);
-	if (error != 0) {
-		return error;
-	}
+	if (error != 0)
+		goto out;
 
-	kernconfig_lock();
 	error = module_do_load(filename, false, flags, props, NULL, modclass,
 	    false);
-	kernconfig_unlock();
 
+out:
+	kernconfig_unlock();
 	return error;
 }
 
@@ -673,21 +753,13 @@ module_lookup(const char *name)
  *	responsibility to ensure that the reference is dropped
  *	later.
  */
-int
-module_hold(const char *name)
+void
+module_hold(module_t *mod)
 {
-	module_t *mod;
 
 	kernconfig_lock();
-	mod = module_lookup(name);
-	if (mod == NULL) {
-		kernconfig_unlock();
-		return ENOENT;
-	}
 	mod->mod_refcnt++;
 	kernconfig_unlock();
-
-	return 0;
 }
 
 /*
@@ -696,16 +768,11 @@ module_hold(const char *name)
  *	Release a reference acquired with module_hold().
  */
 void
-module_rele(const char *name)
+module_rele(module_t *mod)
 {
-	module_t *mod;
 
 	kernconfig_lock();
-	mod = module_lookup(name);
-	if (mod == NULL) {
-		kernconfig_unlock();
-		panic("module_rele: gone");
-	}
+	KASSERT(mod->mod_refcnt > 0);
 	mod->mod_refcnt--;
 	kernconfig_unlock();
 }
@@ -746,7 +813,8 @@ module_enqueue(module_t *mod)
  *	already linked into the kernel.
  */
 static int
-module_do_builtin(const char *name, module_t **modp, prop_dictionary_t props)
+module_do_builtin(const module_t *pmod, const char *name, module_t **modp,
+    prop_dictionary_t props)
 {
 	const char *p, *s;
 	char buf[MAXMODNAME];
@@ -785,7 +853,8 @@ module_do_builtin(const char *name, module_t **modp, prop_dictionary_t props)
 		 * cases (such as nfsserver + nfs), the dependee can be
 		 * succesfully linked without the dependencies.
 		 */
-		module_error("can't find builtin dependency `%s'", name);
+		module_error("%s: can't find builtin dependency `%s'",
+		    pmod->mod_info->mi_name, name);
 		return ENOENT;
 	}
 
@@ -799,17 +868,17 @@ module_do_builtin(const char *name, module_t **modp, prop_dictionary_t props)
 			p = s;
 			while (*p != '\0' && *p != ',')
 				p++;
-			len = min(p - s + 1, sizeof(buf));
+			len = uimin(p - s + 1, sizeof(buf));
 			strlcpy(buf, s, len);
 			if (buf[0] == '\0')
 				break;
 			if (mod->mod_nrequired == MAXMODDEPS - 1) {
-				module_error("too many required modules "
-				    "%d >= %d", mod->mod_nrequired,
-				    MAXMODDEPS - 1);
+				module_error("%s: too many required modules "
+				    "%d >= %d", pmod->mod_info->mi_name,
+				    mod->mod_nrequired, MAXMODDEPS - 1);
 				return EINVAL;
 			}
-			error = module_do_builtin(buf, &mod2, NULL);
+			error = module_do_builtin(mod, buf, &mod2, NULL);
 			if (error != 0) {
 				return error;
 			}
@@ -913,7 +982,7 @@ module_do_load(const char *name, bool isdep, int flags,
 			depth--;
 			return EPERM;
 		} else {
-			error = module_do_builtin(name, modp, props);
+			error = module_do_builtin(mod, name, modp, props);
 			depth--;
 			return error;
 		}
@@ -968,7 +1037,7 @@ module_do_load(const char *name, bool isdep, int flags,
 				module_error("vfs load failed for `%s', "
 				    "error %d", name, error);
 #endif
-			kmem_free(mod, sizeof(*mod));
+			module_free(mod);
 			depth--;
 			return error;
 		}
@@ -1022,6 +1091,23 @@ module_do_load(const char *name, bool isdep, int flags,
 		    name, mi->mi_name);
 		error = ENOENT;
 		goto fail;
+	}
+
+	/*
+	 * If we loaded a module from the filesystem, check the actual
+	 * module name (from the modinfo_t) to ensure another module
+	 * with the same name doesn't already exist.  (There's no
+	 * guarantee the filename will match the module name, and the
+	 * dup-symbols check may not be sufficient.)
+	 */
+	if (mod->mod_source == MODULE_SOURCE_FILESYS) {
+		mod2 = module_lookup(mod->mod_info->mi_name);
+		if ( mod2 && mod2 != mod) {
+			module_error("module with name `%s' already loaded",
+			    mod2->mod_info->mi_name);
+			error = EEXIST;
+			goto fail;
+		}
 	}
 
 	/*
@@ -1119,6 +1205,18 @@ module_do_load(const char *name, bool isdep, int flags,
 	}
 
 	/*
+	 * If a recursive load already added a module with the same
+	 * name, abort.
+	 */
+	mod2 = module_lookup(mi->mi_name);
+	if (mod2 && mod2 != mod) {
+		module_error("recursive load causes duplicate module `%s'",
+		    mi->mi_name);
+		error = EEXIST;
+		goto fail1;
+	}
+
+	/*
 	 * Good, the module loaded successfully.  Put it onto the
 	 * list and add references to its requisite modules.
 	 */
@@ -1138,8 +1236,11 @@ module_do_load(const char *name, bool isdep, int flags,
 	}
 	depth--;
 	module_print("module `%s' loaded successfully", mi->mi_name);
+	module_callback_load(mod);
 	return 0;
 
+ fail1:
+	(*mi->mi_modcmd)(MODULE_CMD_FINI, NULL);
  fail:
 	kobj_unload(mod->mod_kobj);
  fail2:
@@ -1148,7 +1249,7 @@ module_do_load(const char *name, bool isdep, int flags,
 		filedict = NULL;
 	}
 	TAILQ_REMOVE(pending, mod, mod_chain);
-	kmem_free(mod, sizeof(*mod));
+	module_free(mod);
 	depth--;
 	return error;
 }
@@ -1169,7 +1270,7 @@ module_do_unload(const char *name, bool load_requires_force)
 	KASSERT(name != NULL);
 
 	module_print("unload requested for '%s' (%s)", name,
-	    load_requires_force?"TRUE":"FALSE");
+	    load_requires_force ? "TRUE" : "FALSE");
 	mod = module_lookup(name);
 	if (mod == NULL) {
 		module_error("module `%s' not found", name);
@@ -1193,6 +1294,7 @@ module_do_unload(const char *name, bool load_requires_force)
 
 	prev_active = module_active;
 	module_active = mod;
+	module_callback_unload(mod);
 	error = (*mod->mod_info->mi_modcmd)(MODULE_CMD_FINI, NULL);
 	module_active = prev_active;
 	if (error != 0) {
@@ -1216,7 +1318,7 @@ module_do_unload(const char *name, bool load_requires_force)
 		TAILQ_INSERT_TAIL(&module_builtins, mod, mod_chain);
 		module_builtinlist++;
 	} else {
-		kmem_free(mod, sizeof(*mod));
+		module_free(mod);
 	}
 	module_gen++;
 
@@ -1266,7 +1368,7 @@ module_prime(const char *name, void *base, size_t size)
 
 	error = kobj_load_mem(&mod->mod_kobj, name, base, size);
 	if (error != 0) {
-		kmem_free(mod, sizeof(*mod));
+		module_free(mod);
 		module_error("unable to load `%s' pushed by boot loader, "
 		    "error %d", name, error);
 		return error;
@@ -1274,7 +1376,7 @@ module_prime(const char *name, void *base, size_t size)
 	error = module_fetch_info(mod);
 	if (error != 0) {
 		kobj_unload(mod->mod_kobj);
-		kmem_free(mod, sizeof(*mod));
+		module_free(mod);
 		module_error("unable to fetch_info for `%s' pushed by boot "
 		    "loader, error %d", name, error);
 		return error;
@@ -1519,4 +1621,132 @@ out:
 	prop_object_iterator_release(props_iter);
 
 	return !error;
+}
+
+/*
+ * module_specific_key_create:
+ *
+ *	Create a key for subsystem module-specific data.
+ */
+specificdata_key_t
+module_specific_key_create(specificdata_key_t *keyp, specificdata_dtor_t dtor)
+{
+
+	return specificdata_key_create(module_specificdata_domain, keyp, dtor);
+}
+
+/*
+ * module_specific_key_delete:
+ *
+ *	Delete a key for subsystem module-specific data.
+ */
+void
+module_specific_key_delete(specificdata_key_t key)
+{
+
+	return specificdata_key_delete(module_specificdata_domain, key);
+}
+
+/*
+ * module_getspecific:
+ *
+ *	Return module-specific data corresponding to the specified key.
+ */
+void *
+module_getspecific(module_t *mod, specificdata_key_t key)
+{
+
+	return specificdata_getspecific(module_specificdata_domain,
+	    &mod->mod_sdref, key);
+}
+
+/*
+ * module_setspecific:
+ *
+ *	Set module-specific data corresponding to the specified key.
+ */
+void
+module_setspecific(module_t *mod, specificdata_key_t key, void *data)
+{
+
+	specificdata_setspecific(module_specificdata_domain,
+	    &mod->mod_sdref, key, data);
+}
+
+/*
+ * module_register_callbacks:
+ *
+ *	Register a new set of callbacks to be called on module load/unload.
+ *	Call the load callback on each existing module.
+ *	Return an opaque handle for unregistering these later.
+ */
+void *
+module_register_callbacks(void (*load)(struct module *),
+    void (*unload)(struct module *))
+{
+	struct module_callbacks *modcb;
+	struct module *mod;
+
+	modcb = kmem_alloc(sizeof(*modcb), KM_SLEEP);
+	modcb->modcb_load = load;
+	modcb->modcb_unload = unload;
+
+	kernconfig_lock();
+	TAILQ_INSERT_TAIL(&modcblist, modcb, modcb_list);
+	TAILQ_FOREACH(mod, &module_list, mod_chain)
+		load(mod);
+	kernconfig_unlock();
+
+	return modcb;
+}
+
+/*
+ * module_unregister_callbacks:
+ *
+ *	Unregister a previously-registered set of module load/unload callbacks.
+ *	Call the unload callback on each existing module.
+ */
+void
+module_unregister_callbacks(void *opaque)
+{
+	struct module_callbacks *modcb;
+	struct module *mod;
+
+	modcb = opaque;
+	kernconfig_lock();
+	TAILQ_FOREACH(mod, &module_list, mod_chain)
+		modcb->modcb_unload(mod);
+	TAILQ_REMOVE(&modcblist, modcb, modcb_list);
+	kernconfig_unlock();
+	kmem_free(modcb, sizeof(*modcb));
+}
+
+/*
+ * module_callback_load:
+ *
+ *	Helper routine: call all load callbacks on a module being loaded.
+ */
+static void
+module_callback_load(struct module *mod)
+{
+	struct module_callbacks *modcb;
+
+	TAILQ_FOREACH(modcb, &modcblist, modcb_list) {
+		modcb->modcb_load(mod);
+	}
+}
+
+/*
+ * module_callback_unload:
+ *
+ *	Helper routine: call all unload callbacks on a module being unloaded.
+ */
+static void
+module_callback_unload(struct module *mod)
+{
+	struct module_callbacks *modcb;
+
+	TAILQ_FOREACH(modcb, &modcblist, modcb_list) {
+		modcb->modcb_unload(mod);
+	}
 }

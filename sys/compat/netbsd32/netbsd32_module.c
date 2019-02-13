@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32_module.c,v 1.4 2015/12/19 13:15:21 maxv Exp $	*/
+/*	$NetBSD: netbsd32_module.c,v 1.7 2018/09/03 16:29:29 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -29,7 +29,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_module.c,v 1.4 2015/12/19 13:15:21 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: netbsd32_module.c,v 1.7 2018/09/03 16:29:29 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/dirent.h>
@@ -52,14 +52,16 @@ modctl32_handle_stat(struct netbsd32_iovec *iov, void *arg)
 	size_t size;
 	size_t mslen;
 	int error;
+	bool stataddr;
+
+	/* If not privileged, don't expose kernel addresses. */
+	error = kauth_authorize_system(kauth_cred_get(), KAUTH_SYSTEM_MODULE,
+	    0, (void *)(uintptr_t)MODCTL_STAT, NULL, NULL);
+	stataddr = (error == 0);
 
 	kernconfig_lock();
 	mslen = (module_count+module_builtinlist+1) * sizeof(modstat_t);
 	mso = kmem_zalloc(mslen, KM_SLEEP);
-	if (mso == NULL) {
-		kernconfig_unlock();
-		return ENOMEM;
-	}
 	ms = mso;
 	TAILQ_FOREACH(mod, &module_list, mod_chain) {
 		mi = mod->mod_info;
@@ -68,7 +70,7 @@ modctl32_handle_stat(struct netbsd32_iovec *iov, void *arg)
 			strlcpy(ms->ms_required, mi->mi_required,
 			    sizeof(ms->ms_required));
 		}
-		if (mod->mod_kobj != NULL) {
+		if (mod->mod_kobj != NULL && stataddr) {
 			kobj_stat(mod->mod_kobj, &addr, &size);
 			ms->ms_addr = addr;
 			ms->ms_size = size;
@@ -86,7 +88,7 @@ modctl32_handle_stat(struct netbsd32_iovec *iov, void *arg)
 			strlcpy(ms->ms_required, mi->mi_required,
 			    sizeof(ms->ms_required));
 		}
-		if (mod->mod_kobj != NULL) {
+		if (mod->mod_kobj != NULL && stataddr) {
 			kobj_stat(mod->mod_kobj, &addr, &size);
 			ms->ms_addr = addr;
 			ms->ms_size = size;
@@ -99,7 +101,7 @@ modctl32_handle_stat(struct netbsd32_iovec *iov, void *arg)
 	}
 	kernconfig_unlock();
 	error = copyout(mso, NETBSD32PTR64(iov->iov_base),
-	    min(mslen - sizeof(modstat_t), iov->iov_len));
+	    uimin(mslen - sizeof(modstat_t), iov->iov_len));
 	kmem_free(mso, mslen);
 	if (error == 0) {
 		iov->iov_len = mslen - sizeof(modstat_t);
@@ -180,5 +182,3 @@ netbsd32_modctl(struct lwp *lwp, const struct netbsd32_modctl_args *uap,
 
 	return error;
 }
-
-

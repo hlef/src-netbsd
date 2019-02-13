@@ -1,4 +1,4 @@
-/*	$NetBSD: netbsd32_sysctl.c,v 1.36 2015/05/17 18:52:37 matt Exp $	*/
+/*	$NetBSD: netbsd32_sysctl.c,v 1.40 2018/05/26 21:07:47 kamil Exp $	*/
 
 /*
  * Copyright (c) 2003 The NetBSD Foundation, Inc.
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_sysctl.c,v 1.36 2015/05/17 18:52:37 matt Exp $");
+__KERNEL_RCSID(0, "$NetBSD: netbsd32_sysctl.c,v 1.40 2018/05/26 21:07:47 kamil Exp $");
 
 #if defined(_KERNEL_OPT)
 #include "opt_ddb.h"
@@ -104,13 +104,24 @@ netbsd32_sysctl_vm_loadavg(SYSCTLFN_ARGS)
 	return (sysctl_lookup(SYSCTLFN_CALL(&node)));
 }
 
+static int
+sysctl_hw_machine_arch32(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+#ifndef PROC_MACHINE_ARCH32
+	extern const char machine_arch32[];
+#define PROC_MACHINE_ARCH32(P)	__UNCONST(machine_arch32)
+#endif
+
+	node.sysctl_data = PROC_MACHINE_ARCH32(l->l_proc);
+	node.sysctl_size = strlen(node.sysctl_data) + 1;
+	return sysctl_lookup(SYSCTLFN_CALL(&node));
+}
+
 void
 netbsd32_sysctl_init(void)
 {
 	const struct sysctlnode *_root = &netbsd32_sysctl_root;
-#ifndef __mips__
-	extern const char machine_arch32[];
-#endif
 	extern const char machine32[];
 
 	sysctl_createv(&netbsd32_clog, 0, &_root, NULL,
@@ -136,6 +147,18 @@ netbsd32_sysctl_init(void)
 		       netbsd32_sysctl_vm_loadavg, 0, NULL,
 		       sizeof(struct netbsd32_loadavg),
 		       CTL_VM, VM_LOADAVG, CTL_EOL);
+	sysctl_createv(&netbsd32_clog, 0, &_root, NULL,
+		       CTLFLAG_PERMANENT|CTLFLAG_IMMEDIATE,
+		       CTLTYPE_INT, "maxaddress",
+		       SYSCTL_DESCR("Maximum user address"),
+		       NULL, VM_MAXUSER_ADDRESS32, NULL, 0,
+		       CTL_VM, VM_MAXADDRESS, CTL_EOL);
+	sysctl_createv(&netbsd32_clog, 0, &_root, NULL,
+		       CTLFLAG_PERMANENT|CTLFLAG_IMMEDIATE,
+		       CTLTYPE_INT, "minaddress",
+		       SYSCTL_DESCR("Minimum user address"),
+		       NULL, VM_MIN_ADDRESS, NULL, 0,
+		       CTL_VM, VM_MINADDRESS, CTL_EOL);
 
 	sysctl_createv(&netbsd32_clog, 0, &_root, NULL,
 		       CTLFLAG_PERMANENT,
@@ -152,19 +175,11 @@ netbsd32_sysctl_init(void)
 		       CTLTYPE_STRING, "machine", NULL,
 		       NULL, 0, __UNCONST(&machine32), 0,
 		       CTL_HW, HW_MACHINE, CTL_EOL);
-#ifdef __mips__
 	sysctl_createv(&netbsd32_clog, 0, &_root, NULL,
-		       CTLFLAG_PERMANENT,
+		       CTLFLAG_PERMANENT|CTLFLAG_READONLY,
 		       CTLTYPE_STRING, "machine_arch", NULL,
-		       cpu_machinearch32, 0, NULL, 0,
+		       sysctl_hw_machine_arch32, 0, NULL, 0,
 		       CTL_HW, HW_MACHINE_ARCH, CTL_EOL);
-#else
-	sysctl_createv(&netbsd32_clog, 0, &_root, NULL,
-		       CTLFLAG_PERMANENT,
-		       CTLTYPE_STRING, "machine_arch", NULL,
-		       NULL, 0, __UNCONST(&machine_arch32), 0,
-		       CTL_HW, HW_MACHINE_ARCH, CTL_EOL);
-#endif
 }
 
 void

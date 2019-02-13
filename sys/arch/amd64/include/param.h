@@ -1,4 +1,4 @@
-/*	$NetBSD: param.h,v 1.19 2015/10/27 22:28:56 mrg Exp $	*/
+/*	$NetBSD: param.h,v 1.26 2018/08/22 12:07:43 maxv Exp $	*/
 
 #ifdef __x86_64__
 
@@ -9,6 +9,9 @@
 
 #ifdef _KERNEL
 #include <machine/cpu.h>
+#if defined(_KERNEL_OPT)
+#include "opt_kasan.h"
+#endif
 #endif
 
 #define	_MACHINE	amd64
@@ -27,16 +30,23 @@
 #define	PGOFSET		(NBPG-1)	/* byte offset into page */
 #define	NPTEPG		(NBPG/(sizeof (pt_entry_t)))
 
+#define	MAXIOMEM	0xffffffffffff
+
+/*
+ * Maximum physical memory supported by the implementation.
+ */
+#define MAXPHYSMEM	0x100000000000ULL /* 16TB */
+
 /*
  * XXXfvdl change this (after bootstrap) to take # of bits from
  * config info into account.
  */
 #define	KERNBASE	0xffffffff80000000 /* start of kernel virtual space */
-#define	KERNTEXTOFF	0xffffffff80100000 /* start of kernel text */
+#define	KERNTEXTOFF	0xffffffff80200000 /* start of kernel text */
 #define	BTOPKERNBASE	((u_long)KERNBASE >> PGSHIFT)
 
 #define KERNTEXTOFF_HI	0xffffffff
-#define KERNTEXTOFF_LO	0x80100000
+#define KERNTEXTOFF_LO	0x80200000
 
 #define KERNBASE_HI	0xffffffff
 #define KERNBASE_LO	0x80000000
@@ -50,16 +60,18 @@
 
 #define	SSIZE		1		/* initial stack size/NBPG */
 #define	SINCR		1		/* increment of stack/NBPG */
-#ifdef DIAGNOSTIC
-#define	UPAGES		4		/* pages of u-area (1 for redzone) */
+
+#ifdef KASAN
+#define	UPAGES		8
+#elif defined(DIAGNOSTIC)
+#define	UPAGES		5		/* pages of u-area (1 for redzone) */
 #else
-#define	UPAGES		3		/* pages of u-area */
+#define	UPAGES		4		/* pages of u-area */
 #endif
 #define	USPACE		(UPAGES * NBPG)	/* total size of u-area */
-#define	INTRSTACKSIZE	4096
 
 #ifndef MSGBUFSIZE
-#define MSGBUFSIZE	(8*NBPG)	/* default message buffer size */
+#define MSGBUFSIZE	(16*NBPG)	/* default message buffer size */
 #endif
 
 /*

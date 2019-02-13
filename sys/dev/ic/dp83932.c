@@ -1,4 +1,4 @@
-/*	$NetBSD: dp83932.c,v 1.38 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: dp83932.c,v 1.42 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: dp83932.c,v 1.38 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: dp83932.c,v 1.42 2018/06/26 06:48:00 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -212,6 +212,7 @@ sonic_attach(struct sonic_softc *sc, const uint8_t *enaddr)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 	/*
@@ -467,7 +468,7 @@ sonic_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->sc_txpending == (SONIC_NTXDESC - 1)) {
@@ -612,7 +613,7 @@ sonic_intr(void *arg)
 	if (handled) {
 		if (wantinit)
 			(void)sonic_init(ifp);
-		sonic_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 
 	return handled;
@@ -785,8 +786,10 @@ sonic_rxintr(struct sonic_softc *sc)
 				goto dropit;
 			if (len > (MHLEN - 2)) {
 				MCLGET(m, M_DONTWAIT);
-				if ((m->m_flags & M_EXT) == 0)
+				if ((m->m_flags & M_EXT) == 0) {
+					m_freem(m);
 					goto dropit;
+				}
 			}
 			m->m_data += 2;
 			/*
@@ -833,14 +836,8 @@ sonic_rxintr(struct sonic_softc *sc)
 			}
 		}
 
-		ifp->if_ipackets++;
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
-
-		/*
-		 * Pass this up to any BPF listeners.
-		 */
-		bpf_mtap(ifp, m);
 
 		/* Pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);

@@ -1,4 +1,4 @@
-/*	$NetBSD: mb86960.c,v 1.83 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: mb86960.c,v 1.88 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*
  * All Rights Reserved, Copyright (C) Fujitsu Limited 1995
@@ -32,7 +32,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: mb86960.c,v 1.83 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: mb86960.c,v 1.88 2018/09/03 16:29:31 riastradh Exp $");
 
 /*
  * Device driver for Fujitsu MB86960A/MB86965A based Ethernet cards.
@@ -64,6 +64,7 @@ __KERNEL_RCSID(0, "$NetBSD: mb86960.c,v 1.83 2016/06/10 13:27:13 ozaki-r Exp $")
 #include <net/if_types.h>
 #include <net/if_media.h>
 #include <net/if_ether.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <netinet/in.h>
@@ -72,10 +73,6 @@ __KERNEL_RCSID(0, "$NetBSD: mb86960.c,v 1.83 2016/06/10 13:27:13 ozaki-r Exp $")
 #include <netinet/ip.h>
 #include <netinet/if_inarp.h>
 #endif
-
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
 
 #include <sys/bus.h>
 
@@ -247,6 +244,7 @@ mb86960_config(struct mb86960_softc *sc, int *media, int nmedia, int defmedia)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, sc->sc_enaddr);
 
 	rnd_attach_source(&sc->rnd_source, device_xname(sc->sc_dev),
@@ -750,7 +748,7 @@ mb86960_start(struct ifnet *ifp)
 		}
 
 		/* Tap off here if there is a BPF listener. */
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		/*
 		 * Copy the mbuf chain into the transmission buffer.
@@ -1064,9 +1062,6 @@ mb86960_rint(struct mb86960_softc *sc, uint8_t rstat)
 			 */
 			return;
 		}
-
-		/* Successfully received a packet.  Update stat. */
-		ifp->if_ipackets++;
 	}
 }
 
@@ -1143,7 +1138,7 @@ mb86960_intr(void *arg)
 		 * receive operation priority.
 		 */
 		if ((ifp->if_flags & IFF_OACTIVE) == 0)
-			mb86960_start(ifp);
+			if_schedule_deferred_start(ifp);
 
 		if (rstat != 0 || tstat != 0)
 			rnd_add_uint32(&sc->rnd_source, rstat + tstat);
@@ -1330,12 +1325,6 @@ mb86960_get_packet(struct mb86960_softc *sc, u_int len)
 		bus_space_read_multi_stream_2(bst, bsh, FE_BMPR8,
 		    mtod(m, uint16_t *), (len + 1) >> 1);
 
-	/*
-	 * Check if there's a BPF listener on this interface.  If so, hand off
-	 * the raw packet to bpf.
-	 */
-	bpf_mtap(ifp, m);
-
 	if_percpuq_enqueue(ifp->if_percpuq, m);
 	return 1;
 }
@@ -1422,7 +1411,7 @@ mb86960_write_mbufs(struct mb86960_softc *sc, struct mbuf *m)
 	 * packet in the transmission buffer, we can skip the
 	 * padding process.  It may gain performance slightly.  FIXME.
 	 */
-	len = max(totlen, (ETHER_MIN_LEN - ETHER_CRC_LEN));
+	len = uimax(totlen, (ETHER_MIN_LEN - ETHER_CRC_LEN));
 	if (sc->sc_flags & FE_FLAGS_SBW_BYTE) {
 		bus_space_write_1(bst, bsh, FE_BMPR8, len);
 		bus_space_write_1(bst, bsh, FE_BMPR8, len >> 8);
@@ -1438,7 +1427,7 @@ mb86960_write_mbufs(struct mb86960_softc *sc, struct mbuf *m)
 	 * if the chip is set in SBW_WORD mode.
 	 */
 	sc->txb_free -= FE_TXLEN_SIZE +
-	    max(totlen, (ETHER_MIN_LEN - ETHER_CRC_LEN));
+	    uimax(totlen, (ETHER_MIN_LEN - ETHER_CRC_LEN));
 	sc->txb_count++;
 
 #if FE_DELAYED_PADDING

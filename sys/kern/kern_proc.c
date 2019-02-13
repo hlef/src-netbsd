@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_proc.c,v 1.196 2016/05/25 17:43:58 christos Exp $	*/
+/*	$NetBSD: kern_proc.c,v 1.218 2018/10/05 22:12:38 christos Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2006, 2007, 2008 The NetBSD Foundation, Inc.
@@ -62,13 +62,18 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_proc.c,v 1.196 2016/05/25 17:43:58 christos Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_proc.c,v 1.218 2018/10/05 22:12:38 christos Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_kstack.h"
 #include "opt_maxuprc.h"
 #include "opt_dtrace.h"
 #include "opt_compat_netbsd32.h"
+#endif
+
+#if defined(__HAVE_COMPAT_NETBSD32) && !defined(COMPAT_NETBSD32) \
+    && !defined(_RUMPKERNEL)
+#define COMPAT_NETBSD32
 #endif
 
 #include <sys/param.h>
@@ -258,8 +263,8 @@ proc_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
 		case KAUTH_REQ_PROCESS_CANSEE_ARGS:
 		case KAUTH_REQ_PROCESS_CANSEE_ENTRY:
 		case KAUTH_REQ_PROCESS_CANSEE_OPENFILES:
+		case KAUTH_REQ_PROCESS_CANSEE_EPROC:
 			result = KAUTH_RESULT_ALLOW;
-
 			break;
 
 		case KAUTH_REQ_PROCESS_CANSEE_ENV:
@@ -273,6 +278,7 @@ proc_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
 
 			break;
 
+		case KAUTH_REQ_PROCESS_CANSEE_KPTR:
 		default:
 			break;
 		}
@@ -480,7 +486,7 @@ proc0_init(void)
 	 * share proc0's vmspace, and thus, the kernel pmap.
 	 */
 	uvmspace_init(&vmspace0, pmap_kernel(), round_page(VM_MIN_ADDRESS),
-	    trunc_page(VM_MAX_ADDRESS),
+	    trunc_page(VM_MAXUSER_ADDRESS),
 #ifdef __USE_TOPDOWN_VM
 	    true
 #else
@@ -1555,7 +1561,6 @@ static const u_int sysctl_sflagmap[] = {
 
 static const u_int sysctl_slflagmap[] = {
 	PSL_TRACED, P_TRACED,
-	PSL_FSTRACE, P_FSTRACE,
 	PSL_CHTRACED, P_CHTRACED,
 	PSL_SYSCALL, P_SYSCALL,
 	0
@@ -1651,7 +1656,7 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 			arg = name[1];
 			break;
 		}
-		elem_count = 0;	/* Ditto */
+		elem_count = 0;	/* Hush little compiler, don't you cry */
 		kelem_size = elem_size = sizeof(kbuf->kproc);
 	} else {
 		if (namelen != 4)
@@ -1670,12 +1675,16 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 	marker->p_flag = PK_MARKER;
 
 	mutex_enter(proc_lock);
-	mmmbrains = false;
-	for (p = LIST_FIRST(&allproc);; p = next) {
+	/*
+	 * Start with zombies to prevent reporting processes twice, in case they
+	 * are dying and being moved from the list of alive processes to zombies.
+	 */
+	mmmbrains = true;
+	for (p = LIST_FIRST(&zombproc);; p = next) {
 		if (p == NULL) {
-			if (!mmmbrains) {
-				p = LIST_FIRST(&zombproc);
-				mmmbrains = true;
+			if (mmmbrains) {
+				p = LIST_FIRST(&allproc);
+				mmmbrains = false;
 			}
 			if (p == NULL)
 				break;
@@ -1693,24 +1702,24 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 		mutex_enter(p->p_lock);
 		error = kauth_authorize_process(l->l_cred,
 		    KAUTH_PROCESS_CANSEE, p,
-		    KAUTH_ARG(KAUTH_REQ_PROCESS_CANSEE_ENTRY), NULL, NULL);
+		    KAUTH_ARG(KAUTH_REQ_PROCESS_CANSEE_EPROC), NULL, NULL);
 		if (error != 0) {
 			mutex_exit(p->p_lock);
 			continue;
 		}
 
 		/*
-		 * TODO - make more efficient (see notes below).
-		 * do by session.
+		 * Hande all the operations in one switch on the cost of
+		 * algorithm complexity is on purpose. The win splitting this
+		 * function into several similar copies makes maintenance burden
+		 * burden, code grow and boost is neglible in practical systems.
 		 */
 		switch (op) {
 		case KERN_PROC_PID:
-			/* could do this with just a lookup */
 			match = (p->p_pid == (pid_t)arg);
 			break;
 
 		case KERN_PROC_PGRP:
-			/* could do this by traversing pgrp */
 			match = (p->p_pgrp->pg_id == (pid_t)arg);
 			break;
 
@@ -1794,7 +1803,7 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 			 * Copy out elem_size, but not larger than kelem_size
 			 */
 			error = sysctl_copyout(l, kbuf, dp,
-			    min(kelem_size, elem_size));
+			    uimin(kelem_size, elem_size));
 			mutex_enter(proc_lock);
 			if (error) {
 				goto bah;
@@ -1816,6 +1825,12 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 			rw_exit(&p->p_reflock);
 			next = LIST_NEXT(p, p_list);
 		}
+
+		/*
+		 * Short-circuit break quickly!
+		 */
+		if (op == KERN_PROC_PID)
+                	break;
 	}
 	mutex_exit(proc_lock);
 
@@ -1829,10 +1844,8 @@ sysctl_doeproc(SYSCTLFN_ARGS)
 		needed += KERN_PROCSLOP;
 		*oldlenp = needed;
 	}
-	if (kbuf)
-		kmem_free(kbuf, sizeof(*kbuf));
-	if (marker)
-		kmem_free(marker, sizeof(*marker));
+	kmem_free(kbuf, sizeof(*kbuf));
+	kmem_free(marker, sizeof(*marker));
 	sysctl_relock();
 	return 0;
  bah:
@@ -1843,10 +1856,8 @@ sysctl_doeproc(SYSCTLFN_ARGS)
  cleanup:
 	mutex_exit(proc_lock);
  out:
-	if (kbuf)
-		kmem_free(kbuf, sizeof(*kbuf));
-	if (marker)
-		kmem_free(marker, sizeof(*marker));
+	kmem_free(kbuf, sizeof(*kbuf));
+	kmem_free(marker, sizeof(*marker));
 	sysctl_relock();
 	return error;
 }
@@ -2052,12 +2063,6 @@ copy_procargs(struct proc *p, int oid, size_t *limit,
 		goto done;
 	}
 
-#ifdef COMPAT_NETBSD32
-	if (p->p_flag & PK_32)
-		entry_len = sizeof(netbsd32_charp);
-	else
-#endif
-		entry_len = sizeof(char *);
 
 	/*
 	 * Now copy each string.
@@ -2065,6 +2070,7 @@ copy_procargs(struct proc *p, int oid, size_t *limit,
 	len = 0; /* bytes written to user buffer */
 	loaded = 0; /* bytes from argv already processed */
 	i = 0; /* To make compiler happy */
+	entry_len = PROC_PTRSZ(p);
 
 	for (; argvlen; --argvlen) {
 		int finished = 0;
@@ -2168,8 +2174,10 @@ fill_eproc(struct proc *p, struct eproc *ep, bool zombie)
 
 	memset(ep, 0, sizeof(*ep));
 
-	ep->e_paddr = p;
-	ep->e_sess = p->p_session;
+	const bool allowaddr = get_expose_address(curproc);
+
+	COND_SET_VALUE(ep->e_paddr, p, allowaddr);
+	COND_SET_VALUE(ep->e_sess, p->p_session, allowaddr);
 	if (p->p_cred) {
 		kauth_cred_topcred(p->p_cred, &ep->e_pcred);
 		kauth_cred_toucred(p->p_cred, &ep->e_ucred);
@@ -2191,23 +2199,22 @@ fill_eproc(struct proc *p, struct eproc *ep, bool zombie)
 			strncpy(ep->e_wmesg, l->l_wmesg, WMESGLEN);
 		lwp_unlock(l);
 	}
-	if (p->p_pptr)
-		ep->e_ppid = p->p_pptr->p_pid;
+	ep->e_ppid = p->p_ppid;
 	if (p->p_pgrp && p->p_session) {
 		ep->e_pgid = p->p_pgrp->pg_id;
 		ep->e_jobc = p->p_pgrp->pg_jobc;
 		ep->e_sid = p->p_session->s_sid;
 		if ((p->p_lflag & PL_CONTROLT) &&
-		    (tp = ep->e_sess->s_ttyp)) {
+		    (tp = p->p_session->s_ttyp)) {
 			ep->e_tdev = tp->t_dev;
 			ep->e_tpgid = tp->t_pgrp ? tp->t_pgrp->pg_id : NO_PGID;
-			ep->e_tsess = tp->t_session;
+			COND_SET_VALUE(ep->e_tsess, tp->t_session, allowaddr);
 		} else
 			ep->e_tdev = (uint32_t)NODEV;
-		ep->e_flag = ep->e_sess->s_ttyvp ? EPROC_CTTY : 0;
+		ep->e_flag = p->p_session->s_ttyvp ? EPROC_CTTY : 0;
 		if (SESS_LEADER(p))
 			ep->e_flag |= EPROC_SLEADER;
-		strncpy(ep->e_login, ep->e_sess->s_login, MAXLOGNAME);
+		strncpy(ep->e_login, p->p_session->s_login, MAXLOGNAME);
 	}
 	ep->e_xsize = ep->e_xrssize = 0;
 	ep->e_xccount = ep->e_xswrss = 0;
@@ -2229,20 +2236,22 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 	KASSERT(mutex_owned(proc_lock));
 	KASSERT(mutex_owned(p->p_lock));
 
+	const bool allowaddr = get_expose_address(curproc);
+
 	sigemptyset(&ss1);
 	sigemptyset(&ss2);
 	memset(ki, 0, sizeof(*ki));
 
-	ki->p_paddr = PTRTOUINT64(p);
-	ki->p_fd = PTRTOUINT64(p->p_fd);
-	ki->p_cwdi = PTRTOUINT64(p->p_cwdi);
-	ki->p_stats = PTRTOUINT64(p->p_stats);
-	ki->p_limit = PTRTOUINT64(p->p_limit);
-	ki->p_vmspace = PTRTOUINT64(p->p_vmspace);
-	ki->p_sigacts = PTRTOUINT64(p->p_sigacts);
-	ki->p_sess = PTRTOUINT64(p->p_session);
+	COND_SET_VALUE(ki->p_paddr, PTRTOUINT64(p), allowaddr);
+	COND_SET_VALUE(ki->p_fd, PTRTOUINT64(p->p_fd), allowaddr);
+	COND_SET_VALUE(ki->p_cwdi, PTRTOUINT64(p->p_cwdi), allowaddr);
+	COND_SET_VALUE(ki->p_stats, PTRTOUINT64(p->p_stats), allowaddr);
+	COND_SET_VALUE(ki->p_limit, PTRTOUINT64(p->p_limit), allowaddr);
+	COND_SET_VALUE(ki->p_vmspace, PTRTOUINT64(p->p_vmspace), allowaddr);
+	COND_SET_VALUE(ki->p_sigacts, PTRTOUINT64(p->p_sigacts), allowaddr);
+	COND_SET_VALUE(ki->p_sess, PTRTOUINT64(p->p_session), allowaddr);
 	ki->p_tsess = 0;	/* may be changed if controlling tty below */
-	ki->p_ru = PTRTOUINT64(&p->p_stats->p_ru);
+	COND_SET_VALUE(ki->p_ru, PTRTOUINT64(&p->p_stats->p_ru), allowaddr);
 	ki->p_eflag = 0;
 	ki->p_exitsig = p->p_exitsig;
 	ki->p_flag = L_INMEM;   /* Process never swapped out */
@@ -2252,10 +2261,7 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 	ki->p_flag |= sysctl_map_flags(sysctl_lflagmap, p->p_lflag);
 	ki->p_flag |= sysctl_map_flags(sysctl_stflagmap, p->p_stflag);
 	ki->p_pid = p->p_pid;
-	if (p->p_pptr)
-		ki->p_ppid = p->p_pptr->p_pid;
-	else
-		ki->p_ppid = 0;
+	ki->p_ppid = p->p_ppid;
 	ki->p_uid = kauth_cred_geteuid(p->p_cred);
 	ki->p_ruid = kauth_cred_getuid(p->p_cred);
 	ki->p_gid = kauth_cred_getegid(p->p_cred);
@@ -2264,14 +2270,14 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 	ki->p_svgid = kauth_cred_getsvgid(p->p_cred);
 	ki->p_ngroups = kauth_cred_ngroups(p->p_cred);
 	kauth_cred_getgroups(p->p_cred, ki->p_groups,
-	    min(ki->p_ngroups, sizeof(ki->p_groups) / sizeof(ki->p_groups[0])),
+	    uimin(ki->p_ngroups, sizeof(ki->p_groups) / sizeof(ki->p_groups[0])),
 	    UIO_SYSSPACE);
 
 	ki->p_uticks = p->p_uticks;
 	ki->p_sticks = p->p_sticks;
 	ki->p_iticks = p->p_iticks;
 	ki->p_tpgid = NO_PGID;	/* may be changed if controlling tty below */
-	ki->p_tracep = PTRTOUINT64(p->p_tracep);
+	COND_SET_VALUE(ki->p_tracep, PTRTOUINT64(p->p_tracep), allowaddr);
 	ki->p_traceflag = p->p_traceflag;
 
 	memcpy(&ki->p_sigignore, &p->p_sigctx.ps_sigignore,sizeof(ki_sigset_t));
@@ -2287,7 +2293,7 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 	ki->p_acflag = p->p_acflag;
 
 	strncpy(ki->p_comm, p->p_comm,
-	    min(sizeof(ki->p_comm), sizeof(p->p_comm)));
+	    uimin(sizeof(ki->p_comm), sizeof(p->p_comm)));
 	strncpy(ki->p_ename, p->p_emul->e_name, sizeof(ki->p_ename));
 
 	ki->p_nlwps = p->p_nlwps;
@@ -2315,7 +2321,7 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 		ki->p_nrlwps = p->p_nrlwps;
 		ki->p_forw = 0;
 		ki->p_back = 0;
-		ki->p_addr = PTRTOUINT64(l->l_addr);
+		COND_SET_VALUE(ki->p_addr, PTRTOUINT64(l->l_addr), allowaddr);
 		ki->p_stat = l->l_stat;
 		ki->p_flag |= sysctl_map_flags(sysctl_lwpflagmap, l->l_flag);
 		ki->p_swtime = l->l_swtime;
@@ -2328,7 +2334,7 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 		ki->p_usrpri = l->l_priority;
 		if (l->l_wchan)
 			strncpy(ki->p_wmesg, l->l_wmesg, sizeof(ki->p_wmesg));
-		ki->p_wchan = PTRTOUINT64(l->l_wchan);
+		COND_SET_VALUE(ki->p_wchan, PTRTOUINT64(l->l_wchan), allowaddr);
 		ki->p_cpuid = cpu_index(l->l_cpu);
 		lwp_unlock(l);
 		LIST_FOREACH(l, &p->p_lwps, l_sibling) {
@@ -2352,12 +2358,13 @@ fill_kproc2(struct proc *p, struct kinfo_proc2 *ki, bool zombie)
 		if (SESS_LEADER(p))
 			ki->p_eflag |= EPROC_SLEADER;
 		strncpy(ki->p_login, p->p_session->s_login,
-		    min(sizeof ki->p_login - 1, sizeof p->p_session->s_login));
+		    uimin(sizeof ki->p_login - 1, sizeof p->p_session->s_login));
 		ki->p_jobc = p->p_pgrp->pg_jobc;
 		if ((p->p_lflag & PL_CONTROLT) && (tp = p->p_session->s_ttyp)) {
 			ki->p_tdev = tp->t_dev;
 			ki->p_tpgid = tp->t_pgrp ? tp->t_pgrp->pg_id : NO_PGID;
-			ki->p_tsess = PTRTOUINT64(tp->t_session);
+			COND_SET_VALUE(ki->p_tsess, PTRTOUINT64(tp->t_session),
+			    allowaddr);
 		} else {
 			ki->p_tdev = (int32_t)NODEV;
 		}
@@ -2438,39 +2445,60 @@ proc_find_locked(struct lwp *l, struct proc **p, pid_t pid)
 static int
 fill_pathname(struct lwp *l, pid_t pid, void *oldp, size_t *oldlenp)
 {
-#ifndef _RUMPKERNEL
 	int error;
 	struct proc *p;
-	char *path;
-	size_t len;
 
 	if ((error = proc_find_locked(l, &p, pid)) != 0)
 		return error;
 
-	if (p->p_textvp == NULL) {
+	if (p->p_path == NULL) {
 		if (pid != -1)
 			mutex_exit(p->p_lock);
 		return ENOENT;
 	}
 
-	path = PNBUF_GET();
-	error = vnode_to_path(path, MAXPATHLEN / 2, p->p_textvp, l, p);
-	if (error)
-		goto out;
-
-	len = strlen(path) + 1;
+	size_t len = strlen(p->p_path) + 1;
 	if (oldp != NULL) {
-		error = sysctl_copyout(l, path, oldp, *oldlenp);
+		error = sysctl_copyout(l, p->p_path, oldp, *oldlenp);
 		if (error == 0 && *oldlenp < len)
 			error = ENOSPC;
 	}
 	*oldlenp = len;
-out:
-	PNBUF_PUT(path);
 	if (pid != -1)
 		mutex_exit(p->p_lock);
 	return error;
-#else
+}
+
+int
+proc_getauxv(struct proc *p, void **buf, size_t *len)
+{
+	struct ps_strings pss;
+	int error;
+	void *uauxv, *kauxv;
+	size_t size;
+
+	if ((error = copyin_psstrings(p, &pss)) != 0)
+		return error;
+	if (pss.ps_envstr == NULL)
+		return EIO;
+
+	size = p->p_execsw->es_arglen;
+	if (size == 0)
+		return EIO;
+
+	size_t ptrsz = PROC_PTRSZ(p);
+	uauxv = (void *)((char *)pss.ps_envstr + (pss.ps_nenvstr + 1) * ptrsz);
+
+	kauxv = kmem_alloc(size, KM_SLEEP);
+
+	error = copyin_proc(p, uauxv, kauxv, size);
+	if (error) {
+		kmem_free(kauxv, size);
+		return error;
+	}
+
+	*buf = kauxv;
+	*len = size;
+
 	return 0;
-#endif
 }

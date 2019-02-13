@@ -1,35 +1,37 @@
-/*	$NetBSD: db_machdep.h,v 1.22 2014/09/13 18:08:38 matt Exp $	*/
+/*	$NetBSD: db_machdep.h,v 1.27 2018/04/01 04:35:04 ryo Exp $	*/
 
 /*
  * Copyright (c) 1996 Scott K Stevens
- * 
+ *
  * Mach Operating System
  * Copyright (c) 1991,1990 Carnegie Mellon University
  * All Rights Reserved.
- * 
+ *
  * Permission to use, copy, modify and distribute this software and its
  * documentation is hereby granted, provided that both the copyright
  * notice and this permission notice appear in all copies of the
  * software, derivative works or modified versions, and any portions
  * thereof, and that both notices appear in supporting documentation.
- * 
+ *
  * CARNEGIE MELLON ALLOWS FREE USE OF THIS SOFTWARE IN ITS "AS IS"
  * CONDITION.  CARNEGIE MELLON DISCLAIMS ANY LIABILITY OF ANY KIND FOR
  * ANY DAMAGES WHATSOEVER RESULTING FROM THE USE OF THIS SOFTWARE.
- * 
+ *
  * Carnegie Mellon requests users of this software to return to
- * 
+ *
  *  Software Distribution Coordinator  or  Software.Distribution@CS.CMU.EDU
  *  School of Computer Science
  *  Carnegie Mellon University
  *  Pittsburgh PA 15213-3890
- * 
+ *
  * any improvements or extensions that they make and grant Carnegie Mellon
  * the rights to redistribute these changes.
  */
 
 #ifndef	_ARM_DB_MACHDEP_H_
 #define	_ARM_DB_MACHDEP_H_
+
+#if defined(__arm__)
 
 /*
  * Machine-dependent defines for new kernel debugger.
@@ -57,13 +59,8 @@ extern db_regs_t *ddb_regp;
 #define ddb_regs	(*ddb_regp)
 #endif
 
-#ifdef __PROG26
-#define	PC_REGS(regs)	((regs)->tf_r15 & R15_PC)
-#define PC_ADVANCE(regs) ((regs)->tf_r15 += BKPT_SIZE)
-#else
 #define	PC_REGS(regs)	((regs)->tf_pc)
 #define PC_ADVANCE(r)   ((r)->tf_r15 += BKPT_SIZE)
-#endif
 
 #define	BKPT_ADDR(addr)	(addr)			/* breakpoint address */
 #if defined(DDB)
@@ -81,7 +78,7 @@ extern db_regs_t *ddb_regp;
 #define T_BREAKPOINT			(1)
 
 #define	IS_BREAKPOINT_TRAP(type, code)	((type) == T_BREAKPOINT)
-#define IS_WATCHPOINT_TRAP(type, code)	(0)
+#define	IS_WATCHPOINT_TRAP(type, code)	(0)
 
 #define	inst_trap_return(ins)	(0)
 /* ldmxx reg, {..., pc}
@@ -121,7 +118,6 @@ void db_machine_init(void);
 int db_validate_address(vaddr_t addr);
 
 #define DB_ELF_SYMBOLS
-#define DB_ELFSIZE 32
 
 /*
  * kgdb
@@ -138,4 +134,11 @@ typedef register_t	kgdb_reg_t;
  */
 extern volatile struct cpu_info *db_onproc;
 extern volatile struct cpu_info *db_newcpu;
+
+#elif defined(__aarch64__)
+
+#include <aarch64/db_machdep.h>
+
+#endif
+
 #endif	/* _ARM_DB_MACHDEP_H_ */

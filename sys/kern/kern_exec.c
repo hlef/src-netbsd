@@ -1,4 +1,4 @@
-/*	$NetBSD: kern_exec.c,v 1.435 2016/07/07 06:55:43 msaitoh Exp $	*/
+/*	$NetBSD: kern_exec.c,v 1.461 2018/09/03 16:29:35 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 2008 The NetBSD Foundation, Inc.
@@ -59,7 +59,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: kern_exec.c,v 1.435 2016/07/07 06:55:43 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: kern_exec.c,v 1.461 2018/09/03 16:29:35 riastradh Exp $");
 
 #include "opt_exec.h"
 #include "opt_execfmt.h"
@@ -121,6 +121,8 @@ __KERNEL_RCSID(0, "$NetBSD: kern_exec.c,v 1.435 2016/07/07 06:55:43 msaitoh Exp 
 #endif
 
 struct execve_data;
+
+extern int user_va0_disable;
 
 static size_t calcargs(struct execve_data * restrict, const size_t);
 static size_t calcstack(struct execve_data * restrict, const size_t);
@@ -207,6 +209,7 @@ struct emul emul_netbsd = {
 	.e_sc_autoload =	netbsd_syscalls_autoload,
 #endif
 	.e_sysent =		sysent,
+	.e_nomodbits =		sysent_nomodbits,
 #ifdef SYSCALL_DEBUG
 	.e_syscallnames =	syscallnames,
 #else
@@ -214,7 +217,6 @@ struct emul emul_netbsd = {
 #endif
 	.e_sendsig =		sendsig,
 	.e_trapsignal =		trapsignal,
-	.e_tracesig =		NULL,
 	.e_sigcode =		NULL,
 	.e_esigcode =		NULL,
 	.e_sigobject =		NULL,
@@ -230,7 +232,6 @@ struct emul emul_netbsd = {
 	.e_syscall =		syscall,
 #endif
 	.e_sysctlovly =		NULL,
-	.e_fault =		NULL,
 	.e_vm_default_addr =	uvm_default_mapaddr,
 	.e_usertrap =		NULL,
 	.e_ucsize =		sizeof(ucontext_t),
@@ -278,11 +279,14 @@ struct spawn_exec_data {
 	volatile uint32_t	sed_refcnt;
 };
 
+static struct vm_map *exec_map;
+static struct pool exec_pool;
+
 static void *
 exec_pool_alloc(struct pool *pp, int flags)
 {
 
-	return (void *)uvm_km_alloc(kernel_map, NCARGS, 0,
+	return (void *)uvm_km_alloc(exec_map, NCARGS, 0,
 	    UVM_KMF_PAGEABLE | UVM_KMF_WAITVA);
 }
 
@@ -290,10 +294,8 @@ static void
 exec_pool_free(struct pool *pp, void *addr)
 {
 
-	uvm_km_free(kernel_map, (vaddr_t)addr, NCARGS, UVM_KMF_PAGEABLE);
+	uvm_km_free(exec_map, (vaddr_t)addr, NCARGS, UVM_KMF_PAGEABLE);
 }
-
-static struct pool exec_pool;
 
 static struct pool_allocator exec_palloc = {
 	.pa_alloc = exec_pool_alloc,
@@ -335,15 +337,25 @@ check_exec(struct lwp *l, struct exec_package *epp, struct pathbuf *pb)
 	struct nameidata nd;
 	size_t		resid;
 
+#if 1
+	// grab the absolute pathbuf here before namei() trashes it.
+	pathbuf_copystring(pb, epp->ep_resolvedname, PATH_MAX);
+#endif
 	NDINIT(&nd, LOOKUP, FOLLOW | LOCKLEAF | TRYEMULROOT, pb);
 
 	/* first get the vnode */
 	if ((error = namei(&nd)) != 0)
 		return error;
 	epp->ep_vp = vp = nd.ni_vp;
+#if 0
+	/*
+	 * XXX: can't use nd.ni_pnbuf, because although pb contains an
+	 * absolute path, nd.ni_pnbuf does not if the path contains symlinks.
+	 */
 	/* normally this can't fail */
 	error = copystr(nd.ni_pnbuf, epp->ep_resolvedname, PATH_MAX, NULL);
 	KASSERT(error == 0);
+#endif
 
 #ifdef DIAGNOSTIC
 	/* paranoia (take this out once namei stuff stabilizes) */
@@ -401,11 +413,10 @@ check_exec(struct lwp *l, struct exec_package *epp, struct pathbuf *pb)
 	/*
 	 * Set up default address space limits.  Can be overridden
 	 * by individual exec packages.
-	 *
-	 * XXX probably should be all done in the exec packages.
 	 */
-	epp->ep_vm_minaddr = VM_MIN_ADDRESS;
+	epp->ep_vm_minaddr = exec_vm_minaddr(VM_MIN_ADDRESS);
 	epp->ep_vm_maxaddr = VM_MAXUSER_ADDRESS;
+
 	/*
 	 * set up the vmcmds for creation of the process
 	 * address space
@@ -419,10 +430,10 @@ check_exec(struct lwp *l, struct exec_package *epp, struct pathbuf *pb)
 
 		if (!newerror) {
 			/* Seems ok: check that entry point is not too high */
-			if (epp->ep_entry > epp->ep_vm_maxaddr) {
+			if (epp->ep_entry >= epp->ep_vm_maxaddr) {
 #ifdef DIAGNOSTIC
 				printf("%s: rejecting %p due to "
-				    "too high entry address (> %p)\n",
+				    "too high entry address (>= %p)\n",
 					 __func__, (void *)epp->ep_entry,
 					 (void *)epp->ep_vm_maxaddr);
 #endif
@@ -577,15 +588,9 @@ exec_autoload(void)
 		"exec_coff",
 		"exec_ecoff",
 		"compat_aoutm68k",
-		"compat_freebsd",
-		"compat_ibcs2",
-		"compat_linux",
-		"compat_linux32",
 		"compat_netbsd32",
 		"compat_sunos",
 		"compat_sunos32",
-		"compat_svr4",
-		"compat_svr4_32",
 		"compat_ultrix",
 		NULL
 	};
@@ -602,9 +607,9 @@ exec_autoload(void)
 #endif
 }
 
-static int
-makepathbuf(struct lwp *l, const char *upath, struct pathbuf **pbp,
-    size_t *offs)
+int
+exec_makepathbuf(struct lwp *l, const char *upath, enum uio_seg seg,
+    struct pathbuf **pbp, size_t *offs)
 {
 	char *path, *bp;
 	size_t len, tlen;
@@ -612,7 +617,11 @@ makepathbuf(struct lwp *l, const char *upath, struct pathbuf **pbp,
 	struct cwdinfo *cwdi;
 
 	path = PNBUF_GET();
-	error = copyinstr(upath, path, MAXPATHLEN, &len);
+	if (seg == UIO_SYSSPACE) {
+		error = copystr(upath, path, MAXPATHLEN, &len);
+	} else {
+		error = copyinstr(upath, path, MAXPATHLEN, &len);
+	}
 	if (error) {
 		PNBUF_PUT(path);
 		DPRINTF(("%s: copyin path @%p %d\n", __func__, upath, error));
@@ -620,7 +629,8 @@ makepathbuf(struct lwp *l, const char *upath, struct pathbuf **pbp,
 	}
 
 	if (path[0] == '/') {
-		*offs = 0;
+		if (offs)
+			*offs = 0;
 		goto out;
 	}
 
@@ -646,10 +656,24 @@ makepathbuf(struct lwp *l, const char *upath, struct pathbuf **pbp,
 
 	memmove(path, bp, tlen);
 	path[tlen] = '\0';
-	*offs = tlen - len;
+	if (offs)
+		*offs = tlen - len;
 out:
 	*pbp = pathbuf_assimilate(path);
 	return 0;
+}
+
+vaddr_t
+exec_vm_minaddr(vaddr_t va_min)
+{
+	/*
+	 * Increase va_min if we don't want NULL to be mappable by the
+	 * process.
+	 */
+#define VM_MIN_GUARD	PAGE_SIZE
+	if (user_va0_disable && (va_min < VM_MIN_GUARD))
+		return VM_MIN_GUARD;
+	return va_min;
 }
 
 static int
@@ -712,7 +736,8 @@ execve_loadvm(struct lwp *l, const char *path, char * const *args,
 	 * functions call check_exec() recursively - for example,
 	 * see exec_script_makecmds().
 	 */
-	if ((error = makepathbuf(l, path, &data->ed_pathbuf, &offs)) != 0)
+	if ((error = exec_makepathbuf(l, path, UIO_USERSPACE,
+	    &data->ed_pathbuf, &offs)) != 0)
 		goto clrflg;
 	data->ed_pathstring = pathbuf_stringcopy_get(data->ed_pathbuf);
 	data->ed_resolvedpathbuf = PNBUF_GET();
@@ -741,9 +766,9 @@ execve_loadvm(struct lwp *l, const char *path, char * const *args,
 
 	/* see if we can run it. */
 	if ((error = check_exec(l, epp, data->ed_pathbuf)) != 0) {
-		if (error != ENOENT && error != EACCES) {
-			DPRINTF(("%s: check exec failed %d\n",
-			    __func__, error));
+		if (error != ENOENT && error != EACCES && error != ENOEXEC) {
+			DPRINTF(("%s: check exec failed for %s, error %d\n",
+			    __func__, epp->ep_kname, error));
 		}
 		goto freehdr;
 	}
@@ -916,55 +941,15 @@ execve_free_data(struct execve_data *data)
 }
 
 static void
-pathexec(struct exec_package *epp, struct lwp *l, const char *pathstring)
+pathexec(struct proc *p, const char *resolvedname)
 {
-	const char		*commandname;
-	size_t			commandlen;
-	char			*path;
-	struct proc 		*p = l->l_proc;
+	KASSERT(resolvedname[0] == '/');
 
 	/* set command name & other accounting info */
-	commandname = strrchr(epp->ep_resolvedname, '/');
-	if (commandname != NULL) {
-		commandname++;
-	} else {
-		commandname = epp->ep_resolvedname;
-	}
-	commandlen = min(strlen(commandname), MAXCOMLEN);
-	(void)memcpy(p->p_comm, commandname, commandlen);
-	p->p_comm[commandlen] = '\0';
+	strlcpy(p->p_comm, strrchr(resolvedname, '/') + 1, sizeof(p->p_comm));
 
-
-	/*
-	 * If the path starts with /, we don't need to do any work.
-	 * This handles the majority of the cases.
-	 * In the future perhaps we could canonicalize it?
-	 */
-	path = PNBUF_GET();
-	if (pathstring[0] == '/') {
-		(void)strlcpy(path, pathstring, MAXPATHLEN);
-		epp->ep_path = path;
-	}
-#ifdef notyet
-	/*
-	 * Although this works most of the time [since the entry was just
-	 * entered in the cache] we don't use it because it will fail for
-	 * entries that are not placed in the cache because their name is
-	 * longer than NCHNAMLEN and it is not the cleanest interface,
-	 * because there could be races. When the namei cache is re-written,
-	 * this can be changed to use the appropriate function.
-	 */
-	else if (!(error = vnode_to_path(path, MAXPATHLEN, p->p_textvp, l, p)))
-		epp->ep_path = path;
-#endif
-	else {
-#ifdef notyet
-		printf("Cannot get path for pid %d [%s] (error %d)\n",
-		    (int)p->p_pid, p->p_comm, error);
-#endif
-		PNBUF_PUT(path);
- 		epp->ep_path = NULL;
-	}
+	kmem_strfree(p->p_path);
+	p->p_path = kmem_strdupsize(resolvedname, NULL, KM_SLEEP);
 }
 
 /* XXX elsewhere */
@@ -1185,7 +1170,7 @@ execve_runproc(struct lwp *l, struct execve_data * restrict data,
 	if (error != 0)
 		goto exec_abort;
 
-	pathexec(epp, l, data->ed_pathstring);
+	pathexec(p, epp->ep_resolvedname);
 
 	char * const newstack = STACK_GROW(vm->vm_minsaddr, epp->ep_ssize);
 
@@ -1199,7 +1184,7 @@ execve_runproc(struct lwp *l, struct execve_data * restrict data,
 	if (__predict_false(ktrace_on))
 		fd_ktrexecfd();
 
-	execsigs(p);		/* reset catched signals */
+	execsigs(p);		/* reset caught signals */
 
 	mutex_enter(p->p_lock);
 	l->l_ctxlink = NULL;	/* reset ucontext link */
@@ -1221,26 +1206,11 @@ execve_runproc(struct lwp *l, struct execve_data * restrict data,
 	 * exited and exec()/exit() are the only places it will be cleared.
 	 */
 	if ((p->p_lflag & PL_PPWAIT) != 0) {
-#if 0
-		lwp_t *lp;
-
-		mutex_enter(proc_lock);
-		lp = p->p_vforklwp;
-		p->p_vforklwp = NULL;
-
-		l->l_lwpctl = NULL; /* was on loan from blocked parent */
-		p->p_lflag &= ~PL_PPWAIT;
-
-		lp->l_pflag &= ~LP_VFORKWAIT; /* XXX */
-		cv_broadcast(&lp->l_waitcv);
-		mutex_exit(proc_lock);
-#else
 		mutex_enter(proc_lock);
 		l->l_lwpctl = NULL; /* was on loan from blocked parent */
 		p->p_lflag &= ~PL_PPWAIT;
 		cv_broadcast(&p->p_pptr->p_waitcv);
 		mutex_exit(proc_lock);
-#endif
 	}
 
 	error = credexec(l, &data->ed_attr);
@@ -1300,12 +1270,15 @@ execve_runproc(struct lwp *l, struct execve_data * restrict data,
 	mutex_enter(proc_lock);
 
 	if ((p->p_slflag & (PSL_TRACED|PSL_SYSCALL)) == PSL_TRACED) {
-		ksiginfo_t ksi;
-
-		KSI_INIT_EMPTY(&ksi);
-		ksi.ksi_signo = SIGTRAP;
-		ksi.ksi_lid = l->l_lid;
-		kpsignal(p, &ksi, NULL);
+		mutex_enter(p->p_lock);
+		p->p_xsig = SIGTRAP;
+		p->p_sigctx.ps_faked = true; // XXX
+		p->p_sigctx.ps_info._signo = p->p_xsig;
+		p->p_sigctx.ps_info._code = TRAP_EXEC;
+		sigswitch(0, SIGTRAP, false);
+		// XXX ktrpoint(KTR_PSIG)
+		mutex_exit(p->p_lock);
+		mutex_enter(proc_lock);
 	}
 
 	if (p->p_sflag & PS_STOPEXEC) {
@@ -1411,10 +1384,11 @@ calcargs(struct execve_data * restrict data, const size_t argenvstrlen)
 	    data->ed_argc +		/* char *argv[] */
 	    1 +				/* \0 */
 	    data->ed_envc +		/* char *env[] */
-	    1 +				/* \0 */
-	    epp->ep_esch->es_arglen;	/* auxinfo */
+	    1;				/* \0 */
 
-	return (nargenvptrs * ptrsz(epp)) + argenvstrlen;
+	return (nargenvptrs * ptrsz(epp))	/* pointers */
+	    + argenvstrlen			/* strings */
+	    + epp->ep_esch->es_arglen;		/* auxinfo */
 }
 
 static size_t
@@ -1467,10 +1441,6 @@ copyoutargs(struct execve_data * restrict data, struct lwp *l,
 	error = (*epp->ep_esch->es_copyargs)(l, epp,
 	    &data->ed_arginfo, &newargs, data->ed_argp);
 
-	if (epp->ep_path) {
-		PNBUF_PUT(epp->ep_path);
-		epp->ep_path = NULL;
-	}
 	if (error) {
 		DPRINTF(("%s: copyargs failed %d\n", __func__, error));
 		return error;
@@ -1665,9 +1635,8 @@ copyargs(struct lwp *l, struct exec_package *pack, struct ps_strings *arginfo,
 	    argc +			/* char *argv[] */
 	    1 +				/* \0 */
 	    envc +			/* char *env[] */
-	    1 +				/* \0 */
-	    /* XXX auxinfo multiplied by ptr size? */
-	    pack->ep_esch->es_arglen);	/* auxinfo */
+	    1) +			/* \0 */
+	    pack->ep_esch->es_arglen;	/* auxinfo */
 	sp = argp;
 
 	if ((error = copyout(&argc, cpp++, sizeof(argc))) != 0) {
@@ -1826,8 +1795,12 @@ exec_init(int init_boot)
 
 	if (init_boot) {
 		/* do one-time initializations */
+		vaddr_t vmin = 0, vmax;
+
 		rw_init(&exec_lock);
 		mutex_init(&sigobject_lock, MUTEX_DEFAULT, IPL_NONE);
+		exec_map = uvm_km_suballoc(kernel_map, &vmin, &vmax,
+		    maxexec*NCARGS, VM_MAP_PAGEABLE, false, NULL);
 		pool_init(&exec_pool, NCARGS, 0, 0, PR_NOALIGN|PR_NOTOUCH,
 		    "execargs", &exec_palloc, IPL_NONE);
 		pool_sethardlimit(&exec_pool, maxexec, "should not happen", 0);
@@ -2259,7 +2232,7 @@ posix_spawn_fa_free(struct posix_spawn_file_actions *fa, size_t len)
 		struct posix_spawn_file_actions_entry *fae = &fa->fae[i];
 		if (fae->fae_action != FAE_OPEN)
 			continue;
-		kmem_free(fae->fae_path, strlen(fae->fae_path) + 1);
+		kmem_strfree(fae->fae_path);
 	}
 	if (fa->len > 0)
 		kmem_free(fa->fae, sizeof(*fa->fae) * fa->len);
@@ -2531,7 +2504,7 @@ do_posix_spawn(struct lwp *l1, pid_t *pid_res, bool *child_ok, const char *path,
 
 	/* create LWP */
 	lwp_create(l1, p2, uaddr, 0, NULL, 0, spawn_return, spawn_data,
-	    &l2, l1->l_class);
+	    &l2, l1->l_class, &l1->l_sigmask, &l1->l_sigstk);
 	l2->l_ctxlink = NULL;	/* reset ucontext link */
 
 	/*
@@ -2656,7 +2629,7 @@ sys_posix_spawn(struct lwp *l1, const struct sys_posix_spawn_args *uap,
 
 	/* copy in file_actions struct */
 	if (SCARG(uap, file_actions) != NULL) {
-		max_fileactions = 2 * min(p->p_rlimit[RLIMIT_NOFILE].rlim_cur,
+		max_fileactions = 2 * uimin(p->p_rlimit[RLIMIT_NOFILE].rlim_cur,
 		    maxfiles);
 		error = posix_spawn_fa_alloc(&fa, SCARG(uap, file_actions),
 		    max_fileactions);

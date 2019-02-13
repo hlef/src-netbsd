@@ -1,4 +1,4 @@
-/*	$NetBSD: sbdsp.c,v 1.136 2016/07/11 11:31:50 msaitoh Exp $	*/
+/*	$NetBSD: sbdsp.c,v 1.138 2018/09/03 16:29:31 riastradh Exp $	*/
 
 /*-
  * Copyright (c) 1999, 2008 The NetBSD Foundation, Inc.
@@ -74,7 +74,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: sbdsp.c,v 1.136 2016/07/11 11:31:50 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: sbdsp.c,v 1.138 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "midi.h"
 #include "mpu.h"
@@ -588,7 +588,7 @@ sbdsp_set_params(
 		return EBUSY;
 
 	/* Later models work like SB16. */
-	model = min(sc->sc_model, SB_16);
+	model = uimin(sc->sc_model, SB_16);
 
 	/*
 	 * Prior to the SB16, we have only one clock, so make the sample
@@ -640,6 +640,7 @@ sbdsp_set_params(
 					swcode = swap_bytes;
 				}
 				/* fall into */
+			case AUDIO_ENCODING_SLINEAR:
 			case AUDIO_ENCODING_SLINEAR_LE:
 				bmode = SB_BMODE_SIGNED;
 				break;
@@ -682,6 +683,7 @@ sbdsp_set_params(
 				bmode |= SB_BMODE_STEREO;
 		} else if (m->model == SB_JAZZ && m->precision == 16) {
 			switch (p->encoding) {
+			case AUDIO_ENCODING_SLINEAR:
 			case AUDIO_ENCODING_SLINEAR_LE:
 				break;
 			case AUDIO_ENCODING_ULINEAR_LE:
@@ -716,6 +718,7 @@ sbdsp_set_params(
 			switch (p->encoding) {
 			case AUDIO_ENCODING_SLINEAR_BE:
 			case AUDIO_ENCODING_SLINEAR_LE:
+			case AUDIO_ENCODING_SLINEAR:
 				hw.encoding = AUDIO_ENCODING_ULINEAR_LE;
 				swcode = change_sign8;
 				break;

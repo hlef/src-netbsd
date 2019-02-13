@@ -1,4 +1,4 @@
-/*	$NetBSD: gem.c,v 1.106 2016/06/10 13:27:13 ozaki-r Exp $ */
+/*	$NetBSD: gem.c,v 1.111 2018/09/03 16:29:31 riastradh Exp $ */
 
 /*
  *
@@ -37,7 +37,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: gem.c,v 1.106 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: gem.c,v 1.111 2018/09/03 16:29:31 riastradh Exp $");
 
 #include "opt_inet.h"
 
@@ -410,7 +410,8 @@ gem_attach(struct gem_softc *sc, const uint8_t *enaddr)
 #endif
 		/* Look for internal PHY if no external PHY was found */
 		if (LIST_EMPTY(&mii->mii_phys) && 
-		    sc->sc_mif_config & GEM_MIF_CONFIG_MDI0) {
+		    ((sc->sc_mif_config & GEM_MIF_CONFIG_MDI0) ||
+		     (sc->sc_variant == GEM_APPLE_K2_GMAC))) {
 			sc->sc_mif_config &= ~GEM_MIF_CONFIG_PHY_SEL;
 			bus_space_write_4(t, h, GEM_MIF_CONFIG,
 			    sc->sc_mif_config);
@@ -577,6 +578,7 @@ gem_attach(struct gem_softc *sc, const uint8_t *enaddr)
 
 	/* Attach the interface. */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 	ether_set_ifflags_cb(&sc->sc_ethercom, gem_ifflags_cb);
 
@@ -1156,7 +1158,7 @@ gem_init(struct ifnet *ifp)
 
 	/* step 4. TX MAC registers & counters */
 	gem_init_regs(sc);
-	max_frame_size = max(sc->sc_ethercom.ec_if.if_mtu, ETHERMTU);
+	max_frame_size = uimax(sc->sc_ethercom.ec_if.if_mtu, ETHERMTU);
 	max_frame_size += ETHER_HDR_LEN + ETHER_CRC_LEN;
 	if (sc->sc_ethercom.ec_capenable & ETHERCAP_VLAN_MTU)
 		max_frame_size += ETHER_VLAN_ENCAP_LEN;
@@ -1597,7 +1599,7 @@ gem_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (txs == NULL || sc->sc_txfree == 0) {
@@ -1740,7 +1742,7 @@ gem_tint(struct gem_softc *sc)
 		ifp->if_flags &= ~IFF_OACTIVE;
 		sc->sc_if_flags = ifp->if_flags;
 		ifp->if_timer = SIMPLEQ_EMPTY(&sc->sc_txdirtyq) ? 0 : 5;
-		gem_start(ifp);
+		if_schedule_deferred_start(ifp);
 	}
 	DPRINTF(sc, ("%s: gem_tint: watchdog %d\n",
 		device_xname(sc->sc_dev), ifp->if_timer));
@@ -1805,7 +1807,6 @@ gem_rint(struct gem_softc *sc)
 		}
 
 		progress++;
-		ifp->if_ipackets++;
 
 		if (rxstat & GEM_RD_BAD_CRC) {
 			ifp->if_ierrors++;
@@ -1850,12 +1851,6 @@ gem_rint(struct gem_softc *sc)
 
 		m_set_rcvif(m, ifp);
 		m->m_pkthdr.len = m->m_len = len;
-
-		/*
-		 * Pass this up to any BPF listeners, but only
-		 * pass it up the stack if it's for us.
-		 */
-		bpf_mtap(ifp, m);
 
 #ifdef INET
 		/* hardware checksum */

@@ -1,9 +1,9 @@
-/* $NetBSD: machdep.h,v 1.19 2015/11/11 12:37:13 jmcneill Exp $ */
+/* $NetBSD: machdep.h,v 1.27 2018/10/18 09:01:52 skrll Exp $ */
 
-#ifndef _ARM32_BOOT_MACHDEP_H_
-#define _ARM32_BOOT_MACHDEP_H_
+#ifndef _ARM32_MACHDEP_H_
+#define _ARM32_MACHDEP_H_
 
-/* Define various stack sizes in pages */ 
+/* Define various stack sizes in pages */
 #ifndef IRQ_STACK_SIZE
 #define IRQ_STACK_SIZE	1
 #endif
@@ -11,16 +11,11 @@
 #define ABT_STACK_SIZE	1
 #endif
 #ifndef UND_STACK_SIZE
-#ifdef IPKDB
-#define UND_STACK_SIZE	2
-#else
 #define UND_STACK_SIZE	1
-#endif
 #endif
 #ifndef FIQ_STACK_SIZE
 #define FIQ_STACK_SIZE	1
 #endif
-
 
 extern void (*cpu_reset_address)(void);
 extern paddr_t cpu_reset_address_paddr;
@@ -57,6 +52,8 @@ extern char *booted_kernel;
 extern volatile uint32_t arm_cpu_hatched;
 extern volatile uint32_t arm_cpu_mbox;
 extern u_int arm_cpu_max;
+extern u_long kern_vtopdiff;
+
 
 /* misc prototypes used by the many arm machdeps */
 void cortex_pmc_ccnt_init(void);
@@ -68,13 +65,31 @@ void prefetch_abort_handler(trapframe_t *);
 void undefinedinstruction_bounce(trapframe_t *);
 void dumpsys(void);
 
-/* 
- * note that we use void *as all the platforms have different ideas on what
+/*
+ * note that we use void * as all the platforms have different ideas on what
  * the structure is
  */
 u_int initarm(void *);
 struct pmap_devmap;
 struct boot_physmem;
+
+static inline paddr_t
+aarch32_kern_vtophys(vaddr_t va)
+{
+	return va - kern_vtopdiff;
+}
+
+static inline vaddr_t
+aarch32_kern_phystov(paddr_t pa)
+{
+	return pa + kern_vtopdiff;
+}
+
+#define KERN_VTOPHYS(va)	aarch32_kern_vtophys(va)
+#define KERN_PHYSTOV(pa)	aarch32_kern_phystov(pa)
+
+void cpu_kernel_vm_init(paddr_t, psize_t);
+
 void arm32_bootmem_init(paddr_t memstart, psize_t memsize, paddr_t kernelstart);
 void arm32_kernel_vm_init(vaddr_t kvm_base, vaddr_t vectors,
 	vaddr_t iovbase /* (can be zero) */,
@@ -82,6 +97,7 @@ void arm32_kernel_vm_init(vaddr_t kvm_base, vaddr_t vectors,
 vaddr_t initarm_common(vaddr_t kvm_base, vsize_t kvm_size,
         const struct boot_physmem *bp, size_t nbp);
 
+void uartputc(int);
 
 /* from arm/arm32/intr.c */
 void dosoftints(void);

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -428,11 +428,13 @@ AcpiExResolveOperands (
         case ARGI_INTEGER:
 
             /*
-             * Need an operand of type ACPI_TYPE_INTEGER,
-             * But we can implicitly convert from a STRING or BUFFER
-             * Aka - "Implicit Source Operand Conversion"
+             * Need an operand of type ACPI_TYPE_INTEGER, but we can
+             * implicitly convert from a STRING or BUFFER.
+             *
+             * Known as "Implicit Source Operand Conversion"
              */
-            Status = AcpiExConvertToInteger (ObjDesc, StackPtr, 16);
+            Status = AcpiExConvertToInteger (ObjDesc, StackPtr,
+                ACPI_IMPLICIT_CONVERSION);
             if (ACPI_FAILURE (Status))
             {
                 if (Status == AE_TYPE)

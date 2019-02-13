@@ -1,4 +1,4 @@
-/*	$NetBSD: if_qt.c,v 1.19 2016/02/09 08:32:11 ozaki-r Exp $	*/
+/*	$NetBSD: if_qt.c,v 1.23 2018/06/26 06:48:02 msaitoh Exp $	*/
 /*
  * Copyright (c) 1992 Steven M. Schultz
  * All rights reserved.
@@ -80,7 +80,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_qt.c,v 1.19 2016/02/09 08:32:11 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_qt.c,v 1.23 2018/06/26 06:48:02 msaitoh Exp $");
 
 #include "opt_inet.h"
 
@@ -100,6 +100,7 @@ __KERNEL_RCSID(0, "$NetBSD: if_qt.c,v 1.19 2016/02/09 08:32:11 ozaki-r Exp $");
 #include <net/if_ether.h>
 #include <net/netisr.h>
 #include <net/route.h>
+#include <net/bpf.h>
 
 #ifdef INET
 #include <sys/domain.h>
@@ -108,10 +109,6 @@ __KERNEL_RCSID(0, "$NetBSD: if_qt.c,v 1.19 2016/02/09 08:32:11 ozaki-r Exp $");
 #include <netinet/in_var.h>
 #include <netinet/ip.h>
 #endif
-
-#include <net/bpf.h>
-#include <net/bpfdesc.h>
-
 
 #include <sys/bus.h>
 
@@ -369,7 +366,7 @@ qtinit(struct ifnet *ifp)
 /*
  * Fill in most of the INIT block: vector, options (interrupt enable), ring
  * locations.  The physical address is copied from the ROMs as part of the
- * -YM testing proceedure.  The CSR is saved here rather than in qtinit()
+ * -YM testing procedure.  The CSR is saved here rather than in qtinit()
  * because the qtturbo() routine needs it.
  *
  * The INIT block must be quadword aligned.  Using malloc() guarantees click
@@ -458,7 +455,7 @@ qtstart(struct ifnet *ifp)
 		if ((rp->tmd3 & TMD3_OWN) == 0)
 			panic("qtstart");
 
-		bpf_mtap(ifp, m);
+		bpf_mtap(ifp, m, BPF_D_OUT);
 
 		len = if_ubaput(&sc->sc_ifuba, &sc->sc_ifw[sc->xnext], m);
 		if (len < MINPACKETSIZE)
@@ -585,7 +582,6 @@ qtrint(struct qt_softc *sc)
 			sc->is_if.if_ierrors++;
 			goto rnext;
 		}
-		bpf_mtap(ifp, m);
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 rnext:
 		--sc->nrcv;

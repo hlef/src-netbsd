@@ -1,4 +1,4 @@
-/*	$NetBSD: if_stge.c,v 1.60 2016/07/07 06:55:41 msaitoh Exp $	*/
+/*	$NetBSD: if_stge.c,v 1.65 2018/06/26 06:48:01 msaitoh Exp $	*/
 
 /*-
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
@@ -35,7 +35,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_stge.c,v 1.60 2016/07/07 06:55:41 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_stge.c,v 1.65 2018/06/26 06:48:01 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -658,6 +658,7 @@ stge_attach(device_t parent, device_t self, void *aux)
 	 * Attach the interface.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, enaddr);
 
 #ifdef STGE_EVENT_COUNTERS
@@ -804,8 +805,9 @@ stge_start(struct ifnet *ifp)
 	 * descriptors.
 	 */
 	for (;;) {
-		struct m_tag *mtag;
 		uint64_t tfc;
+		bool have_vtag;
+		uint16_t vtag;
 
 		/*
 		 * Grab a packet off the queue.
@@ -826,7 +828,9 @@ stge_start(struct ifnet *ifp)
 		/*
 		 * See if we have any VLAN stuff.
 		 */
-		mtag = VLAN_OUTPUT_TAG(&sc->sc_ethercom, m0);
+		have_vtag = vlan_has_tag(m0);
+		if (have_vtag)
+			vtag = vlan_get_tag(m0);
 
 		/*
 		 * Get the last and next available transmit descriptor.
@@ -930,7 +934,7 @@ stge_start(struct ifnet *ifp)
 		    TFD_FragCount(seg) | csum_flags |
 		    (((nexttx & STGE_TXINTR_SPACING_MASK) == 0) ?
 			TFD_TxDMAIndicate : 0);
-		if (mtag) {
+		if (have_vtag) {
 #if	0
 			struct ether_header *eh =
 			    mtod(m0, struct ether_header *);
@@ -942,7 +946,7 @@ stge_start(struct ifnet *ifp)
 #ifdef	STGE_VLAN_CFI
 			    TFD_CFI |
 #endif
-			    TFD_VID(VLAN_TAG_VALUE(mtag));
+			    TFD_VID(vtag);
 		}
 		tfd->tfd_control = htole64(tfc);
 
@@ -968,7 +972,7 @@ stge_start(struct ifnet *ifp)
 		/*
 		 * Pass the packet to any BPF listeners.
 		 */
-		bpf_mtap(ifp, m0);
+		bpf_mtap(ifp, m0, BPF_D_OUT);
 	}
 
 	if (sc->sc_txpending == (STGE_NTXDESC - 1)) {
@@ -1141,7 +1145,7 @@ stge_intr(void *arg)
 	    sc->sc_IntEnable);
 
 	/* Try to get more packets going. */
-	stge_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	return (1);
 }
@@ -1352,13 +1356,12 @@ stge_rxintr(struct stge_softc *sc)
 		 * Pass this up to any BPF listeners, but only
 		 * pass if up the stack if it's for us.
 		 */
-		bpf_mtap(ifp, m);
 #ifdef	STGE_VLAN_UNTAG
 		/*
 		 * Check for VLAN tagged packets
 		 */
 		if (status & RFD_VLANDetected)
-			VLAN_INPUT_TAG(ifp, m, RFD_TCI(status), continue);
+			vlan_set_tag(m, RFD_TCI(status));
 
 #endif
 #if	0

@@ -1,4 +1,4 @@
-#	$NetBSD: files.usb,v 1.141 2016/06/30 17:38:47 christos Exp $
+#	$NetBSD: files.usb,v 1.153 2018/10/24 07:42:12 jdolecek Exp $
 #
 # Config file and device description for machine-independent USB code.
 # Included by ports that need it.  Ports that use it must provide
@@ -84,7 +84,6 @@ defflag opt_usb.h	UVIDEO_DEBUG: USB_DEBUG
 defflag opt_usb.h	UVISOR_DEBUG: USB_DEBUG
 defflag opt_usb.h	UVSCOM_DEBUG: USB_DEBUG
 defflag opt_usb.h	UYUREX_DEBUG: USB_DEBUG
-defflag opt_usb.h	UZCOM_DEBUG: USB_DEBUG
 defflag opt_usb.h	ZYD_DEBUG: USB_DEBUG
 
 define	usbroothubif { }
@@ -104,8 +103,7 @@ file	dev/usb/usb_quirks.c		usb
 define	usb_dma: usb
 file	dev/usb/usb_mem.c		usb_dma			needs-flag
 
-define	usbverbose: usb
-file	dev/usb/usb_verbose.c		usbverbose
+file	dev/usb/usb_verbose.c		usbverbose & usb
 
 # Hub driver
 device	uhub: usbdevif, usbifif
@@ -140,7 +138,9 @@ file	dev/usb/ucom.c			ucom | ucombus		needs-flag
 # Generic devices
 device	ugen
 attach	ugen at usbdevif
-file	dev/usb/ugen.c			ugen			needs-flag
+device	ugenif
+attach	ugenif at usbifif
+file	dev/usb/ugen.c			ugen | ugenif		needs-flag
 
 
 # HID
@@ -164,10 +164,9 @@ defflag		opt_ukbd.h 	GDIUM_KEYBOARD_HACK
 device	ukbd: hid, wskbddev
 attach	ukbd at uhidbus
 file	dev/usb/ukbd.c			ukbd			needs-flag
-file	dev/usb/ukbdmap.c		ukbd | btkbd
 
 # Mice
-device	ums: hid, wsmousedev
+device	ums: hid, hidms, wsmousedev
 attach	ums at uhidbus
 file	dev/usb/ums.c			ums
 
@@ -201,7 +200,7 @@ file	dev/usb/ulpt.c			ulpt			needs-flag
 device	umass: scsi, atapi, ata_hl
 attach	umass at usbifif
 file	dev/usb/umass.c			umass
-file	dev/usb/umass_isdata.c		umass & wd
+file	dev/usb/umass_isdata.c		umass & wd & atabus
 file	dev/usb/umass_quirks.c		umass
 file	dev/usb/umass_scsipi.c		umass & (scsibus | atapibus)
 
@@ -274,6 +273,11 @@ file	dev/usb/emdtv_ir.c		emdtv
 # Misc
 #
 
+# Mode switch usb driver
+device	umodeswitch
+attach	umodeswitch at usbdevif
+file	dev/usb/umodeswitch.c		umodeswitch
+
 # Diamond Multimedia Rio 500
 device	urio
 attach	urio at usbdevif
@@ -300,11 +304,9 @@ attach	ugensa at usbdevif
 file	dev/usb/ugensa.c		ugensa
 
 # 3G Modem
-device	u3g: ucombus
+device	u3g: ucombus, umodeswitch
 attach	u3g at usbifif
-device	u3ginit
-attach	u3ginit at usbdevif
-file	dev/usb/u3g.c			u3g | u3ginit
+file	dev/usb/u3g.c			u3g
 
 # YAP phone firmware loader
 device	uyap: ezload
@@ -367,6 +369,11 @@ device	axen: arp, ether, ifnet, mii
 attach	axen at usbdevif
 file	dev/usb/if_axen.c		axen
 
+# Microchip LAN750x and LAN85xx
+device	mue: arp, ether, ifnet, mii, mii_phy
+attach	mue at usbdevif
+file	dev/usb/if_mue.c		mue
+
 # DAVICOM DM9601
 device	udav: arp, ether, ifnet, mii, mii_phy
 attach	udav at usbdevif
@@ -376,6 +383,11 @@ file	dev/usb/if_udav.c		udav
 device	otus: arp, ether, firmload, ifnet, wlan
 attach	otus at usbdevif
 file	dev/usb/if_otus.c		otus
+
+# Mobile Broadband Interface Model
+device	umb: ifnet
+attach	umb at usbifif
+file	dev/usb/if_umb.c		umb
 
 # Serial drivers
 # Modems
@@ -387,7 +399,7 @@ file	dev/usb/umodem.c		umodem
 
 # FTDI serial driver
 device	uftdi: ucombus
-attach	uftdi at usbdevif
+attach	uftdi at usbifif
 file	dev/usb/uftdi.c			uftdi
 
 # Prolific PL2303 serial driver
@@ -545,3 +557,12 @@ file	dev/usb/if_rsu.c		rsu
 device	udsir: irbus, irdasir
 attach	udsir at usbifif
 file	dev/usb/udsir.c			udsir
+
+# Araneus Alea II TRNG
+device	ualea
+attach	ualea at usbifif
+file	dev/usb/ualea.c			ualea
+
+# Broadcom FullMAC USB wireless adapter
+attach	bwfm at usbdevif with bwfm_usb: firmload
+file	dev/usb/if_bwfm_usb.c		bwfm_usb

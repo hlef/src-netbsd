@@ -1,4 +1,4 @@
-/*	$NetBSD: auconv.h,v 1.16 2011/11/23 23:07:31 jmcneill Exp $	*/
+/*	$NetBSD: auconv.h,v 1.21 2017/12/16 16:09:36 nat Exp $	*/
 
 /*-
  * Copyright (c) 1997 The NetBSD Foundation, Inc.
@@ -62,8 +62,28 @@ extern stream_filter_factory_t change_sign16;
 extern stream_filter_factory_t swap_bytes;
 extern stream_filter_factory_t swap_bytes_change_sign16;
 /* Byte expansion/contraction */
-extern stream_filter_factory_t linear8_to_linear16;
-extern stream_filter_factory_t linear16_to_linear8;
+extern stream_filter_factory_t linear32_32_to_linear32;
+extern stream_filter_factory_t linear32_32_to_linear24;
+extern stream_filter_factory_t linear32_32_to_linear16;
+extern stream_filter_factory_t linear24_24_to_linear32;
+extern stream_filter_factory_t linear24_24_to_linear24;
+extern stream_filter_factory_t linear24_24_to_linear16;
+extern stream_filter_factory_t linear16_16_to_linear32;
+extern stream_filter_factory_t linear16_16_to_linear24;
+extern stream_filter_factory_t linear16_16_to_linear16;
+extern stream_filter_factory_t linear8_8_to_linear32;
+extern stream_filter_factory_t linear8_8_to_linear24;
+extern stream_filter_factory_t linear8_8_to_linear16;
+extern stream_filter_factory_t linearN_to_linear8;
+extern stream_filter_factory_t null_filter;
+
+#define linear32_32_to_linear8 linearN_to_linear8
+#define linear24_24_to_linear8 linearN_to_linear8
+#define linear16_16_to_linear8 linearN_to_linear8
+#define linear8_8_to_linear8 linearN_to_linear8
+#define linear16_to_linear8 linearN_to_linear8
+#define linear8_to_linear16 linear8_8_to_linear16
+
 /* sampling rate conversion (aurateconv.c) */
 extern stream_filter_factory_t aurateconv;
 

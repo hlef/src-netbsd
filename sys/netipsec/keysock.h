@@ -1,5 +1,5 @@
-/*	$NetBSD: keysock.h,v 1.8 2016/01/20 21:44:00 riastradh Exp $	*/
-/*	$FreeBSD: src/sys/netipsec/keysock.h,v 1.1.4.1 2003/01/24 05:11:36 sam Exp $	*/
+/*	$NetBSD: keysock.h,v 1.11 2018/04/19 08:27:39 maxv Exp $	*/
+/*	$FreeBSD: keysock.h,v 1.1.4.1 2003/01/24 05:11:36 sam Exp $	*/
 /*	$KAME: keysock.h,v 1.8 2000/03/27 05:11:06 sumikawa Exp $	*/
 
 /*
@@ -64,11 +64,15 @@
 #define KEY_SENDUP_REGISTERED	2
 
 #ifdef _KERNEL
+#include <net/raw_cb.h>
+
 struct keycb {
 	struct rawcb kp_raw;	/* rawcb */
 	int kp_promisc;		/* promiscuous mode */
 	int kp_registered;	/* registered socket */
 };
+
+void key_init_so(void);
 
 int key_sendup (struct socket *, struct sadb_msg *, u_int, int);
 int key_sendup_mbuf (struct socket *, struct mbuf *, int);

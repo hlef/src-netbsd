@@ -1,4 +1,4 @@
-/*	$NetBSD: if_url.c,v 1.53 2016/07/07 06:55:42 msaitoh Exp $	*/
+/*	$NetBSD: if_url.c,v 1.60 2018/08/02 06:09:04 riastradh Exp $	*/
 
 /*
  * Copyright (c) 2001, 2002
@@ -44,10 +44,11 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: if_url.c,v 1.53 2016/07/07 06:55:42 msaitoh Exp $");
+__KERNEL_RCSID(0, "$NetBSD: if_url.c,v 1.60 2018/08/02 06:09:04 riastradh Exp $");
 
 #ifdef _KERNEL_OPT
 #include "opt_inet.h"
+#include "opt_usb.h"
 #endif
 
 #include <sys/param.h>
@@ -276,7 +277,7 @@ url_attach(device_t parent, device_t self, void *aux)
 	ifp = GET_IFP(sc);
 	ifp->if_softc = sc;
 	ifp->if_mtu = ETHERMTU;
-	strncpy(ifp->if_xname, device_xname(self), IFNAMSIZ);
+	strlcpy(ifp->if_xname, device_xname(self), IFNAMSIZ);
 	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
 	ifp->if_start = url_start;
 	ifp->if_ioctl = url_ioctl;
@@ -345,11 +346,20 @@ url_detach(device_t self, int flags)
 	if (!sc->sc_attached)
 		return 0;
 
-	callout_stop(&sc->sc_stat_ch);
+	/*
+	 * XXX Halting callout guarantees no more tick tasks.  What
+	 * guarantees no more stop tasks?  What guarantees no more
+	 * calls to url_send?  Don't we need to wait for if_detach or
+	 * something?  Should set sc->sc_dying here?  Is device
+	 * deactivation guaranteed to have already happened?
+	 */
+	callout_halt(&sc->sc_stat_ch, NULL);
 
 	/* Remove any pending tasks */
-	usb_rem_task(sc->sc_udev, &sc->sc_tick_task);
-	usb_rem_task(sc->sc_udev, &sc->sc_stop_task);
+	usb_rem_task_wait(sc->sc_udev, &sc->sc_tick_task, USB_TASKQ_DRIVER,
+	    NULL);
+	usb_rem_task_wait(sc->sc_udev, &sc->sc_stop_task, USB_TASKQ_DRIVER,
+	    NULL);
 
 	s = splusb();
 
@@ -807,7 +817,7 @@ url_rx_list_init(struct url_softc *sc)
 			return ENOBUFS;
 		if (c->url_xfer == NULL) {
 			int error = usbd_create_xfer(sc->sc_pipe_rx, URL_BUFSZ,
-			    USBD_SHORT_XFER_OK, 0, &c->url_xfer);
+			    0, 0, &c->url_xfer);
 			if (error)
 				return error;
 			c->url_buf = usbd_get_buffer(c->url_xfer);
@@ -873,7 +883,7 @@ url_start(struct ifnet *ifp)
 
 	IFQ_DEQUEUE(&ifp->if_snd, m_head);
 
-	bpf_mtap(ifp, m_head);
+	bpf_mtap(ifp, m_head, BPF_D_OUT);
 
 	ifp->if_flags |= IFF_OACTIVE;
 
@@ -1034,7 +1044,6 @@ url_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		goto done;
 	}
 
-	ifp->if_ipackets++;
 	total_len -= ETHER_CRC_LEN;
 
 	m = c->url_mbuf;
@@ -1047,8 +1056,6 @@ url_rxeof(struct usbd_xfer *xfer, void *priv, usbd_status status)
 		ifp->if_ierrors++;
 		goto done1;
 	}
-
-	bpf_mtap(ifp, m);
 
 	DPRINTF(("%s: %s: deliver %d\n", device_xname(sc->sc_dev),
 		 __func__, m->m_len));

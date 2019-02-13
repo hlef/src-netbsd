@@ -1,4 +1,4 @@
-/*	$NetBSD: usb.h,v 1.113 2016/04/23 10:15:32 skrll Exp $	*/
+/*	$NetBSD: usb.h,v 1.116 2018/07/31 16:44:30 khorben Exp $	*/
 
 /*
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
@@ -53,9 +53,9 @@
 
 #define USB_STACK_VERSION 2
 
-#define USB_MAX_DEVICES 128
-#define USB_MIN_DEVICES 2               /* unused + root HUB */
-#define USB_START_ADDR 0
+#define USB_MAX_DEVICES		128		/* 0, 1-127 */
+#define USB_MIN_DEVICES		2               /* unused + root HUB */
+#define USB_START_ADDR		0
 
 #define USB_CONTROL_ENDPOINT 0
 #define USB_MAX_ENDPOINTS 16
@@ -205,6 +205,7 @@ typedef struct {
 typedef struct {
 	uByte		bLength;
 	uByte		bDescriptorType;
+	uByte		bDescriptorSubtype;
 } UPACKED usb_descriptor_t;
 
 typedef struct {
@@ -306,9 +307,12 @@ typedef struct {
 	uByte		bDescriptorType;
 	uByte		bMaxBurst;
 	uByte		bmAttributes;
-#define UE_SSC_MAXSTREAMS(x)	__SHIFTOUT(x, __BITS(4,0))	/* bulk */
-#define UE_SSC_MULT(x)		__SHIFTOUT(x, __BITS(1,0))	/* isoch */
-#define UE_SSC_SSP_ISO(x) 	__SHIFTOUT(x, __BIT(7))		/* isoch */
+#define UE_GET_BULK_STREAMS_MASK	__BITS(4,0)
+#define UE_GET_BULK_STREAMS(x)		__SHIFTOUT(x, UE_GET_BULK_STREAMS_MASK)
+#define UE_GET_SS_ISO_MULT_MASK		__BITS(1,0)
+#define UE_GET_SS_ISO_MULT(x)		__SHIFTOUT(x, UE_GET_SS_ISO_MULT_MASK)
+#define UE_GET_SS_ISO_SSP_MASK		__BIT(7)
+#define UE_GET_SS_ISO_SSP(x)		__SHIFTOUT(x, UE_GET_SS_ISO_SSP_MASK)
 	/* The fields below are only valid for periodic endpoints */
 	uWord		wBytesPerInterval;
 } UPACKED usb_endpoint_ss_comp_descriptor_t;
@@ -352,7 +356,14 @@ typedef struct {
 	uByte		bDescriptorType;
 	uByte		bDevCapabilityType;
 	uDWord		bmAttributes;
-#define USB_DEVCAP_USB2EXT_LPM __BIT(1)
+#define USB_DEVCAP_V2EXT_LPM			__BIT(1)
+#define USB_DEVCAP_V2EXT_BESL_SUPPORTED		__BIT(2)
+#define USB_DEVCAP_V2EXT_BESL_BASELINE_VALID	__BIT(3)
+#define USB_DEVCAP_V2EXT_BESL_DEEP_VALID	__BIT(4)
+#define USB_DEVCAP_V2EXT_BESL_BASELINE_MASK	__BITS(11, 8)
+#define USB_DEVCAP_V2EXT_BESL_BASELINE_GET(x)	__SHIFTOUT(x, USB_V2EXT_BESL_BASELINE_MASK)
+#define USB_DEVCAP_V2EXT_BESL_DEEP_MASK		__BITS(15, 12)
+#define USB_DEVCAP_V2EXT_BESL_DEEP_GET(x)	__SHIFTOUT(x, USB_V2EXT_BESL_DEEP_MASK)
 } UPACKED usb_devcap_usb2ext_descriptor_t;
 #define USB_DEVCAP_USB2EXT_DESCRIPTOR_SIZE 7
 
@@ -432,7 +443,8 @@ typedef struct {
 #define UR_RESET_TT		0x09
 #define UR_GET_TT_STATE		0x0a
 #define UR_STOP_TT		0x0b
-#define UR_SET_HUB_DEPTH	0x0c
+#define UR_SET_AND_TEST		0x0c	/* USB 2.0 only */
+#define UR_SET_HUB_DEPTH	0x0c	/* USB 3.0 only */
 #define UR_GET_PORT_ERR_COUNT	0x0d
 /* Port Status Type for GET_STATUS,  USB 3.1 10.16.2.6 and Table 10-12 */
 #define  UR_PST_PORT_STATUS	0
@@ -648,16 +660,19 @@ typedef struct {
 #define  UISUBCLASS_VIDEOCOLLECTION	3
 
 #define UICLASS_CDC		0x02 /* communication */
-#define	 UISUBCLASS_DIRECT_LINE_CONTROL_MODEL	1
+#define  UISUBCLASS_DIRECT_LINE_CONTROL_MODEL	1
 #define  UISUBCLASS_ABSTRACT_CONTROL_MODEL	2
-#define	 UISUBCLASS_TELEPHONE_CONTROL_MODEL	3
-#define	 UISUBCLASS_MULTICHANNEL_CONTROL_MODEL	4
-#define	 UISUBCLASS_CAPI_CONTROLMODEL		5
-#define	 UISUBCLASS_ETHERNET_NETWORKING_CONTROL_MODEL 6
-#define	 UISUBCLASS_ATM_NETWORKING_CONTROL_MODEL 7
-#define	  UIPROTO_CDC_NOCLASS			0 /* no class specific
+#define  UISUBCLASS_TELEPHONE_CONTROL_MODEL	3
+#define  UISUBCLASS_MULTICHANNEL_CONTROL_MODEL	4
+#define  UISUBCLASS_CAPI_CONTROLMODEL		5
+#define  UISUBCLASS_ETHERNET_NETWORKING_CONTROL_MODEL 6
+#define  UISUBCLASS_ATM_NETWORKING_CONTROL_MODEL 7
+#define  UISUBCLASS_MOBILE_DIRECT_LINE_MODEL	10
+#define  UISUBCLASS_NETWORK_CONTROL_MODEL	13
+#define  UISUBCLASS_MOBILE_BROADBAND_INTERFACE_MODEL	14
+#define  UIPROTO_CDC_NOCLASS			0 /* no class specific
 						     protocol required */
-#define   UIPROTO_CDC_AT			1
+#define  UIPROTO_CDC_AT				1
 
 #define UICLASS_HID		0x03
 #define  UISUBCLASS_BOOT	1
@@ -695,6 +710,7 @@ typedef struct {
 
 #define UICLASS_CDC_DATA	0x0a
 #define  UISUBCLASS_DATA		0
+#define   UIPROTO_DATA_MBIM		0x02    /* MBIM */
 #define   UIPROTO_DATA_ISDNBRI		0x30    /* Physical iface */
 #define   UIPROTO_DATA_HDLC		0x31    /* HDLC */
 #define   UIPROTO_DATA_TRANSPARENT	0x32    /* Transparent */

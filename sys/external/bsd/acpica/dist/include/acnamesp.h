@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -60,14 +60,15 @@
 /* Flags for AcpiNsLookup, AcpiNsSearchAndEnter */
 
 #define ACPI_NS_NO_UPSEARCH         0
-#define ACPI_NS_SEARCH_PARENT       0x01
-#define ACPI_NS_DONT_OPEN_SCOPE     0x02
-#define ACPI_NS_NO_PEER_SEARCH      0x04
-#define ACPI_NS_ERROR_IF_FOUND      0x08
-#define ACPI_NS_PREFIX_IS_SCOPE     0x10
-#define ACPI_NS_EXTERNAL            0x20
-#define ACPI_NS_TEMPORARY           0x40
-#define ACPI_NS_OVERRIDE_IF_FOUND   0x80
+#define ACPI_NS_SEARCH_PARENT       0x0001
+#define ACPI_NS_DONT_OPEN_SCOPE     0x0002
+#define ACPI_NS_NO_PEER_SEARCH      0x0004
+#define ACPI_NS_ERROR_IF_FOUND      0x0008
+#define ACPI_NS_PREFIX_IS_SCOPE     0x0010
+#define ACPI_NS_EXTERNAL            0x0020
+#define ACPI_NS_TEMPORARY           0x0040
+#define ACPI_NS_OVERRIDE_IF_FOUND   0x0080
+#define ACPI_NS_EARLY_INIT          0x0100
 
 /* Flags for AcpiNsWalkNamespace */
 
@@ -96,6 +97,12 @@ ACPI_STATUS
 AcpiNsInitializeDevices (
     UINT32                  Flags);
 
+ACPI_STATUS
+AcpiNsInitOnePackage (
+    ACPI_HANDLE             ObjHandle,
+    UINT32                  Level,
+    void                    *Context,
+    void                    **ReturnValue);
 
 /*
  * nsload -  Namespace loading
@@ -140,6 +147,11 @@ AcpiNsGetNextNodeTyped (
  */
 ACPI_STATUS
 AcpiNsParseTable (
+    UINT32                  TableIndex,
+    ACPI_NAMESPACE_NODE     *StartNode);
+
+ACPI_STATUS
+AcpiNsExecuteTable (
     UINT32                  TableIndex,
     ACPI_NAMESPACE_NODE     *StartNode);
 
@@ -376,8 +388,18 @@ AcpiNsGetNormalizedPathname (
     BOOLEAN                 NoTrailing);
 
 char *
+AcpiNsBuildPrefixedPathname (
+    ACPI_GENERIC_STATE      *PrefixScope,
+    const char              *InternalPath);
+
+char *
 AcpiNsNameOfCurrentScope (
     ACPI_WALK_STATE         *WalkState);
+
+ACPI_STATUS
+AcpiNsHandleToName (
+    ACPI_HANDLE             TargetHandle,
+    ACPI_BUFFER             *Buffer);
 
 ACPI_STATUS
 AcpiNsHandleToPathname (
@@ -389,6 +411,13 @@ BOOLEAN
 AcpiNsPatternMatch (
     ACPI_NAMESPACE_NODE     *ObjNode,
     char                    *SearchFor);
+
+ACPI_STATUS
+AcpiNsGetNodeUnlocked (
+    ACPI_NAMESPACE_NODE     *PrefixNode,
+    const char              *ExternalPathname,
+    UINT32                  Flags,
+    ACPI_NAMESPACE_NODE     **OutNode);
 
 ACPI_STATUS
 AcpiNsGetNode (

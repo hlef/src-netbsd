@@ -1,4 +1,4 @@
-/*	$NetBSD: cpufunc.h,v 1.19 2016/01/05 10:20:22 hannken Exp $	*/
+/*	$NetBSD: cpufunc.h,v 1.24 2018/02/22 09:41:06 maxv Exp $	*/
 
 /*-
  * Copyright (c) 1998, 2007 The NetBSD Foundation, Inc.
@@ -50,6 +50,9 @@ void	x86_sfence(void);
 void	x86_mfence(void);
 void	x86_flush(void);
 #ifndef XEN
+void	x86_hotpatch(uint32_t, const uint8_t *, size_t);
+void	x86_patch_window_open(u_long *, u_long *);
+void	x86_patch_window_close(u_long, u_long);
 void	x86_patch(bool);
 #endif
 void	invlpg(vaddr_t);
@@ -68,9 +71,18 @@ void	lcr8(vaddr_t);
 vaddr_t	rcr8(void);
 void	tlbflush(void);
 void	tlbflushg(void);
-void	dr0(void *, uint32_t, uint32_t, uint32_t);
-vaddr_t	rdr6(void);
-void	ldr6(vaddr_t);
+register_t	rdr0(void);
+void		ldr0(register_t);
+register_t	rdr1(void);
+void		ldr1(register_t);
+register_t	rdr2(void);
+void		ldr2(register_t);
+register_t	rdr3(void);
+void		ldr3(register_t);
+register_t	rdr6(void);
+void		ldr6(register_t);
+register_t	rdr7(void);
+void		ldr7(register_t);
 void	wbinvd(void);
 void	breakpoint(void);
 void	x86_hlt(void);
@@ -140,6 +152,8 @@ uint64_t	rdtsc(void);
 uint64_t	rdpmc(u_int);
 void		wrmsr(u_int, uint64_t);
 void		wrmsr_locked(u_int, uint64_t);
+void		setds(int);
+void		setes(int);
 void		setfs(int);
 void		setusergs(int);
 

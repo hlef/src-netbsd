@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,14 +42,14 @@
  */
 
 #include "aslcompiler.h"
-#include "acapps.h"
 #include "acdispat.h"
 #include "acnamesp.h"
 #include "actables.h"
 #include "acparser.h"
+#include "acapps.h"
+#include "acmacros.h"
+#include "acconvert.h"
 
-#include <stdio.h>
-#include <time.h>
 
 #define _COMPONENT          ACPI_TOOLS
         ACPI_MODULE_NAME    ("dmtables")
@@ -202,6 +202,14 @@ AdCreateTableHeader (
     AcpiOsPrintf (" *     Compiler ID      \"%.4s\"\n",     Table->AslCompilerId);
     AcpiOsPrintf (" *     Compiler Version 0x%8.8X (%u)\n", Table->AslCompilerRevision, Table->AslCompilerRevision);
     AcpiOsPrintf (" */\n");
+
+    /*
+     * Print comments that come before this definition block.
+     */
+    if (AcpiGbl_CaptureComments)
+    {
+        ASL_CV_PRINT_ONE_COMMENT(AcpiGbl_ParseOpRoot,AML_COMMENT_STANDARD, NULL, 0);
+    }
 
     /*
      * Open the ASL definition block.
@@ -390,6 +398,7 @@ AdParseTable (
 
     AmlLength = Table->Length - sizeof (ACPI_TABLE_HEADER);
     AmlStart = ((UINT8 *) Table + sizeof (ACPI_TABLE_HEADER));
+    ASL_CV_INIT_FILETREE(Table, AmlStart, AmlLength);
 
     /* Create the root object */
 
@@ -398,6 +407,17 @@ AdParseTable (
     {
         return (AE_NO_MEMORY);
     }
+
+#ifdef ACPI_ASL_COMPILER
+    if (AcpiGbl_CaptureComments)
+    {
+        AcpiGbl_ParseOpRoot->Common.CvFilename = AcpiGbl_FileTreeRoot->Filename;
+    }
+    else
+    {
+        AcpiGbl_ParseOpRoot->Common.CvFilename = NULL;
+    }
+#endif
 
     /* Create and initialize a new walk state */
 

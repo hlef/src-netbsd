@@ -1,4 +1,4 @@
-/* $NetBSD: secmodel_suser.c,v 1.42 2015/08/17 06:16:03 knakahara Exp $ */
+/* $NetBSD: secmodel_suser.c,v 1.49 2018/10/05 22:12:38 christos Exp $ */
 /*-
  * Copyright (c) 2006 Elad Efrat <elad@NetBSD.org>
  * All rights reserved.
@@ -38,7 +38,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: secmodel_suser.c,v 1.42 2015/08/17 06:16:03 knakahara Exp $");
+__KERNEL_RCSID(0, "$NetBSD: secmodel_suser.c,v 1.49 2018/10/05 22:12:38 christos Exp $");
 
 #include <sys/types.h>
 #include <sys/param.h>
@@ -392,17 +392,6 @@ secmodel_suser_system_cb(kauth_cred_t cred, kauth_action_t action,
 		break;
 
 	case KAUTH_SYSTEM_DEBUG:
-		switch (req) {
-		case KAUTH_REQ_SYSTEM_DEBUG_IPKDB:
-			if (isroot)
-				result = KAUTH_RESULT_ALLOW;
-
-			break;
-
-		default:
-			break;
-		}
-
 		break;
 
 	case KAUTH_SYSTEM_CHSYSFLAGS:
@@ -454,6 +443,12 @@ secmodel_suser_system_cb(kauth_cred_t cred, kauth_action_t action,
 		default:
 			break;
 		}
+
+		break;
+
+	case KAUTH_SYSTEM_KERNADDR:
+		if (isroot)
+			result = KAUTH_RESULT_ALLOW;
 
 		break;
 
@@ -510,6 +505,8 @@ secmodel_suser_process_cb(kauth_cred_t cred, kauth_action_t action,
 		case KAUTH_REQ_PROCESS_CANSEE_ARGS:
 		case KAUTH_REQ_PROCESS_CANSEE_ENTRY:
 		case KAUTH_REQ_PROCESS_CANSEE_OPENFILES:
+		case KAUTH_REQ_PROCESS_CANSEE_EPROC:
+		case KAUTH_REQ_PROCESS_CANSEE_KPTR:
 			if (isroot) {
 				result = KAUTH_RESULT_ALLOW;
 				break;
@@ -834,13 +831,13 @@ int
 secmodel_suser_machdep_cb(kauth_cred_t cred, kauth_action_t action,
     void *cookie, void *arg0, void *arg1, void *arg2, void *arg3)
 {
-        bool isroot;
-        int result;
+	bool isroot;
+	int result;
 
-        isroot = suser_isroot(cred);
-        result = KAUTH_RESULT_DEFER;
+	isroot = suser_isroot(cred);
+	result = KAUTH_RESULT_DEFER;
 
-        switch (action) {
+	switch (action) {
 	case KAUTH_MACHDEP_CPU_UCODE_APPLY:
 	case KAUTH_MACHDEP_IOPERM_GET:
 	case KAUTH_MACHDEP_LDT_GET:
@@ -853,6 +850,7 @@ secmodel_suser_machdep_cb(kauth_cred_t cred, kauth_action_t action,
 	case KAUTH_MACHDEP_NVRAM:
 	case KAUTH_MACHDEP_UNMANAGEDMEM:
 	case KAUTH_MACHDEP_PXG:
+	case KAUTH_MACHDEP_SVS_DISABLE:
 		if (isroot)
 			result = KAUTH_RESULT_ALLOW;
 		break;
@@ -875,11 +873,11 @@ int
 secmodel_suser_device_cb(kauth_cred_t cred, kauth_action_t action,
     void *cookie, void *arg0, void *arg1, void *arg2, void *arg3)
 {
-        bool isroot;
-        int result;
+	bool isroot;
+	int result;
 
-        isroot = suser_isroot(cred);
-        result = KAUTH_RESULT_DEFER;
+	isroot = suser_isroot(cred);
+	result = KAUTH_RESULT_DEFER;
 
 	switch (action) {
 	case KAUTH_DEVICE_BLUETOOTH_SETPRIV:

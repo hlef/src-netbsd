@@ -1,4 +1,4 @@
-/*	$NetBSD: fcntl.h,v 1.47 2016/06/30 15:29:20 dholland Exp $	*/
+/*	$NetBSD: fcntl.h,v 1.50 2018/02/20 18:20:05 kamil Exp $	*/
 
 /*-
  * Copyright (c) 1983, 1990, 1993
@@ -48,9 +48,9 @@
 #ifndef _KERNEL
 #include <sys/featuretest.h>
 #include <sys/types.h>
-#if defined(_XOPEN_SOURCE) || defined(_NETBSD_SOURCE)
+#if defined(_XOPEN_SOURCE)
 #include <sys/stat.h>
-#endif /* _XOPEN_SOURCE || _NETBSD_SOURCE */
+#endif /* _XOPEN_SOURCE */
 #endif /* !_KERNEL */
 
 /*
@@ -90,7 +90,7 @@
     (_XOPEN_SOURCE - 0) >= 500 || defined(_NETBSD_SOURCE)
 #define	O_SYNC		0x00000080	/* synchronous writes */
 #endif
-#if defined(_NETBSD_SOURCE)
+#if (_POSIX_C_SOURCE - 0) >= 200809L || defined(_NETBSD_SOURCE)
 #define	O_NOFOLLOW	0x00000100	/* don't follow symlinks on the last */
 					/* path component */
 #endif
@@ -120,6 +120,7 @@
 #endif
 #if defined(_NETBSD_SOURCE)
 #define	O_NOSIGPIPE	0x01000000	/* don't deliver sigpipe */
+#define	O_REGULAR	0x02000000	/* fail if not a regular file */
 #endif
 
 #ifdef _KERNEL
@@ -131,7 +132,7 @@
 #define	O_MASK		(O_ACCMODE|O_NONBLOCK|O_APPEND|O_SHLOCK|O_EXLOCK|\
 			 O_ASYNC|O_SYNC|O_CREAT|O_TRUNC|O_EXCL|O_DSYNC|\
 			 O_RSYNC|O_NOCTTY|O_ALT_IO|O_NOFOLLOW|O_DIRECT|\
-			 O_DIRECTORY|O_CLOEXEC|O_NOSIGPIPE)
+			 O_DIRECTORY|O_CLOEXEC|O_NOSIGPIPE|O_REGULAR)
 
 #define	FMARK		0x00001000	/* mark during gc() */
 #define	FDEFER		0x00002000	/* defer for next gc pass */

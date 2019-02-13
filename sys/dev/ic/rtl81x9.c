@@ -1,4 +1,4 @@
-/*	$NetBSD: rtl81x9.c,v 1.100 2016/06/10 13:27:13 ozaki-r Exp $	*/
+/*	$NetBSD: rtl81x9.c,v 1.103 2018/06/26 06:48:00 msaitoh Exp $	*/
 
 /*
  * Copyright (c) 1997, 1998
@@ -86,7 +86,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rtl81x9.c,v 1.100 2016/06/10 13:27:13 ozaki-r Exp $");
+__KERNEL_RCSID(0, "$NetBSD: rtl81x9.c,v 1.103 2018/06/26 06:48:00 msaitoh Exp $");
 
 
 #include <sys/param.h>
@@ -737,6 +737,7 @@ rtk_attach(struct rtk_softc *sc)
 	 * Call MI attach routines.
 	 */
 	if_attach(ifp);
+	if_deferred_start_init(ifp, NULL);
 	ether_ifattach(ifp, eaddr);
 
 	rnd_attach_source(&sc->rnd_source, device_xname(self),
@@ -1073,9 +1074,6 @@ rtk_rxeof(struct rtk_softc *sc)
 		if (m == NULL)
 			continue;
 
-		ifp->if_ipackets++;
-
-		bpf_mtap(ifp, m);
 		/* pass it on. */
 		if_percpuq_enqueue(ifp->if_percpuq, m);
 	}
@@ -1203,8 +1201,7 @@ rtk_intr(void *arg)
 	/* Re-enable interrupts. */
 	CSR_WRITE_2(sc, RTK_IMR, RTK_INTRS);
 
-	if (IFQ_IS_EMPTY(&ifp->if_snd) == 0)
-		rtk_start(ifp);
+	if_schedule_deferred_start(ifp);
 
 	rnd_add_uint32(&sc->rnd_source, status);
 
@@ -1284,7 +1281,7 @@ rtk_start(struct ifnet *ifp)
 		 * If there's a BPF listener, bounce a copy of this frame
 		 * to him.
 		 */
-		bpf_mtap(ifp, m_head);
+		bpf_mtap(ifp, m_head, BPF_D_OUT);
 		if (m_new != NULL) {
 			m_freem(m_head);
 			m_head = m_new;

@@ -1,4 +1,4 @@
-/*	$NetBSD: jemalloc.c,v 1.40 2016/04/12 18:07:08 joerg Exp $	*/
+/*	$NetBSD: jemalloc.c,v 1.45 2018/07/25 20:05:35 kamil Exp $	*/
 
 /*-
  * Copyright (C) 2006,2007 Jason Evans <jasone@FreeBSD.org>.
@@ -118,7 +118,7 @@
 
 #include <sys/cdefs.h>
 /* __FBSDID("$FreeBSD: src/lib/libc/stdlib/malloc.c,v 1.147 2007/06/15 22:00:16 jasone Exp $"); */ 
-__RCSID("$NetBSD: jemalloc.c,v 1.40 2016/04/12 18:07:08 joerg Exp $");
+__RCSID("$NetBSD: jemalloc.c,v 1.45 2018/07/25 20:05:35 kamil Exp $");
 
 #ifdef __FreeBSD__
 #include "libc_private.h"
@@ -163,27 +163,7 @@ __RCSID("$NetBSD: jemalloc.c,v 1.40 2016/04/12 18:07:08 joerg Exp $");
 #  include <reentrant.h>
 #  include "extern.h"
 
-#define STRERROR_R(a, b, c)	__strerror_r(a, b, c);
-/*
- * A non localized version of strerror, that avoids bringing in
- * stdio and the locale code. All the malloc messages are in English
- * so why bother?
- */
-static int
-__strerror_r(int e, char *s, size_t l)
-{
-	int rval;
-	size_t slen;
-
-	if (e >= 0 && e < sys_nerr) {
-		slen = strlcpy(s, sys_errlist[e], l);
-		rval = 0;
-	} else {
-		slen = snprintf_ss(s, l, "Unknown error %u", e);
-		rval = EINVAL;
-	}
-	return slen >= l ? ERANGE : rval;
-}
+#define STRERROR_R(a, b, c)	strerror_r_ss(a, b, c);
 #endif
 
 #ifdef __FreeBSD__
@@ -296,18 +276,19 @@ __strerror_r(int e, char *s, size_t l)
 #  define USE_BRK
 #endif
 #if defined(__mips__) || defined(__riscv__)
-# ifdef _LP64
-#  define SIZEOF_PTR_2POW	3
-#  define TINY_MIN_2POW		3
-# else
-#  define SIZEOF_PTR_2POW	2
-# endif
-# define QUANTUM_2POW_MIN	4
-# define USE_BRK
+#  ifdef _LP64
+#    define SIZEOF_PTR_2POW	3
+#    define TINY_MIN_2POW	3
+#  else
+#    define SIZEOF_PTR_2POW	2
+#  endif
+#  define QUANTUM_2POW_MIN	4
+#  define USE_BRK
 #endif
 #ifdef __hppa__                                                                                                                                         
-#  define QUANTUM_2POW_MIN     4                                                                                                                        
-#  define SIZEOF_PTR_2POW      2                                                                                                                        
+#  define QUANTUM_2POW_MIN	4                                                                                                                        
+#  define TINY_MIN_2POW		4
+#  define SIZEOF_PTR_2POW	2                                                                                                                        
 #  define USE_BRK                                                                                                                                       
 #endif           
 
@@ -1723,7 +1704,7 @@ arena_run_reg_alloc(arena_run_t *run, arena_bin_t *bin)
 		    + (bin->reg_size * regind));
 
 		/* Clear bit. */
-		mask ^= (1 << bit);
+		mask ^= (1U << bit);
 		run->regs_mask[i] = mask;
 
 		return (ret);
@@ -1740,7 +1721,7 @@ arena_run_reg_alloc(arena_run_t *run, arena_bin_t *bin)
 			    + (bin->reg_size * regind));
 
 			/* Clear bit. */
-			mask ^= (1 << bit);
+			mask ^= (1U << bit);
 			run->regs_mask[i] = mask;
 
 			/*
@@ -1855,8 +1836,8 @@ arena_run_reg_dalloc(arena_run_t *run, arena_bin_t *bin, void *ptr, size_t size)
 	if (elm < run->regs_minelm)
 		run->regs_minelm = elm;
 	bit = regind - (elm << (SIZEOF_INT_2POW + 3));
-	assert((run->regs_mask[elm] & (1 << bit)) == 0);
-	run->regs_mask[elm] |= (1 << bit);
+	assert((run->regs_mask[elm] & (1U << bit)) == 0);
+	run->regs_mask[elm] |= (1U << bit);
 #undef SIZE_INV
 #undef SIZE_INV_SHIFT
 }

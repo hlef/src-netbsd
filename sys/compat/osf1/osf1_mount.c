@@ -1,4 +1,4 @@
-/*	$NetBSD: osf1_mount.c,v 1.53 2015/10/23 19:40:11 maxv Exp $	*/
+/*	$NetBSD: osf1_mount.c,v 1.55 2018/09/03 16:29:29 riastradh Exp $	*/
 
 /*
  * Copyright (c) 1999 Christopher G. Demetriou.  All rights reserved.
@@ -58,7 +58,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: osf1_mount.c,v 1.53 2015/10/23 19:40:11 maxv Exp $");
+__KERNEL_RCSID(0, "$NetBSD: osf1_mount.c,v 1.55 2018/09/03 16:29:29 riastradh Exp $");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -122,7 +122,7 @@ osf1_sys_fstatfs(struct lwp *l, const struct osf1_sys_fstatfs_args *uap, registe
 		goto out;
 	sp->f_flag = mp->mnt_flag & MNT_VISFLAGMASK;
 	osf1_cvt_statfs_from_native(sp, &osfs);
-	error = copyout(&osfs, SCARG(uap, buf), min(sizeof osfs,
+	error = copyout(&osfs, SCARG(uap, buf), uimin(sizeof osfs,
 	    SCARG(uap, len)));
  out:
  	fd_putfile(SCARG(uap, fd));
@@ -132,7 +132,8 @@ osf1_sys_fstatfs(struct lwp *l, const struct osf1_sys_fstatfs_args *uap, registe
 int
 osf1_sys_getfsstat(struct lwp *l, const struct osf1_sys_getfsstat_args *uap, register_t *retval)
 {
-	struct mount *mp, *nmp;
+	mount_iterator_t *iter;
+	struct mount *mp;
 	struct statvfs *sp;
 	struct osf1_statfs osfs;
 	char *osf_sfsp;
@@ -143,13 +144,9 @@ osf1_sys_getfsstat(struct lwp *l, const struct osf1_sys_getfsstat_args *uap, reg
 
 	maxcount = SCARG(uap, bufsize) / sizeof(struct osf1_statfs);
 	osf_sfsp = (void *)SCARG(uap, buf);
-	mutex_enter(&mountlist_lock);
-	for (count = 0, mp = TAILQ_FIRST(&mountlist);
-	    mp != NULL;
-	    mp = nmp) {
-		if (vfs_busy(mp, &nmp)) {
-			continue;
-		}
+	mountlist_iterator_init(&iter);
+	count = 0;
+	while ((mp = mountlist_iterator_next(iter)) != NULL) {
 		if (osf_sfsp && count < maxcount) {
 			sp = &mp->mnt_stat;
 			/*
@@ -164,16 +161,15 @@ osf1_sys_getfsstat(struct lwp *l, const struct osf1_sys_getfsstat_args *uap, reg
 				osf1_cvt_statfs_from_native(sp, &osfs);
 				if ((error = copyout(&osfs, osf_sfsp,
 				    sizeof (struct osf1_statfs)))) {
-				    	vfs_unbusy(mp, false, NULL);
+				    	mountlist_iterator_destroy(iter);
 					return (error);
 				}
 				osf_sfsp += sizeof (struct osf1_statfs);
 			}
 		}
 		count++;
-		vfs_unbusy(mp, false, &nmp);
 	}
-	mutex_exit(&mountlist_lock);
+	mountlist_iterator_destroy(iter);
 	if (osf_sfsp && count > maxcount)
 		*retval = maxcount;
 	else
@@ -223,7 +219,7 @@ osf1_sys_statfs(struct lwp *l, const struct osf1_sys_statfs_args *uap, register_
 		return (error);
 	sp->f_flag = mp->mnt_flag & MNT_VISFLAGMASK;
 	osf1_cvt_statfs_from_native(sp, &osfs);
-	return copyout(&osfs, SCARG(uap, buf), min(sizeof osfs,
+	return copyout(&osfs, SCARG(uap, buf), uimin(sizeof osfs,
 	    SCARG(uap, len)));
 }
 

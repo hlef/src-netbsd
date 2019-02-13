@@ -1,4 +1,4 @@
-#	$NetBSD: bsd.sys.mk,v 1.260 2016/07/07 20:52:53 matt Exp $
+#	$NetBSD: bsd.sys.mk,v 1.286 2018/08/03 02:34:31 kamil Exp $
 #
 # Build definitions used for NetBSD source tree builds.
 
@@ -23,21 +23,41 @@ CPPFLAGS+=	-Wp,-iremap,${DESTDIR}:
 REPROFLAGS+=	-fdebug-prefix-map=\$$DESTDIR=
 .endif
 
+CPPFLAGS+=	-Wp,-fno-canonical-system-headers
 CPPFLAGS+=	-Wp,-iremap,${NETBSDSRCDIR}:/usr/src
 CPPFLAGS+=	-Wp,-iremap,${X11SRCDIR}:/usr/xsrc
+
 REPROFLAGS+=	-fdebug-prefix-map=\$$NETBSDSRCDIR=/usr/src
 REPROFLAGS+=	-fdebug-prefix-map=\$$X11SRCDIR=/usr/xsrc
+.if defined(MAKEOBJDIRPREFIX)
+NETBSDOBJDIR=	${MAKEOBJDIRPREFIX}${NETBSDSRCDIR}
+.endif
 
-REPROFLAGS+=	-fdebug-regex-map='/usr/src/(.*)/obj.${MACHINE}=/usr/obj/\1'
+.if defined(NETBSDOBJDIR)
+.export NETBSDOBJDIR
+REPROFLAGS+=	-fdebug-prefix-map=\$$NETBSDOBJDIR=/usr/obj
+.endif
+
+LINTFLAGS+=	-R${NETBSDSRCDIR}=/usr/src -R${X11SRCDIR}=/usr/xsrc
+LINTFLAGS+=	-R${DESTDIR}=
+
+# XXX: Cannot handle MAKEOBJDIR, yet.
+REPROFLAGS+=	-fdebug-regex-map='/usr/src/(.*)/obj$$=/usr/obj/\1'
+REPROFLAGS+=	-fdebug-regex-map='/usr/src/(.*)/obj/(.*)=/usr/obj/\1/\2'
+REPROFLAGS+=	-fdebug-regex-map='/usr/src/(.*)/obj\..*=/usr/obj/\1'
+REPROFLAGS+=	-fdebug-regex-map='/usr/src/(.*)/obj\..*/(.*)=/usr/obj/\1/\2'
 
 CFLAGS+=	${REPROFLAGS}
 CXXFLAGS+=	${REPROFLAGS}
 .endif
 
 # NetBSD sources use C99 style, with some GCC extensions.
+# Coverity does not like -std=gnu99
+.if !defined(COVERITY_TOP_CONFIG)
 CFLAGS+=	${${ACTIVE_CC} == "clang":? -std=gnu99 :}
 CFLAGS+=	${${ACTIVE_CC} == "gcc":? -std=gnu99 :}
 CFLAGS+=	${${ACTIVE_CC} == "pcc":? -std=gnu99 :}
+.endif
 
 .if defined(WARNS)
 CFLAGS+=	${${ACTIVE_CC} == "clang":? -Wno-sign-compare -Wno-pointer-sign :}
@@ -51,17 +71,14 @@ CFLAGS+=	-Wall -Wstrict-prototypes -Wmissing-prototypes -Wpointer-arith
 # differently in traditional and ansi environments' which is the warning
 # we wanted, and now we don't get anymore.
 CFLAGS+=	-Wno-sign-compare
+# Don't suppress warnings coming from constructs in system headers.
+# Our system headers should be clean and we want to warn about things like:
+# isdigit((char)1)
+CFLAGS+=	${${ACTIVE_CC} == "gcc" :? -Wsystem-headers :}
 CFLAGS+=	${${ACTIVE_CC} == "gcc" :? -Wno-traditional :}
 .if !defined(NOGCCERROR)
 # Set assembler warnings to be fatal
-CFLAGS+=	-Wa,--fatal-warnings
-.endif
-
-.if ${MKRELRO:Uno} != "no"
-LDFLAGS+=	-Wl,-z,relro
-.endif
-.if ${MKRELRO:Uno} == "full"
-LDFLAGS+=	-Wl,-z,now
+CFLAGS+=	${${ACTIVE_CC} == "gcc" :? -Wa,--fatal-warnings :}
 .endif
 
 # Set linker warnings to be fatal
@@ -107,15 +124,33 @@ CFLAGS+=	${${ACTIVE_CC} == "clang":? -Wpointer-sign -Wmissing-noreturn :}
 .endif
 .if (defined(HAVE_GCC) \
      && (${MACHINE_ARCH} == "coldfire" || \
-	 ${MACHINE_ARCH} == "sh3eb" || \
-	 ${MACHINE_ARCH} == "sh3el" || \
-	 ${MACHINE_ARCH} == "m68k" || \
-	 ${MACHINE_ARCH} == "m68000"))
+	 ${MACHINE_CPU} == "sh3" || \
+	 ${MACHINE_CPU} == "m68k"))
 # XXX GCC 4.5 for sh3 and m68k (which we compile with -Os) is extra noisy for
 # cases it should be better with
 CFLAGS+=	-Wno-uninitialized
 CFLAGS+=	-Wno-maybe-uninitialized
 .endif
+.endif
+
+.if ${MKRELRO:Uno} != "no"
+LDFLAGS+=	-Wl,-z,relro
+.endif
+.if ${MKRELRO:Uno} == "full"
+LDFLAGS+=	-Wl,-z,now
+.endif
+
+.if ${MKSANITIZER:Uno} == "yes"
+SANITIZERFLAGS:=	-fsanitize=${USE_SANITIZER} ${SANITIZERFLAGS}
+.else
+SANITIZERFLAGS=		# empty
+.endif
+
+.if ${MKLIBCSANITIZER:Uno} == "yes"
+LIBCSANITIZERFLAGS:=	-fsanitize=${USE_LIBCSANITIZER} ${LIBCSANITIZERFLAGS}
+LIBCSANITIZERFLAGS+=	-fno-sanitize=vptr	# Unsupported in micro-UBSan
+.else
+LIBCSANITIZERFLAGS=	# empty
 .endif
 
 CWARNFLAGS+=	${CWARNFLAGS.${ACTIVE_CC}}
@@ -126,9 +161,10 @@ CFLAGS+=	${${_NOWERROR} == "no" :?-Werror:} ${CWARNFLAGS}
 LINTFLAGS+=	${DESTDIR:D-d ${DESTDIR}/usr/include}
 
 .if !defined(NOSSP) && (${USE_SSP:Uno} != "no") && (${BINDIR:Ux} != "/usr/mdec")
-.if !defined(KERNSRCDIR) && !defined(KERN) # not for kernels nor kern modules
+.   if !defined(KERNSRCDIR) && !defined(KERN) # not for kernels / kern modules
 CPPFLAGS+=	-D_FORTIFY_SOURCE=2
-.endif
+.   endif
+.   if !defined(COVERITY_TOP_CONFIG)
 COPTS+=	-fstack-protector -Wstack-protector 
 
 # GCC 4.8 on m68k erroneously does not protect functions with
@@ -136,24 +172,28 @@ COPTS+=	-fstack-protector -Wstack-protector
 #	http://gcc.gnu.org/bugzilla/show_bug.cgi?id=59674
 # (the underlying issue for sh and vax may be different, needs more
 # investigation, symptoms are similar but for different sources)
-# also true for GCC 5.3
-.if "${ACTIVE_CC}" == "gcc" && \
-     ( ${HAVE_GCC} == "48" || \
-       ${HAVE_GCC} == "53" ) && \
+# also true for GCC 5, assume GCC 6 too.
+.	if "${ACTIVE_CC}" == "gcc" && \
+     ( ${HAVE_GCC} == "5" || \
+       ${HAVE_GCC} == "6" ) && \
      ( ${MACHINE_CPU} == "sh3" || \
        ${MACHINE_ARCH} == "vax" || \
        ${MACHINE_CPU} == "m68k" || \
        ${MACHINE_CPU} == "or1k" )
 COPTS+=	-Wno-error=stack-protector 
-.endif
+.	endif
 
 COPTS+=	${${ACTIVE_CC} == "clang":? --param ssp-buffer-size=1 :}
 COPTS+=	${${ACTIVE_CC} == "gcc":? --param ssp-buffer-size=1 :}
+.   endif
 .endif
 
 .if ${MKSOFTFLOAT:Uno} != "no"
+# sh3 defaults to soft-float and specifies hard-float a different way
+.if ${MACHINE_CPU} != "sh3"
 COPTS+=		${${ACTIVE_CC} == "gcc":? -msoft-float :}
 FOPTS+=		-msoft-float
+.endif
 .elif ${MACHINE_ARCH} == "coldfire"
 COPTS+=		-mhard-float
 FOPTS+=		-mhard-float
@@ -298,6 +338,11 @@ OBJCOPYLIBFLAGS_EXTRA=-w -K '[$$][dx]' -K '[$$][dx]\.*'
 # ARM big endian needs to preserve $a/$d/$t symbols for the linker.
 OBJCOPYLIBFLAGS_EXTRA=-w -K '[$$][adt]' -K '[$$][adt]\.*'
 .endif
+
+.if ${MKSTRIPSYM:Uyes} == "yes"
 OBJCOPYLIBFLAGS?=${"${.TARGET:M*.po}" != "":?-X:-x} ${OBJCOPYLIBFLAGS_EXTRA}
+.else
+OBJCOPYLIBFLAGS?=-X ${OBJCOPYLIBFLAGS_EXTRA}
+.endif
 
 .endif	# !defined(_BSD_SYS_MK_)

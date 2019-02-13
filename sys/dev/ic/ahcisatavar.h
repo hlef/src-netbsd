@@ -1,4 +1,4 @@
-/*	$NetBSD: ahcisatavar.h,v 1.17 2015/05/24 22:30:05 jmcneill Exp $	*/
+/*	$NetBSD: ahcisatavar.h,v 1.20 2018/10/24 19:38:00 jdolecek Exp $	*/
 
 /*
  * Copyright (c) 2006 Manuel Bouyer.
@@ -82,7 +82,6 @@ struct ahci_softc {
 		struct ahci_cmd_tbl *ahcic_cmd_tbl[AHCI_MAX_CMDS];
 		bus_addr_t ahcic_bus_cmd_tbl[AHCI_MAX_CMDS];
 		bus_dmamap_t ahcic_datad[AHCI_MAX_CMDS];
-		uint32_t  ahcic_cmds_active; /* active commands */
 	} sc_channels[AHCI_MAX_PORTS];
 
 	void	(*sc_channel_start)(struct ahci_softc *, struct ata_channel *);
@@ -114,9 +113,11 @@ struct ahci_softc {
 #define AHCI_WRITE(sc, reg, val) bus_space_write_4((sc)->sc_ahcit, \
     (sc)->sc_ahcih, (reg), (val))
     
+#define AHCI_CH2SC(chp)		(struct ahci_softc *)((chp)->ch_atac)
 
 void ahci_attach(struct ahci_softc *);
 int  ahci_detach(struct ahci_softc *, int);
+void ahci_childdetached(struct ahci_softc *, device_t);
 void ahci_resume(struct ahci_softc *);
 
 int  ahci_intr(void *);

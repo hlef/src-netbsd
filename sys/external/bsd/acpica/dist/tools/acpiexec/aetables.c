@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2016, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -151,9 +151,9 @@ AeInitializeTableHeader (
     Header->Length = Length;
 
     Header->OemRevision = 0x1001;
-    strncpy (Header->OemId, "Intel", ACPI_OEM_ID_SIZE);
-    strncpy (Header->OemTableId, "AcpiExec", ACPI_OEM_TABLE_ID_SIZE);
-    strncpy (Header->AslCompilerId, "INTL", ACPI_NAME_SIZE);
+    memcpy (Header->OemId, "Intel ", ACPI_OEM_ID_SIZE);
+    memcpy (Header->OemTableId, "AcpiExec", ACPI_OEM_TABLE_ID_SIZE);
+    ACPI_MOVE_NAME (Header->AslCompilerId, "INTL");
     Header->AslCompilerRevision = ACPI_CA_VERSION;
 
     /* Set the checksum, must set to zero first */
@@ -389,12 +389,12 @@ AeBuildLocalTables (
 
         /* Miscellaneous FADT fields */
 
-        LocalFADT.Gpe0BlockLength = 0x08;
-        LocalFADT.Gpe0Block = 0x00001234;
+        LocalFADT.Gpe0BlockLength = 0x20;
+        LocalFADT.Gpe0Block = 0x00003210;
 
-        LocalFADT.Gpe1BlockLength = 0x80;
-        LocalFADT.Gpe1Block = 0x00005678;
-        LocalFADT.Gpe1Base = 100;
+        LocalFADT.Gpe1BlockLength = 0x20;
+        LocalFADT.Gpe1Block = 0x0000BA98;
+        LocalFADT.Gpe1Base = 0x80;
 
         LocalFADT.Pm1EventLength = 4;
         LocalFADT.Pm1aEventBlock = 0x00001aaa;
@@ -489,6 +489,14 @@ AeInstallTables (
 
     Status = AcpiInitializeTables (NULL, ACPI_MAX_INIT_TABLES, TRUE);
     ACPI_CHECK_OK (AcpiInitializeTables, Status);
+
+    /*
+     * The following code is prepared to test the deferred table
+     * verification mechanism. When AcpiGbl_EnableTableValidation is set
+     * to FALSE by default, AcpiReallocateRootTable() sets it back to TRUE
+     * and triggers the deferred table verification mechanism accordingly.
+     */
+    (void) AcpiReallocateRootTable ();
 
     if (AcpiGbl_LoadTestTables)
     {
