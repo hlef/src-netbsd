@@ -1,63 +1,14 @@
-/* crypto/cms/cms_lcl.h */
 /*
- * Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
- * project.
- */
-/* ====================================================================
- * Copyright (c) 2008 The OpenSSL Project.  All rights reserved.
+ * Copyright 2008-2018 The OpenSSL Project Authors. All Rights Reserved.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. All advertising materials mentioning features or use of this
- *    software must display the following acknowledgment:
- *    "This product includes software developed by the OpenSSL Project
- *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
- *
- * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For written permission, please contact
- *    licensing@OpenSSL.org.
- *
- * 5. Products derived from this software may not be called "OpenSSL"
- *    nor may "OpenSSL" appear in their names without prior written
- *    permission of the OpenSSL Project.
- *
- * 6. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by the OpenSSL Project
- *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
- *
- * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
- * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
- * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
- * OF THE POSSIBILITY OF SUCH DAMAGE.
- * ====================================================================
+ * Licensed under the OpenSSL license (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
  */
 
 #ifndef HEADER_CMS_LCL_H
 # define HEADER_CMS_LCL_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 # include <openssl/x509.h>
 
@@ -84,11 +35,9 @@ typedef struct CMS_KeyTransRecipientInfo_st CMS_KeyTransRecipientInfo;
 typedef struct CMS_OriginatorPublicKey_st CMS_OriginatorPublicKey;
 typedef struct CMS_OriginatorIdentifierOrKey_st CMS_OriginatorIdentifierOrKey;
 typedef struct CMS_KeyAgreeRecipientInfo_st CMS_KeyAgreeRecipientInfo;
-typedef struct CMS_OtherKeyAttribute_st CMS_OtherKeyAttribute;
 typedef struct CMS_RecipientKeyIdentifier_st CMS_RecipientKeyIdentifier;
 typedef struct CMS_KeyAgreeRecipientIdentifier_st
     CMS_KeyAgreeRecipientIdentifier;
-typedef struct CMS_RecipientEncryptedKey_st CMS_RecipientEncryptedKey;
 typedef struct CMS_KEKIdentifier_st CMS_KEKIdentifier;
 typedef struct CMS_KEKRecipientInfo_st CMS_KEKRecipientInfo;
 typedef struct CMS_PasswordRecipientInfo_st CMS_PasswordRecipientInfo;
@@ -111,8 +60,10 @@ struct CMS_ContentInfo_st {
     } d;
 };
 
+DEFINE_STACK_OF(CMS_CertificateChoices)
+
 struct CMS_SignedData_st {
-    long version;
+    int32_t version;
     STACK_OF(X509_ALGOR) *digestAlgorithms;
     CMS_EncapsulatedContentInfo *encapContentInfo;
     STACK_OF(CMS_CertificateChoices) *certificates;
@@ -128,7 +79,7 @@ struct CMS_EncapsulatedContentInfo_st {
 };
 
 struct CMS_SignerInfo_st {
-    long version;
+    int32_t version;
     CMS_SignerIdentifier *sid;
     X509_ALGOR *digestAlgorithm;
     STACK_OF(X509_ATTRIBUTE) *signedAttrs;
@@ -138,6 +89,9 @@ struct CMS_SignerInfo_st {
     /* Signing certificate and key */
     X509 *signer;
     EVP_PKEY *pkey;
+    /* Digest and public key context for alternative parameters */
+    EVP_MD_CTX *mctx;
+    EVP_PKEY_CTX *pctx;
 };
 
 struct CMS_SignerIdentifier_st {
@@ -149,7 +103,7 @@ struct CMS_SignerIdentifier_st {
 };
 
 struct CMS_EnvelopedData_st {
-    long version;
+    int32_t version;
     CMS_OriginatorInfo *originatorInfo;
     STACK_OF(CMS_RecipientInfo) *recipientInfos;
     CMS_EncryptedContentInfo *encryptedContentInfo;
@@ -187,21 +141,27 @@ struct CMS_RecipientInfo_st {
 typedef CMS_SignerIdentifier CMS_RecipientIdentifier;
 
 struct CMS_KeyTransRecipientInfo_st {
-    long version;
+    int32_t version;
     CMS_RecipientIdentifier *rid;
     X509_ALGOR *keyEncryptionAlgorithm;
     ASN1_OCTET_STRING *encryptedKey;
     /* Recipient Key and cert */
     X509 *recip;
     EVP_PKEY *pkey;
+    /* Public key context for this operation */
+    EVP_PKEY_CTX *pctx;
 };
 
 struct CMS_KeyAgreeRecipientInfo_st {
-    long version;
+    int32_t version;
     CMS_OriginatorIdentifierOrKey *originator;
     ASN1_OCTET_STRING *ukm;
     X509_ALGOR *keyEncryptionAlgorithm;
     STACK_OF(CMS_RecipientEncryptedKey) *recipientEncryptedKeys;
+    /* Public key context associated with current operation */
+    EVP_PKEY_CTX *pctx;
+    /* Cipher context for CEK wrapping */
+    EVP_CIPHER_CTX *ctx;
 };
 
 struct CMS_OriginatorIdentifierOrKey_st {
@@ -221,6 +181,8 @@ struct CMS_OriginatorPublicKey_st {
 struct CMS_RecipientEncryptedKey_st {
     CMS_KeyAgreeRecipientIdentifier *rid;
     ASN1_OCTET_STRING *encryptedKey;
+    /* Public key associated with this recipient */
+    EVP_PKEY *pkey;
 };
 
 struct CMS_KeyAgreeRecipientIdentifier_st {
@@ -238,7 +200,7 @@ struct CMS_RecipientKeyIdentifier_st {
 };
 
 struct CMS_KEKRecipientInfo_st {
-    long version;
+    int32_t version;
     CMS_KEKIdentifier *kekid;
     X509_ALGOR *keyEncryptionAlgorithm;
     ASN1_OCTET_STRING *encryptedKey;
@@ -254,7 +216,7 @@ struct CMS_KEKIdentifier_st {
 };
 
 struct CMS_PasswordRecipientInfo_st {
-    long version;
+    int32_t version;
     X509_ALGOR *keyDerivationAlgorithm;
     X509_ALGOR *keyEncryptionAlgorithm;
     ASN1_OCTET_STRING *encryptedKey;
@@ -269,20 +231,20 @@ struct CMS_OtherRecipientInfo_st {
 };
 
 struct CMS_DigestedData_st {
-    long version;
+    int32_t version;
     X509_ALGOR *digestAlgorithm;
     CMS_EncapsulatedContentInfo *encapContentInfo;
     ASN1_OCTET_STRING *digest;
 };
 
 struct CMS_EncryptedData_st {
-    long version;
+    int32_t version;
     CMS_EncryptedContentInfo *encryptedContentInfo;
     STACK_OF(X509_ATTRIBUTE) *unprotectedAttrs;
 };
 
 struct CMS_AuthenticatedData_st {
-    long version;
+    int32_t version;
     CMS_OriginatorInfo *originatorInfo;
     STACK_OF(CMS_RecipientInfo) *recipientInfos;
     X509_ALGOR *macAlgorithm;
@@ -294,7 +256,7 @@ struct CMS_AuthenticatedData_st {
 };
 
 struct CMS_CompressedData_st {
-    long version;
+    int32_t version;
     X509_ALGOR *compressionAlgorithm;
     STACK_OF(CMS_RecipientInfo) *recipientInfos;
     CMS_EncapsulatedContentInfo *encapContentInfo;
@@ -366,14 +328,14 @@ struct CMS_ReceiptRequest_st {
 struct CMS_ReceiptsFrom_st {
     int type;
     union {
-        long allOrFirstTier;
+        int32_t allOrFirstTier;
         STACK_OF(GENERAL_NAMES) *receiptList;
     } d;
 };
 # endif
 
 struct CMS_Receipt_st {
-    long version;
+    int32_t version;
     ASN1_OBJECT *contentType;
     ASN1_OCTET_STRING *signedContentIdentifier;
     ASN1_OCTET_STRING *originatorSignatureValue;
@@ -393,6 +355,13 @@ DECLARE_ASN1_ALLOC_FUNCTIONS(CMS_IssuerAndSerialNumber)
 
 # define CMS_RECIPINFO_ISSUER_SERIAL     0
 # define CMS_RECIPINFO_KEYIDENTIFIER     1
+
+# define CMS_REK_ISSUER_SERIAL           0
+# define CMS_REK_KEYIDENTIFIER           1
+
+# define CMS_OIK_ISSUER_SERIAL           0
+# define CMS_OIK_KEYIDENTIFIER           1
+# define CMS_OIK_PUBKEY                  2
 
 BIO *cms_content_bio(CMS_ContentInfo *cms);
 
@@ -415,10 +384,14 @@ int cms_SignerIdentifier_cert_cmp(CMS_SignerIdentifier *sid, X509 *cert);
 CMS_ContentInfo *cms_CompressedData_create(int comp_nid);
 BIO *cms_CompressedData_init_bio(CMS_ContentInfo *cms);
 
-void cms_DigestAlgorithm_set(X509_ALGOR *alg, const EVP_MD *md);
 BIO *cms_DigestAlgorithm_init_bio(X509_ALGOR *digestAlgorithm);
 int cms_DigestAlgorithm_find_ctx(EVP_MD_CTX *mctx, BIO *chain,
                                  X509_ALGOR *mdalg);
+
+int cms_ias_cert_cmp(CMS_IssuerAndSerialNumber *ias, X509 *cert);
+int cms_keyid_cert_cmp(ASN1_OCTET_STRING *keyid, X509 *cert);
+int cms_set1_ias(CMS_IssuerAndSerialNumber **pias, X509 *cert);
+int cms_set1_keyid(ASN1_OCTET_STRING **pkeyid, X509 *cert);
 
 BIO *cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec);
 BIO *cms_EncryptedData_init_bio(CMS_ContentInfo *cms);
@@ -432,12 +405,33 @@ ASN1_OCTET_STRING *cms_encode_Receipt(CMS_SignerInfo *si);
 
 BIO *cms_EnvelopedData_init_bio(CMS_ContentInfo *cms);
 CMS_EnvelopedData *cms_get0_enveloped(CMS_ContentInfo *cms);
+int cms_env_asn1_ctrl(CMS_RecipientInfo *ri, int cmd);
+int cms_pkey_get_ri_type(EVP_PKEY *pk);
+/* KARI routines */
+int cms_RecipientInfo_kari_init(CMS_RecipientInfo *ri, X509 *recip,
+                                EVP_PKEY *pk, unsigned int flags);
+int cms_RecipientInfo_kari_encrypt(CMS_ContentInfo *cms,
+                                   CMS_RecipientInfo *ri);
 
 /* PWRI routines */
 int cms_RecipientInfo_pwri_crypt(CMS_ContentInfo *cms, CMS_RecipientInfo *ri,
                                  int en_de);
 
-#ifdef  __cplusplus
-}
-#endif
+DECLARE_ASN1_ITEM(CMS_CertificateChoices)
+DECLARE_ASN1_ITEM(CMS_DigestedData)
+DECLARE_ASN1_ITEM(CMS_EncryptedData)
+DECLARE_ASN1_ITEM(CMS_EnvelopedData)
+DECLARE_ASN1_ITEM(CMS_KEKRecipientInfo)
+DECLARE_ASN1_ITEM(CMS_KeyAgreeRecipientInfo)
+DECLARE_ASN1_ITEM(CMS_KeyTransRecipientInfo)
+DECLARE_ASN1_ITEM(CMS_OriginatorPublicKey)
+DECLARE_ASN1_ITEM(CMS_OtherKeyAttribute)
+DECLARE_ASN1_ITEM(CMS_Receipt)
+DECLARE_ASN1_ITEM(CMS_ReceiptRequest)
+DECLARE_ASN1_ITEM(CMS_RecipientEncryptedKey)
+DECLARE_ASN1_ITEM(CMS_RecipientKeyIdentifier)
+DECLARE_ASN1_ITEM(CMS_RevocationInfoChoice)
+DECLARE_ASN1_ITEM(CMS_SignedData)
+DECLARE_ASN1_ITEM(CMS_CompressedData)
+
 #endif

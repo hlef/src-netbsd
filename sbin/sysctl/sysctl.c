@@ -1,4 +1,4 @@
-/*	$NetBSD: sysctl.c,v 1.157 2015/12/13 14:24:47 christos Exp $ */
+/*	$NetBSD: sysctl.c,v 1.160 2018/02/04 09:03:23 mrg Exp $ */
 
 /*-
  * Copyright (c) 2003 The NetBSD Foundation, Inc.
@@ -68,7 +68,7 @@ __COPYRIGHT("@(#) Copyright (c) 1993\
 #if 0
 static char sccsid[] = "@(#)sysctl.c	8.1 (Berkeley) 6/6/93";
 #else
-__RCSID("$NetBSD: sysctl.c,v 1.157 2015/12/13 14:24:47 christos Exp $");
+__RCSID("$NetBSD: sysctl.c,v 1.160 2018/02/04 09:03:23 mrg Exp $");
 #endif
 #endif /* not lint */
 
@@ -128,8 +128,8 @@ static void canonicalize(const char *, char *);
 static void purge_tree(struct sysctlnode *);
 static void print_tree(int *, u_int, struct sysctlnode *, u_int, int, regex_t *,
     size_t *);
-static void write_number(int *, u_int, struct sysctlnode *, char *);
-static void write_string(int *, u_int, struct sysctlnode *, char *);
+static void write_number(int *, u_int, struct sysctlnode *, char *, bool);
+static void write_string(int *, u_int, struct sysctlnode *, char *, bool);
 static void display_number(const struct sysctlnode *, const char *,
 			   const void *, size_t, int);
 static void display_string(const struct sysctlnode *, const char *,
@@ -218,6 +218,9 @@ static const struct handlespec {
 	{ "/net/[^/]+/[^/]+/pcblist",		printother, NULL,
 						"netstat' or 'sockstat" },
 	{ "/net/(inet|inet6)/[^/]+/stats",	printother, NULL, "netstat"},
+	{ "/net/inet/(ipip|esp|ah|ipcomp)/.*_stats",
+						printother, NULL, "netstat"},
+	{ "/net/inet/ipsec/ipsecstats",		printother, NULL, "netstat"},
 	{ "/net/bpf/(stats|peers)",		printother, NULL, "netstat"},
 
 	{ "/net/inet.*/tcp.*/deb.*",		printother, NULL, "trpt" },
@@ -946,10 +949,10 @@ parse(char *l, regex_t *re, size_t *lastcompiled)
 	case CTLTYPE_INT:
 	case CTLTYPE_BOOL:
 	case CTLTYPE_QUAD:
-		write_number(&name[0], namelen, node, value);
+		write_number(&name[0], namelen, node, value, optional);
 		break;
 	case CTLTYPE_STRING:
-		write_string(&name[0], namelen, node, value);
+		write_string(&name[0], namelen, node, value, optional);
 		break;
 	case CTLTYPE_STRUCT:
 		/*
@@ -1754,7 +1757,8 @@ sysctlperror(const char *fmt, ...)
  * ********************************************************************
  */
 static void
-write_number(int *name, u_int namelen, struct sysctlnode *node, char *value)
+write_number(int *name, u_int namelen, struct sysctlnode *node, char *value,
+	bool optional)
 {
 	u_int ii, io;
 	u_quad_t qi, qo;
@@ -1811,7 +1815,9 @@ write_number(int *name, u_int namelen, struct sysctlnode *node, char *value)
 
 	rc = prog_sysctl(name, namelen, o, &so, i, si);
 	if (rc == -1) {
-		sysctlerror(0);
+		if (!optional || errno != EPERM) {
+			sysctlerror(0);
+		}
 		return;
 	}
 
@@ -1832,7 +1838,8 @@ write_number(int *name, u_int namelen, struct sysctlnode *node, char *value)
 }
 
 static void
-write_string(int *name, u_int namelen, struct sysctlnode *node, char *value)
+write_string(int *name, u_int namelen, struct sysctlnode *node, char *value,
+	bool optional)
 {
 	char *i, *o;
 	size_t si, so;
@@ -1853,7 +1860,10 @@ write_string(int *name, u_int namelen, struct sysctlnode *node, char *value)
 
 	rc = prog_sysctl(name, namelen, o, &so, i, si);
 	if (rc == -1) {
-		sysctlerror(0);
+		if (!optional || errno != EPERM) {
+			sysctlerror(0);
+		}
+		free(o);
 		return;
 	}
 
@@ -2444,12 +2454,13 @@ kern_cp_id(HANDLER_ARGS)
 			       sizeof(u_int64_t),
 			       DISPLAY_VALUE);
 	else if (Aflag) {
-		for (i = 0; i < n; i++)
+		for (i = 0; i < n; i++) {
 			(void)snprintf(s, sizeof(s), "%s%s%d", sname, sep, i);
 			tname = s;
 			display_number(&node, tname, &cp_id[i],
 				       sizeof(u_int64_t),
 				       DISPLAY_VALUE);
+		}
 	}
 	else {
 		if (xflag || rflag)

@@ -1,4 +1,4 @@
-/*	$NetBSD: isakmp.c,v 1.75 2016/03/09 22:27:17 christos Exp $	*/
+/*	$NetBSD: isakmp.c,v 1.78 2018/05/19 20:14:56 maxv Exp $	*/
 
 /* Id: isakmp.c,v 1.74 2006/05/07 21:32:59 manubsd Exp */
 
@@ -198,9 +198,7 @@ static int frag_handler(struct ph1handle *,
  * isakmp packet handler
  */
 static int
-isakmp_handler(ctx, so_isakmp)
-        void *ctx;
-	int so_isakmp;
+isakmp_handler(void *ctx, int so_isakmp)
 {
 	struct isakmp isakmp;
 	union {
@@ -1077,6 +1075,7 @@ isakmp_ph1begin_i(rmconf, remote, local)
 		iph1->frag = 1;
 	else
 		iph1->frag = 0;
+	iph1->frag_last_index = 0;
 	iph1->frag_chain = NULL;
 #endif
 	iph1->approval = NULL;
@@ -1181,6 +1180,7 @@ isakmp_ph1begin_r(msg, remote, local, etype)
 #endif
 #ifdef ENABLE_FRAG
 	iph1->frag = 0;
+	iph1->frag_last_index = 0;
 	iph1->frag_chain = NULL;
 #endif
 	iph1->approval = NULL;
@@ -1579,7 +1579,7 @@ int
 isakmp_open(struct sockaddr *addr, int udp_encap)
 {
 	const int yes = 1;
-	int ifnum = 0, encap_ifnum = 0, fd;
+	int fd;
 	struct sockaddr_in *sin = (struct sockaddr_in *) addr;
 #ifdef INET6
 	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) addr;
@@ -1827,8 +1827,7 @@ isakmp_send(iph1, sbuf)
 
 /* called from scheduler */
 static void
-isakmp_ph1resend_stub(p)
-	struct sched *p;
+isakmp_ph1resend_stub(struct sched *p)
 {
 	struct ph1handle *iph1 = container_of(p, struct ph1handle, scr);
 
@@ -1885,8 +1884,7 @@ isakmp_ph1send(iph1)
 
 /* called from scheduler */
 static void
-isakmp_ph2resend_stub(p)
-	struct sched *p;
+isakmp_ph2resend_stub(struct sched *p)
 {
 	struct ph2handle *iph2 = container_of(p, struct ph2handle, scr);
 
@@ -1961,7 +1959,6 @@ isakmp_ph1dying(iph1)
 {
 	struct ph1handle *new_iph1;
 	struct ph2handle *p;
-	struct remoteconf *rmconf;
 
 	if (iph1->status >= PHASE1ST_DYING)
 		return;
@@ -2653,13 +2650,8 @@ isakmp_newmsgid2(iph1)
  * set values into allocated buffer of isakmp header for phase 1
  */
 static caddr_t
-set_isakmp_header(vbuf, iph1, nptype, etype, flags, msgid)
-	vchar_t *vbuf;
-	struct ph1handle *iph1;
-	int nptype;
-	u_int8_t etype;
-	u_int8_t flags;
-	u_int32_t msgid;
+set_isakmp_header(vchar_t *vbuf, struct ph1handle *iph1, int nptype,
+    u_int8_t etype, u_int8_t flags, u_int32_t msgid)
 {
 	struct isakmp *isakmp;
 
