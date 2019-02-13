@@ -1,4 +1,4 @@
-# $NetBSD: Makefile,v 1.12 2014/11/19 19:33:31 christos Exp $	
+# $NetBSD: Makefile,v 1.21 2018/09/05 17:10:27 christos Exp $	
 
 USE_SHLIBDIR=yes
 .include <bsd.own.mk>
@@ -7,7 +7,7 @@ USE_FORT?= yes	# network protocol library
 CWARNFLAGS.clang+=	-Wno-format-extra-args \
 			-Wno-unneeded-internal-declaration
 
-CPPFLAGS+= -DPCAP_DONT_INCLUDE_PCAP_BPF_H -DHAVE_CONFIG_H
+CPPFLAGS+= -DPCAP_DONT_INCLUDE_PCAP_BPF_H -DHAVE_CONFIG_H -I${.OBJDIR}
 
 .SUFFIXES: .3 .3pcap
 
@@ -24,6 +24,8 @@ __sed: .USE
 	    -e 's,3PCAP,3,g' < ${.ALLSRC} > ${.TARGET}
 
 
+# Search first in the kernel for bpf_filter.c
+.PATH:	${NETBSDSRCDIR}/sys/net
 SRCDIR=		${.CURDIR}/../dist
 .PATH:		${SRCDIR}
 
@@ -123,24 +125,39 @@ ${i:S/manfile.in/5/}: ${i} __sed
 CPPFLAGS+=	-I${.CURDIR}/../include -I${.CURDIR} -I${SRCDIR}
 CPPFLAGS+=	-DYYBISON
 LPREFIX=	pcap_
+LFLAGS+=	--header-file=scanner.h
 YPREFIX=	pcap_
 YHEADER=	1
 
 CPPFLAGS+=	-DHAVE_CONFIG_H
-CPPFLAGS+=	-D_U_="__attribute__((__unused__))"
+#CPPFLAGS+=	-D_U_="__attribute__((__unused__))"
 
 .if (${USE_INET6} != "no")
 CPPFLAGS+=	-DINET6
 .endif
 
-SRCS=	scanner.l savefile.c pcap.c pcap-bpf.c optimize.c nametoaddr.c \
-	inet.c grammar.y gencode.c fad-getad.c etherent.c bpf_image.c \
-	bpf_dump.c version.c sf-pcap-ng.c sf-pcap.c pcap-common.c
+SRCS= \
+bpf_dump.c \
+bpf_filter.c \
+bpf_image.c \
+etherent.c \
+fad-getad.c \
+fmtutils.c \
+gencode.c \
+grammar.y \
+nametoaddr.c \
+optimize.c \
+pcap-bpf.c \
+pcap-common.c \
+pcap.c \
+savefile.c \
+scanner.l \
+sf-pcap.c \
+sf-pcapng.c
 
-.PATH:	${NETBSDSRCDIR}/sys/net
-SRCS+=	bpf_filter.c
 
-INCS=		pcap/pcap.h pcap/namedb.h
+INCS=		pcap/pcap.h pcap/namedb.h pcap/funcattrs.h \
+	pcap/pcap-inttypes.h pcap/compiler-tests.h
 INCSDIR=	/usr/include
 INCSYMLINKS+=   ../net/bpf.h ${INCSDIR}/pcap/bpf.h
 INCSYMLINKS+=	pcap/pcap.h ${INCSDIR}/pcap.h
@@ -151,7 +168,7 @@ scanner.d scanner.o: tokdefs.h
 tokdefs.h: grammar.h
 	cp $? $@
 
-CLEANFILES+=	tokdefs.h
+CLEANFILES+=	tokdefs.h scanner.h
 COPTS.bpf_image.c = -Wno-format-nonliteral
 
 .include <bsd.lib.mk>

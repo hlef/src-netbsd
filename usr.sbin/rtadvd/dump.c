@@ -1,10 +1,10 @@
-/*	$NetBSD: dump.c,v 1.14 2016/06/15 13:57:39 riastradh Exp $	*/
+/*	$NetBSD: dump.c,v 1.16 2018/04/20 10:39:37 roy Exp $	*/
 /*	$KAME: dump.c,v 1.34 2004/06/14 05:35:59 itojun Exp $	*/
 
 /*
  * Copyright (C) 2000 WIDE Project.
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -16,7 +16,7 @@
  * 3. Neither the name of the project nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -57,6 +57,7 @@
 
 #include "rtadvd.h"
 #include "timer.h"
+#include "logit.h"
 #include "if.h"
 #include "dump.h"
 #include "prog_ops.h"
@@ -254,7 +255,7 @@ if_dump(void)
 				{
 					if (p != dnsd->domain)
 					    fputc('.', fp);
-					while(len-- != 0)	
+					while(len-- != 0)
 					    fputc(*p++, fp);
 				}
 				fputc('\n', fp);
@@ -266,11 +267,11 @@ if_dump(void)
 void
 rtadvd_dump_file(const char *dumpfile)
 {
-	syslog(LOG_DEBUG, "<%s> dump current status to %s", __func__,
+	logit(LOG_DEBUG, "<%s> dump current status to %s", __func__,
 	    dumpfile);
 
 	if ((fp = fopen(dumpfile, "w")) == NULL) {
-		syslog(LOG_WARNING, "<%s> open a dump file(%s): %m",
+		logit(LOG_WARNING, "<%s> open a dump file(%s): %m",
 		       __func__, dumpfile);
 		return;
 	}

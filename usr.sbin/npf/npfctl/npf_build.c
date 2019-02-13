@@ -1,7 +1,5 @@
-/*	$NetBSD: npf_build.c,v 1.40 2015/06/08 01:00:43 rmind Exp $	*/
-
 /*-
- * Copyright (c) 2011-2014 The NetBSD Foundation, Inc.
+ * Copyright (c) 2011-2017 The NetBSD Foundation, Inc.
  * All rights reserved.
  *
  * This material is based upon work partially supported by The
@@ -34,11 +32,10 @@
  */
 
 #include <sys/cdefs.h>
-__RCSID("$NetBSD: npf_build.c,v 1.40 2015/06/08 01:00:43 rmind Exp $");
+__RCSID("$NetBSD: npf_build.c,v 1.46 2018/09/29 14:41:36 rmind Exp $");
 
 #include <sys/types.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
+#define	__FAVOR_BSD
 #include <netinet/tcp.h>
 
 #include <stdlib.h>
@@ -46,11 +43,11 @@ __RCSID("$NetBSD: npf_build.c,v 1.40 2015/06/08 01:00:43 rmind Exp $");
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <err.h>
 
 #include <pcap/pcap.h>
-#include <cdbw.h>
 
 #include "npfctl.h"
 
@@ -60,9 +57,10 @@ static nl_config_t *		npf_conf = NULL;
 static bool			npf_debug = false;
 static nl_rule_t *		the_rule = NULL;
 
+static bool			defgroup = false;
 static nl_rule_t *		current_group[MAX_RULE_NESTING];
 static unsigned			rule_nesting_level = 0;
-static nl_rule_t *		defgroup = NULL;
+static unsigned			npfctl_tid_counter = 0;
 
 static void			npfctl_dump_bpf(struct bpf_program *);
 
@@ -78,32 +76,54 @@ npfctl_config_init(bool debug)
 }
 
 int
-npfctl_config_send(int fd, const char *out)
+npfctl_config_send(int fd)
 {
-	int error;
+	npf_error_t errinfo;
+	int error = 0;
 
-	if (out) {
-		_npf_config_setsubmit(npf_conf, out);
-		printf("\nSaving to %s\n", out);
-	}
 	if (!defgroup) {
 		errx(EXIT_FAILURE, "default group was not defined");
 	}
-	npf_rule_insert(npf_conf, NULL, defgroup);
-	error = npf_config_submit(npf_conf, fd);
+	error = npf_config_submit(npf_conf, fd, &errinfo);
 	if (error == EEXIST) { /* XXX */
 		errx(EXIT_FAILURE, "(re)load failed: "
 		    "some table has a duplicate entry?");
 	}
 	if (error) {
-		nl_error_t ne;
-		_npf_config_error(npf_conf, &ne);
-		npfctl_print_error(&ne);
+		npfctl_print_error(&errinfo);
 	}
-	if (fd) {
-		npf_config_destroy(npf_conf);
-	}
+	npf_config_destroy(npf_conf);
 	return error;
+}
+
+void
+npfctl_config_save(nl_config_t *ncf, const char *outfile)
+{
+	void *blob;
+	size_t len;
+	int fd;
+
+	blob = npf_config_export(ncf, &len);
+	if (!blob)
+		err(EXIT_FAILURE, "npf_config_export");
+	if ((fd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY, 0644)) == -1)
+		err(EXIT_FAILURE, "could not open %s", outfile);
+	if (write(fd, blob, len) != (ssize_t)len) {
+		err(EXIT_FAILURE, "write to %s failed", outfile);
+	}
+	free(blob);
+	close(fd);
+}
+
+void
+npfctl_config_debug(const char *outfile)
+{
+	printf("\nConfiguration:\n\n");
+	_npf_config_dump(npf_conf, STDOUT_FILENO);
+
+	printf("\nSaving binary to %s\n", outfile);
+	npfctl_config_save(npf_conf, outfile);
+	npf_config_destroy(npf_conf);
 }
 
 nl_config_t *
@@ -249,7 +269,7 @@ npfctl_build_vars(npf_bpf_t *ctx, sa_family_t family, npfvar_t *vars, int opts)
 			assert(false);
 		}
 	}
-	npfctl_bpf_endgroup(ctx);
+	npfctl_bpf_endgroup(ctx, (opts & MATCH_INVERT) != 0);
 }
 
 static void
@@ -302,6 +322,7 @@ npfctl_build_code(nl_rule_t *rl, sa_family_t family, const opt_proto_t *op,
 	const addr_port_t *apto = &fopts->fo_to;
 	const int proto = op->op_proto;
 	npf_bpf_t *bc;
+	unsigned opts;
 	size_t len;
 
 	/* If none specified, then no byte-code. */
@@ -346,8 +367,10 @@ npfctl_build_code(nl_rule_t *rl, sa_family_t family, const opt_proto_t *op,
 	}
 
 	/* Build IP address blocks. */
-	npfctl_build_vars(bc, family, apfrom->ap_netaddr, MATCH_SRC);
-	npfctl_build_vars(bc, family, apto->ap_netaddr, MATCH_DST);
+	opts = MATCH_SRC | (fopts->fo_finvert ? MATCH_INVERT : 0);
+	npfctl_build_vars(bc, family, apfrom->ap_netaddr, opts);
+	opts = MATCH_DST | (fopts->fo_tinvert ? MATCH_INVERT : 0);
+	npfctl_build_vars(bc, family, apto->ap_netaddr, opts);
 
 	/* Build port-range blocks. */
 	if (need_tcpudp) {
@@ -355,7 +378,7 @@ npfctl_build_code(nl_rule_t *rl, sa_family_t family, const opt_proto_t *op,
 		npfctl_bpf_group(bc);
 		npfctl_bpf_proto(bc, AF_UNSPEC, IPPROTO_TCP);
 		npfctl_bpf_proto(bc, AF_UNSPEC, IPPROTO_UDP);
-		npfctl_bpf_endgroup(bc);
+		npfctl_bpf_endgroup(bc, false);
 	}
 	npfctl_build_vars(bc, family, apfrom->ap_portrange, MATCH_SRC);
 	npfctl_build_vars(bc, family, apto->ap_portrange, MATCH_DST);
@@ -451,12 +474,12 @@ npfctl_build_rproc(const char *name, npfvar_t *procs)
 	if (rp == NULL) {
 		errx(EXIT_FAILURE, "%s failed", __func__);
 	}
-	npf_rproc_insert(npf_conf, rp);
 
 	for (i = 0; i < npfvar_get_count(procs); i++) {
 		proc_call_t *pc = npfvar_get_data(procs, NPFVAR_PROC, i);
 		npfctl_build_rpcall(rp, pc->pc_name, pc->pc_opts);
 	}
+	npf_rproc_insert(npf_conf, rp);
 }
 
 void
@@ -470,14 +493,14 @@ npfctl_build_maprset(const char *name, int attr, const char *ifname)
 		attr |= attr_di;
 	}
 	/* Allow only "in/out" attributes. */
-	attr = NPF_RULE_GROUP | NPF_RULE_GROUP | (attr & attr_di);
+	attr = NPF_RULE_GROUP | NPF_RULE_DYNAMIC | (attr & attr_di);
 	rl = npf_rule_create(name, attr, ifname);
 	npf_nat_insert(npf_conf, rl, NPF_PRI_LAST);
 }
 
 /*
- * npfctl_build_group: create a group, insert into the global ruleset,
- * update the current group pointer and increase the nesting level.
+ * npfctl_build_group: create a group, update the current group pointer
+ * and increase the nesting level.
  */
 void
 npfctl_build_group(const char *name, int attr, const char *ifname, bool def)
@@ -498,10 +521,7 @@ npfctl_build_group(const char *name, int attr, const char *ifname, bool def)
 		if (rule_nesting_level) {
 			yyerror("default group can only be at the top level");
 		}
-		defgroup = rl;
-	} else {
-		nl_rule_t *cg = current_group[rule_nesting_level];
-		npf_rule_insert(npf_conf, cg, rl);
+		defgroup = true;
 	}
 
 	/* Set the current group and increase the nesting level. */
@@ -514,8 +534,15 @@ npfctl_build_group(const char *name, int attr, const char *ifname, bool def)
 void
 npfctl_build_group_end(void)
 {
+	nl_rule_t *parent, *group;
+
 	assert(rule_nesting_level > 0);
+	parent = current_group[rule_nesting_level - 1];
+	group = current_group[rule_nesting_level];
 	current_group[rule_nesting_level--] = NULL;
+
+	/* Note: if the parent is NULL, then it is a global rule. */
+	npf_rule_insert(npf_conf, parent, group);
 }
 
 /*
@@ -563,25 +590,32 @@ npfctl_build_rule(uint32_t attr, const char *ifname, sa_family_t family,
  */
 static nl_nat_t *
 npfctl_build_nat(int type, const char *ifname, const addr_port_t *ap,
-    const filt_opts_t *fopts, u_int flags)
+    const opt_proto_t *op, const filt_opts_t *fopts, u_int flags)
 {
-	const opt_proto_t op = { .op_proto = -1, .op_opts = NULL };
+	const opt_proto_t def_op = { .op_proto = -1, .op_opts = NULL };
 	fam_addr_mask_t *am = npfctl_get_singlefam(ap->ap_netaddr);
 	in_port_t port;
 	nl_nat_t *nat;
 
 	if (ap->ap_portrange) {
+		/*
+		 * The port forwarding case.  In such case, there has to
+		 * be a single port used for translation; we keep the port
+		 * translation on, but disable the port map.
+		 */
 		port = npfctl_get_singleport(ap->ap_portrange);
 		flags &= ~NPF_NAT_PORTMAP;
 		flags |= NPF_NAT_PORTS;
 	} else {
 		port = 0;
 	}
+	if (!op) {
+		op = &def_op;
+	}
 
 	nat = npf_nat_create(type, flags, ifname, am->fam_family,
 	    &am->fam_addr, am->fam_mask, port);
-	npfctl_build_code(nat, am->fam_family, &op, fopts);
-	npf_nat_insert(npf_conf, nat, NPF_PRI_LAST);
+	npfctl_build_code(nat, am->fam_family, op, fopts);
 	return nat;
 }
 
@@ -589,8 +623,8 @@ npfctl_build_nat(int type, const char *ifname, const addr_port_t *ap,
  * npfctl_build_natseg: validate and create NAT policies.
  */
 void
-npfctl_build_natseg(int sd, int type, const char *ifname,
-    const addr_port_t *ap1, const addr_port_t *ap2,
+npfctl_build_natseg(int sd, int type, unsigned mflags, const char *ifname,
+    const addr_port_t *ap1, const addr_port_t *ap2, const opt_proto_t *op,
     const filt_opts_t *fopts, u_int algo)
 {
 	fam_addr_mask_t *am1 = NULL, *am2 = NULL;
@@ -622,6 +656,13 @@ npfctl_build_natseg(int sd, int type, const char *ifname,
 		break;
 	default:
 		abort();
+	}
+
+	/*
+	 * Apply the flag modifications.
+	 */
+	if (mflags & NPF_NAT_PORTS) {
+		flags &= ~(NPF_NAT_PORTS | NPF_NAT_PORTMAP);
 	}
 
 	/*
@@ -669,17 +710,24 @@ npfctl_build_natseg(int sd, int type, const char *ifname,
 	if (type & NPF_NATIN) {
 		memset(&imfopts, 0, sizeof(filt_opts_t));
 		memcpy(&imfopts.fo_to, ap2, sizeof(addr_port_t));
-		nt1 = npfctl_build_nat(NPF_NATIN, ifname, ap1, fopts, flags);
+		nt1 = npfctl_build_nat(NPF_NATIN, ifname, ap1, op, fopts, flags);
 	}
 	if (type & NPF_NATOUT) {
 		memset(&imfopts, 0, sizeof(filt_opts_t));
 		memcpy(&imfopts.fo_from, ap1, sizeof(addr_port_t));
-		nt2 = npfctl_build_nat(NPF_NATOUT, ifname, ap2, fopts, flags);
+		nt2 = npfctl_build_nat(NPF_NATOUT, ifname, ap2, op, fopts, flags);
 	}
 
 	if (algo == NPF_ALGO_NPT66) {
 		npf_nat_setnpt66(nt1, ~adj);
 		npf_nat_setnpt66(nt2, adj);
+	}
+
+	if (nt1) {
+		npf_nat_insert(npf_conf, nt1, NPF_PRI_LAST);
+	}
+	if (nt2) {
+		npf_nat_insert(npf_conf, nt2, NPF_PRI_LAST);
 	}
 }
 
@@ -689,15 +737,11 @@ npfctl_build_natseg(int sd, int type, const char *ifname,
 static void
 npfctl_fill_table(nl_table_t *tl, u_int type, const char *fname)
 {
-	struct cdbw *cdbw = NULL;	/* XXX: gcc */
 	char *buf = NULL;
 	int l = 0;
 	FILE *fp;
 	size_t n;
 
-	if (type == NPF_TABLE_CDB && (cdbw = cdbw_open()) == NULL) {
-		err(EXIT_FAILURE, "cdbw_open");
-	}
 	fp = fopen(fname, "r");
 	if (fp == NULL) {
 		err(EXIT_FAILURE, "open '%s'", fname);
@@ -719,51 +763,10 @@ npfctl_fill_table(nl_table_t *tl, u_int type, const char *fname)
 			    "non-tree table", fname, l);
 		}
 
-		/*
-		 * Create and add a table entry.
-		 */
-		if (type == NPF_TABLE_CDB) {
-			const npf_addr_t *addr = &fam.fam_addr;
-			if (cdbw_put(cdbw, addr, alen, addr, alen) == -1) {
-				err(EXIT_FAILURE, "cdbw_put");
-			}
-		} else {
-			npf_table_add_entry(tl, fam.fam_family,
-			    &fam.fam_addr, fam.fam_mask);
-		}
+		npf_table_add_entry(tl, fam.fam_family,
+		    &fam.fam_addr, fam.fam_mask);
 	}
-	if (buf != NULL) {
-		free(buf);
-	}
-
-	if (type == NPF_TABLE_CDB) {
-		struct stat sb;
-		char sfn[32];
-		void *cdb;
-		int fd;
-
-		strlcpy(sfn, "/tmp/npfcdb.XXXXXX", sizeof(sfn));
-		if ((fd = mkstemp(sfn)) == -1) {
-			err(EXIT_FAILURE, "mkstemp");
-		}
-		unlink(sfn);
-
-		if (cdbw_output(cdbw, fd, "npf-table-cdb", NULL) == -1) {
-			err(EXIT_FAILURE, "cdbw_output");
-		}
-		cdbw_close(cdbw);
-
-		if (fstat(fd, &sb) == -1) {
-			err(EXIT_FAILURE, "fstat");
-		}
-		if ((cdb = mmap(NULL, sb.st_size, PROT_READ,
-		    MAP_FILE | MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
-			err(EXIT_FAILURE, "mmap");
-		}
-		npf_table_setdata(tl, cdb, sb.st_size);
-
-		close(fd);
-	}
+	free(buf);
 }
 
 /*
@@ -773,21 +776,38 @@ npfctl_fill_table(nl_table_t *tl, u_int type, const char *fname)
 void
 npfctl_build_table(const char *tname, u_int type, const char *fname)
 {
-	static unsigned tid = 0;
 	nl_table_t *tl;
 
-	tl = npf_table_create(tname, tid++, type);
+	tl = npf_table_create(tname, npfctl_tid_counter++, type);
 	assert(tl != NULL);
-
-	if (npf_table_insert(npf_conf, tl)) {
-		yyerror("table '%s' is already defined", tname);
-	}
 
 	if (fname) {
 		npfctl_fill_table(tl, type, fname);
 	} else if (type == NPF_TABLE_CDB) {
 		errx(EXIT_FAILURE, "tables of cdb type must be static");
 	}
+
+	if (npf_table_insert(npf_conf, tl)) {
+		yyerror("table '%s' is already defined", tname);
+	}
+}
+
+npfvar_t *
+npfctl_ifnet_table(const char *ifname)
+{
+	char tname[NPF_TABLE_MAXNAMELEN];
+	nl_table_t *tl;
+	u_int tid;
+
+	snprintf(tname, sizeof(tname), ".ifnet-%s", ifname);
+
+	tid = npfctl_table_getid(tname);
+	if (tid == (unsigned)-1) {
+		tid = npfctl_tid_counter++;
+		tl = npf_table_create(tname, tid, NPF_TABLE_TREE);
+		(void)npf_table_insert(npf_conf, tl);
+	}
+	return npfvar_create_element(NPFVAR_TABLE, &tid, sizeof(u_int));
 }
 
 /*
