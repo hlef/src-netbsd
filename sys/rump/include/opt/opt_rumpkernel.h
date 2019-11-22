@@ -10,6 +10,8 @@
 #define MODULAR 1
 #define MULTIPROCESSOR 1
 #define MAXUSERS 32
+#define OPEN_MAX 384
+#define SEM_NSEMS_MAX 384
 
 #define DEBUGPRINT
 
