@@ -87,7 +87,11 @@ MODULE(MODULE_CLASS_MISC, ksem, NULL);
 
 #define	SEM_MAX_NAMELEN		NAME_MAX
 
+# https://muc.lists.netbsd.bugs.narkive.com/2z13sHNT/kern-53998-sem-init-fails-with-error-1
+# allow increase of SEM_NSEMS_MAX (incorrect error reported, see above)
+#ifndef SEM_NSEMS_MAX
 #define	SEM_NSEMS_MAX		256
+#endif
 #define	KS_UNLINKED		0x01
 
 static kmutex_t		ksem_lock	__cacheline_aligned;
