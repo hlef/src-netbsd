@@ -191,7 +191,7 @@ _bus_dmamap_load_buffer(bus_dma_tag_t t, bus_dmamap_t map,
 		sgsize = PAGE_SIZE - ((u_long)vaddr & PGOFSET);
 		if (buflen < sgsize)
 			sgsize = buflen;
-		sgsize = min(sgsize, map->dm_maxsegsz);
+		sgsize = uimin(sgsize, map->dm_maxsegsz);
 
 		/*
 		 * Make sure we don't cross any boundaries.
