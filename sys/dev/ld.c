@@ -658,41 +658,41 @@ lddiscard(dev_t dev, off_t pos, off_t len)
 	return dk_discard(dksc, dev, pos, len);
 }
 
-MODULE(MODULE_CLASS_DRIVER, ld, "dk_subr");
-
-#ifdef _MODULE
-CFDRIVER_DECL(ld, DV_DISK, NULL);
-#endif
-
-static int
-ld_modcmd(modcmd_t cmd, void *opaque)
-{
-#ifdef _MODULE
-	devmajor_t bmajor, cmajor;
-#endif
-	int error = 0;
-
-#ifdef _MODULE
-	switch (cmd) {
-	case MODULE_CMD_INIT:
-		bmajor = cmajor = -1;
-		error = devsw_attach(ld_cd.cd_name, &ld_bdevsw, &bmajor,
-		    &ld_cdevsw, &cmajor);
-		if (error)
-			break;
-		error = config_cfdriver_attach(&ld_cd);
-		break;
-	case MODULE_CMD_FINI:
-		error = config_cfdriver_detach(&ld_cd);
-		if (error)
-			break;
-		devsw_detach(&ld_bdevsw, &ld_cdevsw);
-		break;
-	default:
-		error = ENOTTY;
-		break;
-	}
-#endif
-
-	return error;
-}
+//MODULE(MODULE_CLASS_DRIVER, ld, "dk_subr");
+//
+//#ifdef _MODULE
+//CFDRIVER_DECL(ld, DV_DISK, NULL);
+//#endif
+//
+//static int
+//ld_modcmd(modcmd_t cmd, void *opaque)
+//{
+//#ifdef _MODULE
+//	devmajor_t bmajor, cmajor;
+//#endif
+//	int error = 0;
+//
+//#ifdef _MODULE
+//	switch (cmd) {
+//	case MODULE_CMD_INIT:
+//		bmajor = cmajor = -1;
+//		error = devsw_attach(ld_cd.cd_name, &ld_bdevsw, &bmajor,
+//		    &ld_cdevsw, &cmajor);
+//		if (error)
+//			break;
+//		error = config_cfdriver_attach(&ld_cd);
+//		break;
+//	case MODULE_CMD_FINI:
+//		error = config_cfdriver_detach(&ld_cd);
+//		if (error)
+//			break;
+//		devsw_detach(&ld_bdevsw, &ld_cdevsw);
+//		break;
+//	default:
+//		error = ENOTTY;
+//		break;
+//	}
+//#endif
+//
+//	return error;
+//}

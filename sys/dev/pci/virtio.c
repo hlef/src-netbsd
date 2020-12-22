@@ -942,32 +942,32 @@ virtiobusprint(void *aux, const char *pnp)
 	return UNCONF;
 }
 
-MODULE(MODULE_CLASS_DRIVER, virtio, NULL);
- 
-#ifdef _MODULE
-#include "ioconf.c"
-#endif
- 
-static int
-virtio_modcmd(modcmd_t cmd, void *opaque)
-{
-	int error = 0;
- 
-#ifdef _MODULE
-	switch (cmd) {
-	case MODULE_CMD_INIT:
-		error = config_init_component(cfdriver_ioconf_virtio, 
-		    cfattach_ioconf_virtio, cfdata_ioconf_virtio); 
-		break;
-	case MODULE_CMD_FINI:
-		error = config_fini_component(cfdriver_ioconf_virtio, 
-		    cfattach_ioconf_virtio, cfdata_ioconf_virtio);
-		break;
-	default:
-		error = ENOTTY;
-		break;
-	}
-#endif
- 
-	return error; 
-}
+//MODULE(MODULE_CLASS_DRIVER, virtio, NULL);
+// 
+//#ifdef _MODULE
+//#include "ioconf.c"
+//#endif
+// 
+//static int
+//virtio_modcmd(modcmd_t cmd, void *opaque)
+//{
+//	int error = 0;
+// 
+//#ifdef _MODULE
+//	switch (cmd) {
+//	case MODULE_CMD_INIT:
+//		error = config_init_component(cfdriver_ioconf_virtio, 
+//		    cfattach_ioconf_virtio, cfdata_ioconf_virtio); 
+//		break;
+//	case MODULE_CMD_FINI:
+//		error = config_fini_component(cfdriver_ioconf_virtio, 
+//		    cfattach_ioconf_virtio, cfdata_ioconf_virtio);
+//		break;
+//	default:
+//		error = ENOTTY;
+//		break;
+//	}
+//#endif
+// 
+//	return error; 
+//}

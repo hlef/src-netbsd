@@ -1597,32 +1597,32 @@ vioif_ctl_softint(void *arg)
 	vioif_start(ifp);
 }
 
-MODULE(MODULE_CLASS_DRIVER, if_vioif, "virtio");
- 
-#ifdef _MODULE
-#include "ioconf.c"
-#endif
- 
-static int 
-if_vioif_modcmd(modcmd_t cmd, void *opaque)
-{
-	int error = 0;
- 
-#ifdef _MODULE
-	switch (cmd) {
-	case MODULE_CMD_INIT:
-		error = config_init_component(cfdriver_ioconf_if_vioif, 
-		    cfattach_ioconf_if_vioif, cfdata_ioconf_if_vioif); 
-		break;
-	case MODULE_CMD_FINI:
-		error = config_fini_component(cfdriver_ioconf_if_vioif,
-		    cfattach_ioconf_if_vioif, cfdata_ioconf_if_vioif);
-		break;
-	default:
-		error = ENOTTY;
-		break; 
-	}
-#endif
-   
-	return error;
-}
+//MODULE(MODULE_CLASS_DRIVER, if_vioif, "virtio");
+// 
+//#ifdef _MODULE
+//#include "ioconf.c"
+//#endif
+// 
+//static int 
+//if_vioif_modcmd(modcmd_t cmd, void *opaque)
+//{
+//	int error = 0;
+// 
+//#ifdef _MODULE
+//	switch (cmd) {
+//	case MODULE_CMD_INIT:
+//		error = config_init_component(cfdriver_ioconf_if_vioif, 
+//		    cfattach_ioconf_if_vioif, cfdata_ioconf_if_vioif); 
+//		break;
+//	case MODULE_CMD_FINI:
+//		error = config_fini_component(cfdriver_ioconf_if_vioif,
+//		    cfattach_ioconf_if_vioif, cfdata_ioconf_if_vioif);
+//		break;
+//	default:
+//		error = ENOTTY;
+//		break; 
+//	}
+//#endif
+//   
+//	return error;
+//}

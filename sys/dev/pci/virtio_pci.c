@@ -729,33 +729,33 @@ virtio_pci_msix_config_intr(void *arg)
 	return r;
 }
 
-MODULE(MODULE_CLASS_DRIVER, virtio_pci, "pci,virtio");
-
-#ifdef _MODULE
-#include "ioconf.c"
-#endif
-
-static int
-virtio_pci_modcmd(modcmd_t cmd, void *opaque)
-{
-	int error = 0;
-
-#ifdef _MODULE
-	switch (cmd) {
-	case MODULE_CMD_INIT:
-		error = config_init_component(cfdriver_ioconf_virtio_pci,
-		    cfattach_ioconf_virtio_pci, cfdata_ioconf_virtio_pci);
-		break;
-	case MODULE_CMD_FINI:
-		error = config_fini_component(cfdriver_ioconf_virtio_pci,
-		    cfattach_ioconf_virtio_pci, cfdata_ioconf_virtio_pci);
-		break;
-	default:
-		error = ENOTTY;
-		break;
-	}
-#endif
-
-	return error;
-}
+//MODULE(MODULE_CLASS_DRIVER, virtio_pci, "pci,virtio");
+//
+//#ifdef _MODULE
+//#include "ioconf.c"
+//#endif
+//
+//static int
+//virtio_pci_modcmd(modcmd_t cmd, void *opaque)
+//{
+//	int error = 0;
+//
+//#ifdef _MODULE
+//	switch (cmd) {
+//	case MODULE_CMD_INIT:
+//		error = config_init_component(cfdriver_ioconf_virtio_pci,
+//		    cfattach_ioconf_virtio_pci, cfdata_ioconf_virtio_pci);
+//		break;
+//	case MODULE_CMD_FINI:
+//		error = config_fini_component(cfdriver_ioconf_virtio_pci,
+//		    cfattach_ioconf_virtio_pci, cfdata_ioconf_virtio_pci);
+//		break;
+//	default:
+//		error = ENOTTY;
+//		break;
+//	}
+//#endif
+//
+//	return error;
+//}
 

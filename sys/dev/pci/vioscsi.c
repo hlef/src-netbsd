@@ -683,32 +683,32 @@ vioscsi_free_reqs(struct vioscsi_softc *sc, struct virtio_softc *vsc)
 	bus_dmamem_free(virtio_dmat(vsc), &sc->sc_reqs_segs[0], 1);
 }
 
-MODULE(MODULE_CLASS_DRIVER, vioscsi, "virtio");
-
-#ifdef _MODULE
-#include "ioconf.c"
-#endif
-
-static int
-vioscsi_modcmd(modcmd_t cmd, void *opaque)
-{
-        int error = 0;
-
-#ifdef _MODULE
-        switch (cmd) {
-        case MODULE_CMD_INIT:
-                error = config_init_component(cfdriver_ioconf_vioscsi,
-                    cfattach_ioconf_vioscsi, cfdata_ioconf_vioscsi);
-                break;
-        case MODULE_CMD_FINI:
-                error = config_fini_component(cfdriver_ioconf_vioscsi,
-                    cfattach_ioconf_vioscsi, cfdata_ioconf_vioscsi);
-                break;
-        default:
-                error = ENOTTY;
-                break;
-        }
-#endif
-
-        return error;
-}
+//MODULE(MODULE_CLASS_DRIVER, vioscsi, "virtio");
+//
+//#ifdef _MODULE
+//#include "ioconf.c"
+//#endif
+//
+//static int
+//vioscsi_modcmd(modcmd_t cmd, void *opaque)
+//{
+//        int error = 0;
+//
+//#ifdef _MODULE
+//        switch (cmd) {
+//        case MODULE_CMD_INIT:
+//                error = config_init_component(cfdriver_ioconf_vioscsi,
+//                    cfattach_ioconf_vioscsi, cfdata_ioconf_vioscsi);
+//                break;
+//        case MODULE_CMD_FINI:
+//                error = config_fini_component(cfdriver_ioconf_vioscsi,
+//                    cfattach_ioconf_vioscsi, cfdata_ioconf_vioscsi);
+//                break;
+//        default:
+//                error = ENOTTY;
+//                break;
+//        }
+//#endif
+//
+//        return error;
+//}
