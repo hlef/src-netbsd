@@ -10,8 +10,8 @@ RUMPUSBDEVS=	ualea ubt ucom ugenhc ulpt umass usb
 RUMPPCIDEVS=	pci pci_if_iwn pci_if_pcn pci_if_wm
 RUMPPCIDEVS+=	pci_usbhc
 RUMPPCIDEVS+=	pci_virtio virtio_if_vioif virtio_ld virtio_viornd
-RUMPPCIDEVS+=	virtio_vioscsi 
-##RUMPPCIDEVS+=	virtio_vioscsi virtio_accel
+##RUMPPCIDEVS+=	virtio_vioscsi
+RUMPPCIDEVS+=	virtio_vioscsi virtio_vaccel
 RUMPPCIDEVS+=	audio_ac97 pci_auich pci_eap pci_hdaudio hdaudio_hdafg
 # Not really a PCI device, but ....
 RUMPPCIDEVS+=	miiphy

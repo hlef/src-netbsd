@@ -23,3 +23,7 @@ device	vioscsi: scsi
 attach	vioscsi at virtio
 file	dev/pci/vioscsi.c	vioscsi
 
+device	vaccel
+attach	vaccel at virtio
+file	dev/pci/vaccel/virtio_accel-core.c	vaccel
+
