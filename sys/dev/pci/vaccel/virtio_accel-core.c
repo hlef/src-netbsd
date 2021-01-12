@@ -8,20 +8,34 @@
 #include <dev/pci/virtioreg.h>
 #include <dev/pci/virtiovar.h>
 
+#include <sys/proc.h>
+#include <sys/conf.h>
+
+#include <sys/types.h>
+#include <sys/filedesc.h>
+#include <sys/kmem.h>
+
+//dev_type_open(vacceloopen);
+//dev_type_close(vaccelclose);
+//dev_type_ioctl(vaccelioctl);
+
 #include "virtio_accel.h"
 #include "virtio_accel-common.h"
 
-struct vaccel_softc {
-	device_t		sc_dev;
-	struct virtio_softc	*sc_virtio;
-	struct virtqueue	sc_vq;
-	struct virtio_accel	vaccel;
+const struct cdevsw vaccel_cdevsw = {
+        .d_open = vaccelopen,
+	.d_close = vaccelclose,
+        .d_ioctl = vaccelioctl,
 
-	kmutex_t		sc_mutex;
-	bool			sc_active;
-
-	void			*sc_buf;
-	bus_dmamap_t		sc_dmamap;
+	.d_write = nowrite,
+	.d_read = noread,
+	.d_stop = nostop,
+	.d_tty = notty,
+	.d_poll = nopoll,
+	.d_mmap = nommap,
+	.d_kqfilter = nokqfilter,
+	.d_discard = nodiscard,
+	.d_flag = D_OTHER
 };
 
 static int	vaccel_match(device_t, cfdata_t, void *);
@@ -31,7 +45,8 @@ static int      vaccel_config_change(struct virtio_softc *);
 static int	virtaccel_update_status(struct virtio_softc *);
 //static int	virtaccel_update_status(struct vaccel_softc *sc,
 //				   struct virtio_softc *vsc);
-int vaccel_vq_done(struct virtqueue *vq);
+int		vaccel_vq_done(struct virtqueue *vq);
+static int	vaccel_virtio_alloc_reqs(struct vaccel_softc *sc, int qsize);
 
 
 CFATTACH_DECL_NEW(vaccel, sizeof(struct vaccel_softc),
@@ -42,9 +57,11 @@ static void vaccel_attach(device_t parent, device_t self, void *aux)
 	//struct virtio_accel *vaccel;
 	struct vaccel_softc *sc = device_private(self);
 	struct virtio_softc *vsc = device_private(parent);
-	//int nsegs;
 	int error;
 	//uint32_t features;
+	/* dma things */
+	//bus_dma_segment_t segs[1];
+	//int nsegs;
 
 	printf("hello from attach\n");
 
@@ -53,19 +70,57 @@ static void vaccel_attach(device_t parent, device_t self, void *aux)
 	
 	sc->sc_dev = self;
 	sc->sc_virtio = vsc;
+	mutex_init(&sc->sc_mutex, MUTEX_DEFAULT, IPL_VM);
+	cv_init(&sc->sc_sync_wait, "vaccelsync");
 
+	/* dma things */
+	//error = bus_dmamem_alloc(virtio_dmat(vsc),
+	//		VIRTIO_PAGE_SIZE, 0, 0, segs, 1, &nsegs,
+	//		BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW);
+	//if (error) {
+	//	aprint_error_dev(sc->sc_dev, "can't alloc dmamem: %d\n", error);
+	//	goto alloc_failed;
+	//}
+
+	//error = bus_dmamem_map(virtio_dmat(vsc), segs, nsegs, 1024,
+	//		&sc->sc_buf, BUS_DMA_NOWAIT);
+	//if (error) {
+	//	aprint_error_dev(sc->sc_dev, "can't map dmamem: %d\n", error);
+	//	goto map_failed;
+	//}
+
+	//error = bus_dmamap_create(virtio_dmat(vsc), 1024, 1, 1024, 0,
+	//		BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW,
+	//		&sc->sc_dmamap);
+	//if (error) {
+	//	aprint_error_dev(sc->sc_dev, "can't create dmamem: %d\n", error);
+	//	goto create_failed;
+	//}
+
+	//error = bus_dmamap_load(virtio_dmat(vsc), sc->sc_dmamap,
+	//		sc->sc_buf, 1024, NULL,
+	//		BUS_DMA_NOWAIT|BUS_DMA_READ);
+	//if (error) {
+	//	aprint_error_dev(sc->sc_dev, "can't load dmamem: %d\n", error);
+	//	goto load_failed;
+	//}
+
+	/* virtio things */
 	virtio_child_attach_start(vsc, self, IPL_NET, &sc->sc_vq,
 				  vaccel_config_change, virtio_vq_intr, 0,
 				  0, VIRTIO_COMMON_FLAG_BITS);
 
 	//features = virtio_features(vsc);
 	
-	error = virtio_alloc_vq(vsc, &sc->sc_vq, 0, 1024, 1, "vaccel vq");
+	error = virtio_alloc_vq(vsc, &sc->sc_vq, 0, 1024, 1024, "vaccel vq");
 	if (error) {
 		aprint_error_dev(sc->sc_dev, "can't alloc virtqueue: %d\n",
 				error);
 		goto failed;
 	}
+
+	if (vaccel_virtio_alloc_reqs(sc, sc->sc_vq.vq_num))
+		goto failed;
 
 	sc->sc_vq.vq_done = vaccel_vq_done;
 
@@ -75,9 +130,19 @@ static void vaccel_attach(device_t parent, device_t self, void *aux)
 		virtio_free_vq(vsc, &sc->sc_vq);
 		goto failed;
 	}
+	printf("attach done\n");
 
 	return;
+
 failed:
+//	bus_dmamap_unload(virtio_dmat(vsc), sc->sc_dmamap);
+//load_failed:
+//	bus_dmamap_destroy(virtio_dmat(vsc), sc->sc_dmamap);
+//create_failed:
+//	bus_dmamem_unmap(virtio_dmat(vsc), sc->sc_buf, 1024);
+//map_failed:
+//	bus_dmamem_free(virtio_dmat(vsc), segs, nsegs);
+//alloc_failed:
 	virtio_child_attach_failed(vsc);
 	return;
 }
@@ -115,7 +180,6 @@ static int virtaccel_update_status(struct virtio_softc *vsc)
 {
 	uint32_t status;
 	struct vaccel_softc *sc = device_private(virtio_child(vsc));
-	struct virtio_accel *vaccel = &sc->vaccel;
 	//int err;
 
 	printf("config changed in vaccel\n");
@@ -130,12 +194,12 @@ static int virtaccel_update_status(struct virtio_softc *vsc)
 		return -EPERM;
 	}
 
-	if (vaccel->status == status)
+	if (sc->status == status)
 		return 0;
 
-	vaccel->status = status;
+	sc->status = status;
 
-	if (vaccel->status & VIRTIO_ACCEL_S_HW_READY) {
+	if (sc->status & VIRTIO_ACCEL_S_HW_READY) {
 		//err = virtaccel_dev_start(vaccel);
 		//if (err) {
 		//	dev_err(&vaccel->vdev->dev,
@@ -156,7 +220,348 @@ static int virtaccel_update_status(struct virtio_softc *vsc)
 
 int vaccel_vq_done(struct virtqueue *vq)
 {
-	printf("hello from virtqueu done\n");
+	struct virtio_softc *vsc = vq->vq_owner;
+	struct vaccel_softc *sc = device_private(virtio_child(vsc));
+	struct virtio_vaccel_req *vr;
+	struct virtio_accel_hdr *h;
+	int slot, len, r, ret = 0, i;
+
+	printf("hello from virtqueue done\n");
+
+	mutex_enter(&sc->sc_mutex);
+	//mutex_spin_enter(&sc->sc_mutex);
+	
+	for (;;) {
+		r = virtio_dequeue(vsc, vq, &slot, &len);
+		if (r != 0)
+			break;
+
+		printf("vaccel: Got slot %d with len %d\n", slot, len);
+
+		vr = &sc->sc_reqs[slot];
+		h = &vr->hdr;
+		bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+				0, sizeof(struct virtio_accel_hdr),
+				BUS_DMASYNC_POSTWRITE);
+		if (sc->sc_arg_out) {
+			for (i = 0; i < h->u.gen_op.out_nr; i++) {
+				bus_dmamap_sync(virtio_dmat(vsc), vr->vr_out_buf[i],
+						0, sc->sc_arg_out[i].len*sizeof(uint8_t),
+							BUS_DMASYNC_POSTWRITE);
+			}
+		}
+		if (sc->sc_arg_in) {
+			for (i = 0; i < h->u.gen_op.in_nr; i++) {
+				//printf("vr_in_buf =%s\n", vr->in_buf[i]);
+				memcpy(sc->sc_arg_in[i].buf, vr->in_buf[i],
+						sc->sc_arg_in[i].len*sizeof(uint8_t));
+				bus_dmamap_sync(virtio_dmat(vsc), vr->vr_in_buf[i],
+						0, sc->sc_arg_in[i].len*sizeof(uint8_t),
+						BUS_DMASYNC_POSTREAD);
+			}
+		}
+		bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+				offsetof(struct virtio_vaccel_req, sid), sizeof(uint32_t),
+				BUS_DMASYNC_POSTREAD);
+		bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+				offsetof(struct virtio_vaccel_req, status), sizeof(uint32_t),
+				BUS_DMASYNC_POSTREAD);
+		if (sc->sc_arg_out) {
+			for (i = 0; i < h->u.gen_op.out_nr; i++)
+				bus_dmamap_unload(virtio_dmat(vsc), vr->vr_out_buf[i]);
+		}
+		if (sc->sc_arg_in) {
+			for (i = 0; i < h->u.gen_op.in_nr; i++)
+				bus_dmamap_unload(virtio_dmat(vsc), vr->vr_in_buf[i]);
+		}
+		switch(vr->status) {
+		case VIRTIO_ACCEL_OK:
+			printf("received ok\n");
+			sc->req_status = 0;
+			break;
+		case VIRTIO_ACCEL_INVSESS:
+		case VIRTIO_ACCEL_ERR:
+			printf("received error\n");
+			//req->ret = -EINVAL;
+			break;
+		case VIRTIO_ACCEL_BADMSG:
+			printf("received badmsg\n");
+			//req->ret = -EBADMSG;
+			break;
+		default:
+			printf("received uknown\n");
+			//req->ret = -EIO;
+			break;
+		}
+
+		//vaccel_req_done(sc, vsc, &sc->sc_reqs[slot], vq, slot);
+		ret = 1;
+	} 
+	cv_signal(&sc->sc_sync_wait);
+	mutex_exit(&sc->sc_mutex);
+	//mutex_spin_exit(&sc->sc_mutex);
+
+	return ret;
+}
+
+static int vaccel_virtio_alloc_reqs(struct vaccel_softc *sc, int qsize)
+{
+	//int allocsize, r, rsegs;
+
+	int allocsize, r, rsegs, i, j;
+	void *vaddr;
+
+	printf("qsize = %d\n", qsize);
+
+	allocsize = sizeof(struct virtio_vaccel_req) * qsize;
+	r = bus_dmamem_alloc(virtio_dmat(sc->sc_virtio), allocsize, 0, 0,
+			&sc->sc_reqs_seg, 1, &rsegs, BUS_DMA_NOWAIT);
+	if (r) {
+		aprint_error_dev(sc->sc_dev,
+				"DMA memory allocation failed, size %d, "
+				"error code %d\n", allocsize, r);
+		goto err_none;
+	}
+	r = bus_dmamem_map(virtio_dmat(sc->sc_virtio),
+			&sc->sc_reqs_seg, 1, allocsize,
+			&vaddr, BUS_DMA_NOWAIT);
+	if (r) {
+		aprint_error_dev(sc->sc_dev,
+				"DMA memory map failed, "
+				"error code %d\n", r);
+		goto err_dmamem_alloc;
+	}
+	sc->sc_reqs = vaddr;
+	memset(vaddr, 0, allocsize);
+	sc->sc_reqs->hdr.op = 1;
+
+	for (i = 0; i < qsize; i++) {
+		struct virtio_vaccel_req *vr = &sc->sc_reqs[i];
+		r = bus_dmamap_create(virtio_dmat(sc->sc_virtio),
+				offsetof(struct virtio_vaccel_req, out_buf),
+				1,
+				offsetof(struct virtio_vaccel_req, out_buf),
+				0,
+				BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW,
+				&vr->vr_cmds);
+		if (r) {
+			aprint_error_dev(sc->sc_dev,
+					"command dmamap creation failed, "
+					"error code %d\n", r);
+			goto err_reqs;
+		}
+		r = bus_dmamap_load(virtio_dmat(sc->sc_virtio), vr->vr_cmds,
+				&vr->hdr,
+				offsetof(struct virtio_vaccel_req, out_buf),
+				NULL, BUS_DMA_NOWAIT);
+		if (r) {
+			aprint_error_dev(sc->sc_dev,
+					"command dmamap load failed, "
+					"error code %d\n", r);
+			goto err_reqs;
+		}
+		for (j=0; j< 5; j++) {
+			r = bus_dmamap_create(virtio_dmat(sc->sc_virtio),
+					100*VIRTIO_PAGE_SIZE,
+					1,
+					100*VIRTIO_PAGE_SIZE,
+					0,
+					BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW,
+					&vr->vr_out_buf[j]);
+			if (r) {
+				aprint_error_dev(sc->sc_dev,
+						"command dmamap creation failed, "
+						"error code %d\n", r);
+				goto err_reqs;
+			}
+			r = bus_dmamap_create(virtio_dmat(sc->sc_virtio),
+					VIRTIO_PAGE_SIZE,
+					10,
+					VIRTIO_PAGE_SIZE,
+					0,
+					BUS_DMA_NOWAIT|BUS_DMA_ALLOCNOW,
+					&vr->vr_in_buf[j]);
+			if (r) {
+				aprint_error_dev(sc->sc_dev,
+						"command dmamap creation failed, "
+						"error code %d\n", r);
+				goto err_reqs;
+			}
+		}
+	}
+
+	if (sc->sc_reqs == NULL)
+		printf("apo edw einai null\n");
+	else
+		printf("edw pantws den einai null\n");
+
+	return 0;
+err_reqs:
+	for (i = 0; i < qsize; i++) {
+		struct virtio_vaccel_req *vr = &sc->sc_reqs[i];
+		if (vr->vr_cmds) {
+			bus_dmamap_destroy(virtio_dmat(sc->sc_virtio),
+					   vr->vr_cmds);
+			vr->vr_cmds = 0;
+		}
+		if (vr->vr_out_buf) {
+			for (j=0; j< 5; j++) {
+				bus_dmamap_destroy(virtio_dmat(sc->sc_virtio),
+						   vr->vr_out_buf[j]);
+				vr->vr_out_buf[j] = 0;
+			}
+		}
+		if (vr->vr_in_buf) {
+			for (j=0; j< 5; j++) {
+				bus_dmamap_destroy(virtio_dmat(sc->sc_virtio),
+						   vr->vr_in_buf[j]);
+				vr->vr_in_buf[j] = 0;
+			}
+		}
+	}
+	bus_dmamem_unmap(virtio_dmat(sc->sc_virtio), sc->sc_reqs, allocsize);
+err_dmamem_alloc:
+	bus_dmamem_free(virtio_dmat(sc->sc_virtio), &sc->sc_reqs_seg, 1);
+err_none:
 	return 1;
+}
+
+int vaccel_send_request(struct vaccel_softc *sc, struct virtio_accel_hdr *h,
+			struct virtio_accel_req *req, int total_segs)
+{
+	struct virtio_softc *vsc = sc->sc_virtio;
+	struct virtqueue *vq = &sc->sc_vq;
+	struct virtio_vaccel_req *vr;
+	int slot;
+	int i, segs = 2;
+	int r = 0;
+	uint32_t out_len = 0, in_len = 0;
+
+	r = virtio_enqueue_prep(vsc, vq, &slot);
+	if (r)
+		return r;
+	if (sc->sc_reqs == NULL)
+		printf("aiiinnttteee\n");
+	vr = &sc->sc_reqs[slot];
+
+	for (i = 0; i < h->u.gen_op.out_nr; i++) {
+		printf("metra %d - %d - %ld\n", i, h->u.gen_op.out[i].len, vr->vr_out_buf[i]->_dm_size);
+		r = bus_dmamap_load(virtio_dmat(vsc), vr->vr_out_buf[i],
+				h->u.gen_op.out[i].buf, h->u.gen_op.out[i].len, NULL,
+				BUS_DMA_WRITE|BUS_DMA_NOWAIT);
+		if (r) {
+			aprint_error_dev(sc->sc_dev,
+					"out_buf dmamap failed, error code %d\n", r);
+			virtio_enqueue_abort(vsc, vq, slot);
+			return r;
+		}
+		vr->out_buf[i] = h->u.gen_op.out[i].buf;
+		out_len += h->u.gen_op.out[i].len;
+		segs++;
+	}
+
+	for (i = 0; i < h->u.gen_op.in_nr; i++) {
+		r = bus_dmamap_load(virtio_dmat(vsc), vr->vr_in_buf[i],
+				h->u.gen_op.in[i].buf, h->u.gen_op.in[i].len, NULL,
+				BUS_DMA_READ|BUS_DMA_NOWAIT);
+		if (r) {
+			aprint_error_dev(sc->sc_dev,
+					"in_buf dmamap failed, error code %d\n", r);
+			virtio_enqueue_abort(vsc, vq, slot);
+			return r;
+		}
+		in_len += h->u.gen_op.in[i].len;
+		vr->in_buf[i] = h->u.gen_op.in[i].buf;
+		//segs += vr->vr_out_buf->dm_nsegs;
+		segs++;
+	}
+
+	//if (h->u.gen_op.out_nr > 0) {
+	//	segs += vr->vr_out_buf->dm_nsegs;
+	//	//for (i = 0; i < h->u.gen_op.out[0].len; i++) {
+	//	//	printf("%hhx ", h->u.gen_op.out[0].buf[i]);
+	//	//	if ( i % 10 == 0)
+	//	//		printf("\n");
+	//	//}
+	//	//r = virtio_enqueue_reserve(vsc, vq, slot, vr->vr_out_buf->dm_nsegs);
+	//	//if (r) {
+	//	//	aprint_error_dev(sc->sc_dev,
+	//	//			"out_buf virtio_enqueue_reserve failed, error code %d\n", r);
+	//	//	bus_dmamap_unload(virtio_dmat(vsc), vr->vr_out_buf);
+	//	//	return r;
+	//	//}
+	//}
+	//if (h->u.gen_op.in_nr > 0) {
+	//	segs += vr->vr_in_buf->dm_nsegs;
+	//	//r = virtio_enqueue_reserve(vsc, vq, slot, vr->vr_in_buf->dm_nsegs);
+	//	//if (r) {
+	//	//	aprint_error_dev(sc->sc_dev,
+	//	//			"in_buf virtio_enqueue_reserve failed, error code %d\n", r);
+	//	//	bus_dmamap_unload(virtio_dmat(vsc), vr->vr_in_buf);
+	//	//	return r;
+	//	//}
+	//}
+
+	//r = virtio_enqueue_reserve(vsc, vq, slot, 3);
+	r = virtio_enqueue_reserve(vsc, vq, slot, total_segs);
+	if (r) {
+		aprint_error_dev(sc->sc_dev,
+				"in_buf virtio_enqueue_reserve failed, error code %d\n", r);
+		//bus_dmamap_unload(virtio_dmat(vsc), vr->vr_in_buf);
+		return r;
+	}
+
+	memcpy(&vr->hdr, h, sizeof(struct virtio_accel_hdr));
+	bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+			0, sizeof(struct virtio_accel_hdr),
+			BUS_DMASYNC_PREWRITE);
+	if (h->u.gen_op.out_nr > 0) {
+		for (i = 0; i < h->u.gen_op.out_nr; i++) {
+			bus_dmamap_sync(virtio_dmat(vsc), vr->vr_out_buf[i],
+					0, h->u.gen_op.out[i].len,
+					BUS_DMASYNC_PREWRITE);
+		}
+	}
+	if (h->u.gen_op.in_nr > 0) {
+		for (i = 0; i < h->u.gen_op.in_nr; i++) {
+			bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+					0, h->u.gen_op.in[i].len,
+					BUS_DMASYNC_PREREAD);
+		}
+	}
+	printf("total = %d, segs = %d\n", total_segs, segs);
+	if (total_segs - segs == 1)
+		bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+				offsetof(struct virtio_vaccel_req, sid), sizeof(uint32_t),
+				BUS_DMASYNC_PREREAD);
+	bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
+			offsetof(struct virtio_vaccel_req, status), sizeof(uint32_t),
+			BUS_DMASYNC_PREREAD);
+
+	virtio_enqueue_p(vsc, vq, slot, vr->vr_cmds,
+			0, sizeof(struct virtio_accel_hdr),
+			true);
+	if (h->u.gen_op.out_nr > 0) {
+		for (i = 0; i < h->u.gen_op.out_nr; i++) {
+			printf("ela out\n");
+			virtio_enqueue(vsc, vq, slot, vr->vr_out_buf[i], true);
+		}
+	}
+	if (h->u.gen_op.in_nr > 0) {
+		for (i = 0; i < h->u.gen_op.in_nr; i++) {
+			printf("ela in\n");
+			virtio_enqueue(vsc, vq, slot, vr->vr_in_buf[i], false);
+		}
+	}
+	if (total_segs - segs == 1)
+		virtio_enqueue_p(vsc, vq, slot, vr->vr_cmds,
+				offsetof(struct virtio_vaccel_req, sid), sizeof(uint32_t),
+				false);
+	virtio_enqueue_p(vsc, vq, slot, vr->vr_cmds,
+			offsetof(struct virtio_vaccel_req, status), sizeof(uint32_t),
+			false);
+	virtio_enqueue_commit(vsc, vq, slot, true);
+
+	return 0;
 }
 

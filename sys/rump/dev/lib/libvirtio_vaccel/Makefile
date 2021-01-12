@@ -9,9 +9,12 @@ LIB=	rumpdev_virtio_vaccel
 COMMENT=virtio vAccel driver
 
 IOCONF=	VIRTIO_VACCEL.ioconf
-RUMP_COMPONENT=ioconf
+##RUMP_COMPONENT=ioconf
 
+SRCS=	vaccel_at_virtio.c
+SRCS+=	accel.c
 SRCS+=	virtio_accel-core.c
+SRCS+=	virtio_accel-reqs.c
 
 CPPFLAGS+= -I${RUMPTOP}/librump/rumpkern
    

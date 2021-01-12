@@ -1432,7 +1432,7 @@ defpseudo clockctl
 
 # Accel device
 defpseudo accel
-file	dev/accel.c	accel	needs-flag
+file	dev/pci/vaccel/accel.c	accel	needs-flag
 #
 # Accept filters.  XXX should use another registration/initialization method.
 #

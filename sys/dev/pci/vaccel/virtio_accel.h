@@ -4,6 +4,8 @@
 //#include <linux/types.h>
 //#include <linux/virtio_types.h>
 
+//#include "virtio_accel-common.h"
+
 typedef uint8_t __u8;
 typedef uint16_t __u16;
 typedef uint32_t __u32;
@@ -12,10 +14,6 @@ typedef uint64_t __u64;
 typedef __u16 __virtio16;
 typedef __u32 __virtio32;
 typedef __u64 __virtio64;
-
-#ifndef __user
-#define __user 
-#endif
 
 #define VIRTIO_ID_ACCEL 21
 
@@ -28,33 +26,80 @@ typedef __u64 __virtio64;
 #define VIRTIO_ACCEL_NOTSUPP   3
 #define VIRTIO_ACCEL_INVSESS   4 /* Invalid session id */
 
-struct virtio_accel_arg {
+struct virtio_accel_crypto_sess {
+#define VIRTIO_ACCEL_C_NO_CIPHER      0
+#define VIRTIO_ACCEL_C_CIPHER_AES_ECB 1
+#define VIRTIO_ACCEL_C_CIPHER_AES_CBC 2
+#define VIRTIO_ACCEL_C_CIPHER_AES_CTR 3
+#define VIRTIO_ACCEL_C_CIPHER_AES_XTS 4
+	__virtio32 cipher;
+	__virtio32 keylen;
+	__u8 *key;
+	__u8 padding[7];
+};
+
+struct virtio_accel_crypto_op {
+	__virtio32 src_len;
+	__virtio32 dst_len;
+	__virtio32 iv_len;
+	__u8 *src;
+	__u8 *dst;
+	__u8 *iv;
+	__u8 padding;
+};
+
+struct virtio_accel_gen_op_arg {
 	__virtio32 len;
 	__u8 *buf;
-	__u8 __user *usr_buf;
+	//__u8 __user *usr_buf;
+	__u8 *usr_buf;
 	__u8 *usr_pages;
 	__virtio32 usr_npages;
 	__u8 padding[5];
 };
 
-struct virtio_accel_op {
+struct virtio_accel_gen_op {
 	__virtio32 in_nr;
 	__virtio32 out_nr;
-	struct virtio_accel_arg *in;
-	struct virtio_accel_arg *out;
+	struct virtio_accel_gen_op_arg *in;
+	struct virtio_accel_gen_op_arg *out;
 };
 
 struct virtio_accel_hdr {
-	__virtio32 id;
+	__virtio32 session_id;
 
-#define VIRTIO_ACCEL_NO_OP                   0
-#define VIRTIO_ACCEL_CREATE_SESSION          1
-#define VIRTIO_ACCEL_DESTROY_SESSION         2
-#define VIRTIO_ACCEL_DO_OP                   3
-	__virtio32 op_type;
-
+#define VIRTIO_ACCEL_NO_OP                        0
+#define VIRTIO_ACCEL_G_OP_CREATE_SESSION          1
+#define VIRTIO_ACCEL_G_OP_DESTROY_SESSION         2
+#define VIRTIO_ACCEL_G_OP_DO_OP                   3
+#define VIRTIO_ACCEL_C_OP_CIPHER_CREATE_SESSION   4
+#define VIRTIO_ACCEL_C_OP_CIPHER_DESTROY_SESSION  5
+#define VIRTIO_ACCEL_C_OP_CIPHER_ENCRYPT          6
+#define VIRTIO_ACCEL_C_OP_CIPHER_DECRYPT          7
+#define VIRTIO_ACCEL_C_OP_HASH_CREATE_SESSION     8
+#define VIRTIO_ACCEL_C_OP_MAC_CREATE_SESSION      9
+#define VIRTIO_ACCEL_C_OP_AEAD_CREATE_SESSION    10
+#define VIRTIO_ACCEL_C_OP_HASH_DESTROY_SESSION   11
+#define VIRTIO_ACCEL_C_OP_MAC_DESTROY_SESSION    12
+#define VIRTIO_ACCEL_C_OP_AEAD_DESTROY_SESSION   13
+#define VIRTIO_ACCEL_C_OP_HASH                   14
+#define VIRTIO_ACCEL_C_OP_MAC                    15
+#define VIRTIO_ACCEL_C_OP_AEAD_ENCRYPT           16
+#define VIRTIO_ACCEL_C_OP_AEAD_DECRYPT           17
+	__virtio32 op;
 	/* session create structs */
-	struct virtio_accel_op op;
+	union {
+		struct virtio_accel_crypto_sess crypto_sess;
+		struct virtio_accel_crypto_op crypto_op;
+		struct virtio_accel_gen_op gen_op;
+	} u;
+};
+
+struct virtio_accel_crypto_conf {
+    /* Maximum length of cipher key */
+    __u32 max_cipher_key_len;
+    /* Maximum length of authenticated key */
+    __u32 max_auth_key_len;
 };
 
 struct virtio_accel_conf {
@@ -63,6 +108,47 @@ struct virtio_accel_conf {
     __u32 services;
     /* Maximum size of each crypto request's content */
     __u64 max_size;
+
+    union {
+        struct virtio_accel_crypto_conf crypto;
+    } u;
+};
+
+int vaccelopen(dev_t device, int flags, int fmt, struct lwp *process);
+int vaccelclose(dev_t device, int flags, int fmt, struct lwp *process);
+int vaccelioctl(dev_t device, u_long command, void *data, int flags,
+	      struct lwp *process);
+
+struct virtio_vaccel_req {
+	struct virtio_accel_hdr	hdr;
+	uint32_t		sid;
+	uint32_t		status;
+	uint8_t			*out_buf[5];
+	uint8_t			*in_buf[5];
+
+	bus_dmamap_t		vr_cmds;
+	bus_dmamap_t		vr_hdr;
+	bus_dmamap_t		vr_out_buf[5];
+	bus_dmamap_t		vr_in_buf[5];
+	bus_dmamap_t		vr_sid;
+	bus_dmamap_t		vr_status;
+};
+		
+struct vaccel_softc {
+	device_t		sc_dev;
+	struct virtio_softc	*sc_virtio;
+	struct virtqueue	sc_vq;
+
+	kmutex_t		sc_mutex;
+	kcondvar_t		sc_sync_wait;
+	struct virtio_vaccel_req *sc_reqs;
+	bus_dma_segment_t	sc_reqs_seg;
+	//bool			sc_inuse;
+	struct virtio_accel_gen_op_arg	*sc_arg_in;
+	struct virtio_accel_gen_op_arg	*sc_arg_out;
+	unsigned long		req_status;
+	unsigned long		status;
+	//bool			sc_active;
 };
 
 #endif /* _VIRTIO_ACCEL_H */
