@@ -90,6 +90,8 @@ void virtaccel_handle_req_result(struct virtio_accel_req *req)
 			memcpy(h->u.gen_op.in[i].usr_buf, sc->sc_arg_in[i].buf, sc->sc_arg_in[i].len);
 		}
 		break;
+	case VIRTIO_ACCEL_G_OP_DESTROY_SESSION:
+		break;
 	default:
 		printf("hadle req: invalid op returned\n");
 	}
@@ -191,6 +193,23 @@ free_in:
 free:
 	if (g_arg)
 		kmem_free(g_arg, sizeof(*g_arg));
+	return ret;
+}
+
+int virtaccel_req_gen_destroy_session(struct virtio_accel_req *req)
+{
+	struct vaccel_softc *vaccel_sc = req->vaccel;
+	struct virtio_accel_hdr *h = &req->hdr;
+	struct accel_session *sess = req->priv;
+	int ret = 0, total_sgs = 2;
+
+	printf("total_sgs = %d ----\n", total_sgs);
+	h->op = VIRTIO_ACCEL_G_OP_DESTROY_SESSION;
+	h->session_id = sess->id;
+	vaccel_sc->sc_arg_in = NULL;
+	vaccel_sc->sc_arg_out = NULL;
+
+	ret = vaccel_send_request(vaccel_sc, h, req, total_sgs);
 	return ret;
 }
 

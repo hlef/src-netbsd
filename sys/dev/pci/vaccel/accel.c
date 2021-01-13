@@ -111,8 +111,8 @@ int vaccelioctl(dev_t device, u_long command, void *data, int flags,
 
 		if (command == ACCIOC_GEN_SESS_CREATE)
 			ret = virtaccel_req_gen_create_session(req);
-		//else
-		//	ret = virtaccel_req_gen_destroy_session(req);
+		else
+			ret = virtaccel_req_gen_destroy_session(req);
 
 		if (ret) {
 			ret = -EFAULT;

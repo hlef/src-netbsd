@@ -1,5 +1,0 @@
-ioconf accel
-
-include "conf/files"
-
-pseudo-device	accel
