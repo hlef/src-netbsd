@@ -54,7 +54,7 @@ int vaccelopen(dev_t device, int flags, int fmt, struct lwp *process)
 	//	return -ENODEV;
 
 
-	printf("Accel opened\n");
+	printf("vAccel: Accel opened\n");
 	return ret;
 }
 
@@ -63,7 +63,7 @@ int vaccelopen(dev_t device, int flags, int fmt, struct lwp *process)
  */
 int vaccelclose(dev_t device, int flags, int fmt, struct lwp *process)
 {
-	printf("Accel closed\n");
+	printf("vAccel: Accel closed\n");
 	return 0; /*this always succeeds */
 }
 
@@ -83,15 +83,12 @@ int vaccelioctl(dev_t device, u_long command, void *data, int flags,
 	switch (command) {
 	case ACCIOC_CRYPTO_SESS_CREATE:
 	case ACCIOC_CRYPTO_SESS_DESTROY:
-		printf("prwto\n");
 		break;
 	case ACCIOC_CRYPTO_ENCRYPT:
 	case ACCIOC_CRYPTO_DECRYPT:
-		printf("deutero\n");
 		break;
 	case ACCIOC_GEN_SESS_CREATE:
 	case ACCIOC_GEN_SESS_DESTROY:
-		printf("trito\n");
 		req = kmem_zalloc(sizeof(struct virtio_accel_req), KM_SLEEP);
 		if (!req) {
 			ret = -ENOMEM;
@@ -120,7 +117,6 @@ int vaccelioctl(dev_t device, u_long command, void *data, int flags,
 		}
 		break;
 	case ACCIOC_GEN_DO_OP:
-		printf("tetarto\n");
 		req = kmem_zalloc(sizeof(*req), KM_SLEEP);
 		if (!req) {
 			ret = -ENOMEM;
@@ -138,26 +134,24 @@ int vaccelioctl(dev_t device, u_long command, void *data, int flags,
 		req->priv = op;
 		req->vaccel = sc;
 		
-		printf("hoola-hoop ho %p\n", op->u.gen.in[0].buf);
-		printf("hoola-hoop ho %p\n", op->u.gen.in[1].buf);
 		ret = virtaccel_req_gen_operation(req);
 		if (ret != 0)
 			goto err_mem_req;
 
 		break;
 	default:
-		printf("Invalid IOCTL\n\n");
+		printf("vAccel: Invalid IOCTL\n\n");
 		ret = -EFAULT;
 	}
 
-	printf("Waiting for request to complete\n");
+	printf("vAccel: Waiting for request to complete\n");
 	mutex_enter(&sc->sc_mutex);
 	cv_wait(&sc->sc_sync_wait, &sc->sc_mutex);
 	req->status = sc->req_status;
 	mutex_exit(&sc->sc_mutex);
 	virtaccel_handle_req_result(req);
 	virtaccel_clear_req(req);
-	printf("request completed\n");
+	printf("vAccel: request completed\n");
 
 	return ret;
 

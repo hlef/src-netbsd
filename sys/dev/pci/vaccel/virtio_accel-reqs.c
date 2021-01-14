@@ -50,7 +50,7 @@ void virtaccel_clear_req(struct virtio_accel_req *req)
 		kmem_free((struct accel_op *)req->priv, sizeof(struct accel_op));
 		break;
 	default:
-		printf("clear req: invalid op returned\n");
+		printf("vAccel: clear req: invalid op returned\n");
 	}
 	req->usr = NULL;
 }
@@ -67,7 +67,7 @@ void virtaccel_handle_req_result(struct virtio_accel_req *req)
 	switch (h->op) {
 	case VIRTIO_ACCEL_G_OP_CREATE_SESSION:
 		sess = req->priv;
-		printf("handle req: succesfully created session %u\n", sess->id);
+		printf("vAccel: handle req: succesfully created session %u\n", sess->id);
 		if (h->u.gen_op.in) {
 			for (i = 0; i < h->u.gen_op.in_nr; i++) {
 				if (!h->u.gen_op.in[i].buf)
@@ -83,17 +83,15 @@ void virtaccel_handle_req_result(struct virtio_accel_req *req)
 			break;
 
 		for (i = 0; i < h->u.gen_op.in_nr; i++) {
-			printf("yoyo %p\n", h->u.gen_op.in[i].buf);
 			if (!h->u.gen_op.in[i].buf)
 				continue;
-			printf("yoyo %s\n", sc->sc_arg_in[i].buf);
 			memcpy(h->u.gen_op.in[i].usr_buf, sc->sc_arg_in[i].buf, sc->sc_arg_in[i].len);
 		}
 		break;
 	case VIRTIO_ACCEL_G_OP_DESTROY_SESSION:
 		break;
 	default:
-		printf("hadle req: invalid op returned\n");
+		printf("vAccel: hadle req: invalid op returned\n");
 	}
 }
 
@@ -128,8 +126,6 @@ int virtaccel_req_gen_operation(struct virtio_accel_req *req)
 		for (i = 0; i < gen->in_nr; i++) {
 			h->u.gen_op.in[i].len = g_arg[i].len;
 			h->u.gen_op.in[i].usr_buf = g_arg[i].buf;
-			printf("hoola-hoop %p\n", h->u.gen_op.in[i].usr_buf);
-			memcpy(g_arg[i].buf, "hoola", 5);
 			h->u.gen_op.in[i].buf = kmem_zalloc(h->u.gen_op.in[i].len, KM_SLEEP);
 			if (!h->u.gen_op.in[i].buf) {
 				ret = -ENOMEM;
@@ -203,7 +199,6 @@ int virtaccel_req_gen_destroy_session(struct virtio_accel_req *req)
 	struct accel_session *sess = req->priv;
 	int ret = 0, total_sgs = 2;
 
-	printf("total_sgs = %d ----\n", total_sgs);
 	h->op = VIRTIO_ACCEL_G_OP_DESTROY_SESSION;
 	h->session_id = sess->id;
 	vaccel_sc->sc_arg_in = NULL;
@@ -223,7 +218,6 @@ int virtaccel_req_gen_create_session(struct virtio_accel_req *req)
 	int ret = 0, out_nsgs = 0, in_nsgs = 0, i,
 	    total_sgs = 3 + gen->in_nr + gen->out_nr;
 
-	printf("total_sgs = %d ----%d-%d\n", total_sgs, in_nsgs, out_nsgs);
 	h->op = VIRTIO_ACCEL_G_OP_CREATE_SESSION;
 	h->u.gen_op.in_nr = gen->in_nr;
 	h->u.gen_op.out_nr = gen->out_nr;

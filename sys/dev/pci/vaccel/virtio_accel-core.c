@@ -63,8 +63,6 @@ static void vaccel_attach(device_t parent, device_t self, void *aux)
 	//bus_dma_segment_t segs[1];
 	//int nsegs;
 
-	printf("hello from attach\n");
-
 	if (virtio_child(vsc) != NULL)
 		panic("already attached to something else");
 	
@@ -130,7 +128,7 @@ static void vaccel_attach(device_t parent, device_t self, void *aux)
 		virtio_free_vq(vsc, &sc->sc_vq);
 		goto failed;
 	}
-	printf("attach done\n");
+	aprint_normal_dev(sc->sc_dev, "vAccel virtio device attached successfully\n");
 
 	return;
 
@@ -151,9 +149,7 @@ static int vaccel_match(device_t parent, cfdata_t match, void *aux)
 {
 	struct virtio_attach_args *va = aux;
 
-	printf("virtaccel devid = %d vaccel_id = %d\n", va->sc_childdevid, VIRTIO_ID_ACCEL); 
 	if (va->sc_childdevid == VIRTIO_ID_ACCEL) {
-		printf("kanw match\n");
 		return 1;
 	}
 
@@ -182,7 +178,7 @@ static int virtaccel_update_status(struct virtio_softc *vsc)
 	struct vaccel_softc *sc = device_private(virtio_child(vsc));
 	//int err;
 
-	printf("config changed in vaccel\n");
+	aprint_normal_dev(sc->sc_dev, "Update config vAccel\n");
 	status = virtio_read_device_config_4(vsc, 0);
 	/*
 	 * Unknown status bits would be a host error and the driver
@@ -226,8 +222,6 @@ int vaccel_vq_done(struct virtqueue *vq)
 	struct virtio_accel_hdr *h;
 	int slot, len, r, ret = 0, i;
 
-	printf("hello from virtqueue done\n");
-
 	mutex_enter(&sc->sc_mutex);
 	//mutex_spin_enter(&sc->sc_mutex);
 	
@@ -236,7 +230,7 @@ int vaccel_vq_done(struct virtqueue *vq)
 		if (r != 0)
 			break;
 
-		printf("vaccel: Got slot %d with len %d\n", slot, len);
+		aprint_normal_dev(sc->sc_dev, "vaccel: Got slot %d with len %d\n", slot, len);
 
 		vr = &sc->sc_reqs[slot];
 		h = &vr->hdr;
@@ -276,20 +270,16 @@ int vaccel_vq_done(struct virtqueue *vq)
 		}
 		switch(vr->status) {
 		case VIRTIO_ACCEL_OK:
-			printf("received ok\n");
 			sc->req_status = 0;
 			break;
 		case VIRTIO_ACCEL_INVSESS:
 		case VIRTIO_ACCEL_ERR:
-			printf("received error\n");
 			//req->ret = -EINVAL;
 			break;
 		case VIRTIO_ACCEL_BADMSG:
-			printf("received badmsg\n");
 			//req->ret = -EBADMSG;
 			break;
 		default:
-			printf("received uknown\n");
 			//req->ret = -EIO;
 			break;
 		}
@@ -310,8 +300,6 @@ static int vaccel_virtio_alloc_reqs(struct vaccel_softc *sc, int qsize)
 
 	int allocsize, r, rsegs, i, j;
 	void *vaddr;
-
-	printf("qsize = %d\n", qsize);
 
 	allocsize = sizeof(struct virtio_vaccel_req) * qsize;
 	r = bus_dmamem_alloc(virtio_dmat(sc->sc_virtio), allocsize, 0, 0,
@@ -390,11 +378,6 @@ static int vaccel_virtio_alloc_reqs(struct vaccel_softc *sc, int qsize)
 		}
 	}
 
-	if (sc->sc_reqs == NULL)
-		printf("apo edw einai null\n");
-	else
-		printf("edw pantws den einai null\n");
-
 	return 0;
 err_reqs:
 	for (i = 0; i < qsize; i++) {
@@ -440,12 +423,9 @@ int vaccel_send_request(struct vaccel_softc *sc, struct virtio_accel_hdr *h,
 	r = virtio_enqueue_prep(vsc, vq, &slot);
 	if (r)
 		return r;
-	if (sc->sc_reqs == NULL)
-		printf("aiiinnttteee\n");
 	vr = &sc->sc_reqs[slot];
 
 	for (i = 0; i < h->u.gen_op.out_nr; i++) {
-		printf("metra %d - %d - %ld\n", i, h->u.gen_op.out[i].len, vr->vr_out_buf[i]->_dm_size);
 		r = bus_dmamap_load(virtio_dmat(vsc), vr->vr_out_buf[i],
 				h->u.gen_op.out[i].buf, h->u.gen_op.out[i].len, NULL,
 				BUS_DMA_WRITE|BUS_DMA_NOWAIT);
@@ -529,7 +509,6 @@ int vaccel_send_request(struct vaccel_softc *sc, struct virtio_accel_hdr *h,
 					BUS_DMASYNC_PREREAD);
 		}
 	}
-	printf("total = %d, segs = %d\n", total_segs, segs);
 	if (total_segs - segs == 1)
 		bus_dmamap_sync(virtio_dmat(vsc), vr->vr_cmds,
 				offsetof(struct virtio_vaccel_req, sid), sizeof(uint32_t),
@@ -543,13 +522,11 @@ int vaccel_send_request(struct vaccel_softc *sc, struct virtio_accel_hdr *h,
 			true);
 	if (h->u.gen_op.out_nr > 0) {
 		for (i = 0; i < h->u.gen_op.out_nr; i++) {
-			printf("ela out\n");
 			virtio_enqueue(vsc, vq, slot, vr->vr_out_buf[i], true);
 		}
 	}
 	if (h->u.gen_op.in_nr > 0) {
 		for (i = 0; i < h->u.gen_op.in_nr; i++) {
-			printf("ela in\n");
 			virtio_enqueue(vsc, vq, slot, vr->vr_in_buf[i], false);
 		}
 	}
