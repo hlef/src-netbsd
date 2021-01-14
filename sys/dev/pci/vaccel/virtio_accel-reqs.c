@@ -215,8 +215,7 @@ int virtaccel_req_gen_create_session(struct virtio_accel_req *req)
 	struct accel_session *sess = req->priv;
 	struct accel_gen_op *gen = &sess->u.gen;
 	struct accel_gen_op_arg *g_arg = NULL;
-	int ret = 0, out_nsgs = 0, in_nsgs = 0, i,
-	    total_sgs = 3 + gen->in_nr + gen->out_nr;
+	int ret = 0, i, total_sgs = 3 + gen->in_nr + gen->out_nr;
 
 	h->op = VIRTIO_ACCEL_G_OP_CREATE_SESSION;
 	h->u.gen_op.in_nr = gen->in_nr;

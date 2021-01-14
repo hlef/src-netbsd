@@ -178,7 +178,7 @@ static int virtaccel_update_status(struct virtio_softc *vsc)
 	struct vaccel_softc *sc = device_private(virtio_child(vsc));
 	//int err;
 
-	aprint_normal_dev(sc->sc_dev, "Update config vAccel\n");
+	aprint_normal_dev(sc->sc_dev, "Update config\n");
 	status = virtio_read_device_config_4(vsc, 0);
 	/*
 	 * Unknown status bits would be a host error and the driver
@@ -186,7 +186,7 @@ static int virtaccel_update_status(struct virtio_softc *vsc)
 	 */
 	if (status & (~VIRTIO_ACCEL_S_HW_READY)) {
 		aprint_error_dev(sc->sc_dev, 
-				  "vaccel: Unknown status bits: 0x%x\n", status);
+				  "Unknown status bits: 0x%x\n", status);
 		return -EPERM;
 	}
 
@@ -230,7 +230,7 @@ int vaccel_vq_done(struct virtqueue *vq)
 		if (r != 0)
 			break;
 
-		aprint_normal_dev(sc->sc_dev, "vaccel: Got slot %d with len %d\n", slot, len);
+		aprint_normal_dev(sc->sc_dev, "Got slot %d with len %d\n", slot, len);
 
 		vr = &sc->sc_reqs[slot];
 		h = &vr->hdr;
