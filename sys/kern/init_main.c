@@ -1121,28 +1121,4 @@ calc_cache_size(vsize_t vsize, int pct, int va_pct)
 void
 banner(void)
 {
-	static char notice[] = " Notice: this software is "
-	    "protected by copyright";
-	char pbuf[81];
-	void (*pr)(const char *, ...) __printflike(1, 2);
-	int i;
-
-	if ((boothowto & AB_SILENT) != 0) {
-		snprintf(pbuf, sizeof(pbuf), "%s %s (%s)",
-		    ostype, osrelease, kernel_ident);
-		printf_nolog("%s", pbuf);
-		for (i = 80 - strlen(pbuf) - sizeof(notice); i > 0; i--)
-			printf(" ");
-		printf_nolog("%s\n", notice);
-		pr = aprint_normal;
-	} else {
-		pr = printf;
-	}
-
-	memset(pbuf, 0, sizeof(pbuf));
-	(*pr)("%s%s", copyright, version);
-	format_bytes(pbuf, MEM_PBUFSIZE, ctob((uint64_t)physmem));
-	(*pr)("total memory = %s\n", pbuf);
-	format_bytes(pbuf, MEM_PBUFSIZE, ctob((uint64_t)uvmexp.free));
-	(*pr)("avail memory = %s\n", pbuf);
 }

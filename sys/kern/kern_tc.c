@@ -1323,8 +1323,6 @@ tc_ticktock(void)
 void
 inittimecounter(void)
 {
-	u_int p;
-
 	mutex_init(&timecounter_lock, MUTEX_DEFAULT, IPL_HIGH);
 
 	/*
@@ -1339,9 +1337,6 @@ inittimecounter(void)
 		tc_tick = (hz + 500) / 1000;
 	else
 		tc_tick = 1;
-	p = (tc_tick * 1000000) / hz;
-	aprint_verbose("timecounter: Timecounters tick every %d.%03u msec\n",
-	    p / 1000, p % 1000);
 
 	/* warm up new timecounter (again) and get rolling. */
 	(void)timecounter->tc_get_timecount(timecounter);

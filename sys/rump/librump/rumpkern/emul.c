@@ -359,27 +359,15 @@ void
 cpu_reboot(int howto, char *bootstr)
 {
 	int ruhow = 0;
+	rumpuser_exit(ruhow);
 	void *finiarg;
 
-	printf("rump kernel halting...\n");
+	printf("boot time tuned rump kernel halting...\n");
 
 	if (!RUMP_LOCALPROC_P(curproc))
 		finiarg = RUMP_SPVM2CTL(curproc->p_vmspace);
 	else
 		finiarg = NULL;
-
-	/* dump means we really take the dive here */
-	if ((howto & RB_DUMP) || panicstr) {
-		ruhow = RUMPUSER_PANIC;
-		goto out;
-	}
-
-	/* try to sync */
-	if (!((howto & RB_NOSYNC) || panicstr)) {
-		rump_vfs_fini();
-	}
-
-	doshutdownhooks();
 
 	/* your wish is my command */
 	if (howto & RB_HALT) {
@@ -391,7 +379,6 @@ cpu_reboot(int howto, char *bootstr)
 	}
 
 	/* this function is __dead, we must exit */
- out:
 	rump_sysproxy_fini(finiarg);
 	rumpuser_exit(ruhow);
 }

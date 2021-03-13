@@ -68,8 +68,7 @@ __KERNEL_RCSID(0, "$NetBSD: kern_rndq.c,v 1.90 2018/07/03 18:09:28 jdolecek Exp 
 #endif
 
 #ifdef RND_DEBUG
-#define	DPRINTF(l,x)      if (rnd_debug & (l)) rnd_printf x
-int	rnd_debug = 0;
+#define	DPRINTF(l,x)
 #else
 #define	DPRINTF(l,x)
 #endif
@@ -82,7 +81,7 @@ int	rnd_debug = 0;
 #endif
 
 #ifdef RND_VERBOSE
-#define	rnd_printf_verbose(fmt, ...)	rnd_printf(fmt, ##__VA_ARGS__)
+#define	rnd_printf_verbose(fmt, ...)	((void)0)
 #else
 #define	rnd_printf_verbose(fmt, ...)	((void)0)
 #endif
@@ -179,14 +178,6 @@ static rndsave_t	*boot_rsp;
 static inline void
 rnd_printf(const char *fmt, ...)
 {
-	va_list ap;
-
-	if (atomic_cas_uint(&rnd_printing, 0, 1) != 0)
-		return;
-	va_start(ap, fmt);
-	vprintf(fmt, ap);
-	va_end(ap);
-	rnd_printing = 0;
 }
 
 /*

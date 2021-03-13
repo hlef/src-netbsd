@@ -334,8 +334,6 @@ uvm_init(void)
 	} else {
 		strlcpy(buf, "unlimited (host limit)", sizeof(buf));
 	}
-	aprint_verbose("total memory = %s\n", buf);
-
 	TAILQ_INIT(&vmpage_lruqueue);
 
 	if (rump_physmemlimit == RUMPMEM_UNLIMITED) {
